@@ -444,7 +444,7 @@ contains
          this%smesh%varname(3)='edge_sensor'
          this%smesh%varname(4)='thin_sensor'
          this%smesh%varname(5)='thickness'
-         this%smesh%varname(6)='film_type'
+         this%smesh%varname(6)='struct_type'
          this%smesh%varname(7)='id_ccl_film'
          this%smesh%varname(8)='id_ccl_ligament'
          this%smesh%varname(9)='id_ccl'
@@ -464,7 +464,7 @@ contains
                         this%smesh%var(3,np)=this%vf%edge_sensor(i,j,k)
                         this%smesh%var(4,np)=this%vf%thin_sensor(i,j,k)
                         this%smesh%var(5,np)=this%vf%thickness  (i,j,k)
-                        this%smesh%var(6,np)=real(this%bu%film_type(i,j,k),WP)
+                        this%smesh%var(6,np)=real(this%bu%struct_type(i,j,k),WP)
                         this%smesh%var(7,np)=real(this%bu%ccl_film%id(i,j,k),WP)
                         this%smesh%var(8,np)=real(this%vf%ccl%id(i,j,k),WP)
                         this%smesh%var(9,np)=real(this%bu%ccl%id(i,j,k),WP)
@@ -686,7 +686,7 @@ contains
                            this%smesh%var(3,np)=this%vf%edge_sensor(i,j,k)
                            this%smesh%var(4,np)=this%vf%thin_sensor(i,j,k)
                            this%smesh%var(5,np)=this%vf%thickness  (i,j,k)
-                           this%smesh%var(6,np)=real(this%bu%film_type(i,j,k),WP)
+                           this%smesh%var(6,np)=real(this%bu%struct_type(i,j,k),WP)
                            this%smesh%var(7,np)=real(this%bu%ccl_film%id(i,j,k),WP)
                            this%smesh%var(8,np)=real(this%vf%ccl%id(i,j,k),WP)
                            this%smesh%var(9,np)=real(this%bu%ccl%id(i,j,k),WP)

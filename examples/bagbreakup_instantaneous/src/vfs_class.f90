@@ -135,7 +135,7 @@ module vfs_class
       ! Interface sensing variables
       real(WP), dimension(:,:,:), allocatable :: thin_sensor     !< Thin structure sensing (=1 is liquid, =2 is gas)
       real(WP), dimension(:,:,:), allocatable :: thickness       !< Local thickness of thin region
-      real(WP), dimension(:,:,:), allocatable :: thickness_unfilt       !< Local thickness of thin region
+      ! real(WP), dimension(:,:,:), allocatable :: thickness_unfilt       !< Local thickness of thin region
       real(WP), dimension(:,:,:), allocatable :: edge_sensor     !< Edge sensing (higher is edge)
       real(WP), dimension(:,:,:,:), allocatable :: edge_normal   !< Edge normal
       
@@ -216,7 +216,7 @@ module vfs_class
 
       procedure :: build_r2plig
       procedure :: build_r2pnetlig
-      procedure :: get_localfilmtype
+      procedure :: get_localstructtype
       procedure :: get_ligament
 
       procedure :: sense_interface                        !< Calculate various surface sensors
@@ -316,7 +316,7 @@ contains
          ! Allocate extra sensors
          allocate(this%thin_sensor(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%thin_sensor=0.0_WP
          allocate(this%thickness  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%thickness  =0.0_WP
-         allocate(this%thickness_unfilt(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%thickness_unfilt=0.0_WP
+         ! allocate(this%thickness_unfilt(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%thickness_unfilt=0.0_WP
          allocate(this%edge_sensor(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%edge_sensor=0.0_WP
          allocate(this%edge_normal(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%edge_normal=0.0_WP
 
@@ -4123,47 +4123,47 @@ contains
      
   end subroutine build_r2pnetlig
 
-  !> Measure local thickness of multiphasic structure
-  subroutine get_thickness_unfiltered(this)
+!   !> Measure local thickness of multiphasic structure
+!   subroutine get_thickness_unfiltered(this)
+!      implicit none
+!      class(vfs), intent(inout) :: this
+!      integer :: i,j,k,ii,jj,kk,nneigh
+!      real(WP) :: lvol,gvol,area
+!      ! Reset thickness
+!      this%thickness=1.0_WP;nneigh=5!nneigh=1
+!      ! First compute thickness based on current surface and volume moments (SD and VF)
+!      do k=this%cfg%kmin_,this%cfg%kmax_
+!         do j=this%cfg%jmin_,this%cfg%jmax_
+!            do i=this%cfg%imin_,this%cfg%imax_
+!               lvol=0.0_WP; area=0.0_WP
+
+!               do kk = k-nneigh,k+nneigh
+!                  do jj = j-nneigh,j+nneigh
+!                     do ii = i-nneigh,i+nneigh
+!                        lvol = lvol + this%VF(ii,jj,kk)
+!                        area = area + this%SD(ii,jj,kk)
+!                     end do
+!                  end do
+!               end do
+!               if (this%VF(i,j,k).lt.VFlo) then
+!                  this%thickness(i,j,k) = 0.0_WP
+!               else if (area .gt. 0.0_WP) then    
+!                  this%thickness(i,j,k) = 2.0_WP*lvol/(area+tiny(1.0_WP))
+!               else
+!                  this%thickness(i,j,k) = 4.0_WP*this%cfg%min_meshsize
+!               end if
+!            end do
+!         end do
+!      end do
+!      call this%cfg%sync(this%thickness)
+!      this%thickness_unfilt = this%thickness
+!   end subroutine get_thickness_unfiltered
+
+  !> Get the first pass of local struct type for interfacial cells
+  subroutine get_localstructtype(this,struct_type)
      implicit none
      class(vfs), intent(inout) :: this
-     integer :: i,j,k,ii,jj,kk,nneigh
-     real(WP) :: lvol,gvol,area
-     ! Reset thickness
-     this%thickness=1.0_WP;nneigh=5!nneigh=1
-     ! First compute thickness based on current surface and volume moments (SD and VF)
-     do k=this%cfg%kmin_,this%cfg%kmax_
-        do j=this%cfg%jmin_,this%cfg%jmax_
-           do i=this%cfg%imin_,this%cfg%imax_
-              lvol=0.0_WP; area=0.0_WP
-
-              do kk = k-nneigh,k+nneigh
-                 do jj = j-nneigh,j+nneigh
-                    do ii = i-nneigh,i+nneigh
-                       lvol = lvol + this%VF(ii,jj,kk)
-                       area = area + this%SD(ii,jj,kk)
-                    end do
-                 end do
-              end do
-              if (this%VF(i,j,k).lt.VFlo) then
-                 this%thickness(i,j,k) = 0.0_WP
-              else if (area .gt. 0.0_WP) then    
-                 this%thickness(i,j,k) = 2.0_WP*lvol/(area+tiny(1.0_WP))
-              else
-                 this%thickness(i,j,k) = 4.0_WP*this%cfg%min_meshsize
-              end if
-           end do
-        end do
-     end do
-     call this%cfg%sync(this%thickness)
-     this%thickness_unfilt = this%thickness
-  end subroutine get_thickness_unfiltered
-
-   !> Detect edge-like regions of the interface
-  subroutine get_localfilmtype(this,film_type)
-     implicit none
-     class(vfs), intent(inout) :: this
-     integer, dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: film_type
+     integer, dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: struct_type
      integer , parameter        :: order = 3
      integer :: ii,jj,kk,i,j,k,lwork,info
      real(WP) :: lvol,ratio
@@ -4171,50 +4171,54 @@ contains
      real(WP), dimension(1)   :: lwork_query
      real(WP), dimension(3) :: lx_vol, Ltmp,d
      real(WP), dimension(3,3) :: Imom
-     film_type=0; ratio=1.5_WP
+     struct_type=0; ratio=1.5_WP
      call dsyev('V','U',order,Imom,order,d,lwork_query,-1,info); lwork=int(lwork_query(1)); allocate(work(lwork))
      ! Traverse domain and compute sensors
      do k=this%cfg%kmin_,this%cfg%kmax_
         do j=this%cfg%jmin_,this%cfg%jmax_
            do i=this%cfg%imin_,this%cfg%imax_
-              Imom = 0.0_WP; lvol = 0.0_WP; lx_vol=0.0_WP
-              do kk = k-2,k+2
-                 do jj = j-2,j+2
-                    do ii = i-2,i+2
-                       ! Volume
-                       lvol = lvol + this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
-                       ! Center of gravity
-                       lx_vol = lx_vol + this%Lbary(:,ii,jj,kk)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
-                    end do
-                 end do
-              end do
+               ! Skip wall/bcond/full cells
+               if (this%mask(i,j,k).ne.0) cycle
+               if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
 
-              lx_vol = lx_vol/lvol
-              do kk = k-2,k+2
-                 do jj = j-2,j+2
-                    do ii = i-2,i+2
-                       ! Location of film node
-                       Ltmp = this%Lbary(:,ii,jj,kk) - lx_vol
-                       Imom(1,1) = Imom(1,1) + (Ltmp(2)**2 + Ltmp(3)**2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
-                       Imom(2,2) = Imom(2,2) + (Ltmp(1)**2 + Ltmp(3)**2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
-                       Imom(3,3) = Imom(3,3) + (Ltmp(1)**2 + Ltmp(2)**2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
-                       
-                       Imom(1,2) = Imom(1,2) - Ltmp(1)*Ltmp(2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
-                       Imom(1,3) = Imom(1,3) - Ltmp(1)*Ltmp(3)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
-                       Imom(2,3) = Imom(2,3) - Ltmp(2)*Ltmp(3)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)   
-                    end do
-                 end do
-              end do
-              call dsyev('V','U',order,Imom,order,d,work,lwork,info)
-              d = max(0.0_WP,d)
-              if (d(3).gt.(ratio*d(1))) film_type(i,j,k) = film_type(i,j,k) + 1
-              if (d(3).gt.(ratio*d(2))) film_type(i,j,k) = film_type(i,j,k) + 1
+               Imom = 0.0_WP; lvol = 0.0_WP; lx_vol=0.0_WP
+               do kk = k-2,k+2
+                  do jj = j-2,j+2
+                     do ii = i-2,i+2
+                        ! Volume
+                        lvol = lvol + this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
+                        ! Center of gravity
+                        lx_vol = lx_vol + this%Lbary(:,ii,jj,kk)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
+                     end do
+                  end do
+               end do
+
+               lx_vol = lx_vol/lvol
+               do kk = k-2,k+2
+                  do jj = j-2,j+2
+                     do ii = i-2,i+2
+                        ! Location of film node
+                        Ltmp = this%Lbary(:,ii,jj,kk) - lx_vol
+                        Imom(1,1) = Imom(1,1) + (Ltmp(2)**2 + Ltmp(3)**2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
+                        Imom(2,2) = Imom(2,2) + (Ltmp(1)**2 + Ltmp(3)**2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
+                        Imom(3,3) = Imom(3,3) + (Ltmp(1)**2 + Ltmp(2)**2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
+                        
+                        Imom(1,2) = Imom(1,2) - Ltmp(1)*Ltmp(2)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
+                        Imom(1,3) = Imom(1,3) - Ltmp(1)*Ltmp(3)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)
+                        Imom(2,3) = Imom(2,3) - Ltmp(2)*Ltmp(3)*this%cfg%vol(ii,jj,kk)*this%VF(ii,jj,kk)   
+                     end do
+                  end do
+               end do
+               call dsyev('V','U',order,Imom,order,d,work,lwork,info)
+               d = max(0.0_WP,d)
+               if (d(3).gt.(ratio*d(1))) struct_type(i,j,k) = struct_type(i,j,k) + 1
+               if (d(3).gt.(ratio*d(2))) struct_type(i,j,k) = struct_type(i,j,k) + 1
            end do 
         end do 
      end do 
      deallocate(work)
-     call this%cfg%sync(film_type)
-  end subroutine get_localfilmtype
+     call this%cfg%sync(struct_type)
+  end subroutine get_localstructtype
 
 
 
@@ -4224,12 +4228,12 @@ contains
      use parallel,  only: MPI_REAL_WP
      implicit none
      class(vfs), intent(inout) :: this
-     integer, dimension(:,:,:), allocatable :: film_type 
+     integer, dimension(:,:,:), allocatable :: struct_type 
      real(WP) :: ligament_detectratio,ligament_ratio
      real(WP), dimension(:), allocatable :: f_ligament,ncell_,ncell,n_ligament_,n_ligament
      real(WP) :: lig_pct
      integer :: n,nn,i,j,k,ierr
-     allocate(film_type(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); film_type=0
+     allocate(struct_type(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); struct_type=0
      ligament_detectratio =1.5_WP;ligament_ratio=0.8_WP;
 
      call this%get_thickness()
@@ -4238,14 +4242,14 @@ contains
      call this%ccl%build(make_label,same_label)
      
      if (this%ccl%nstruct .ge.1) then
-        call this%get_localfilmtype(film_type)
+        call this%get_localstructtype(struct_type)
         allocate(ncell(1:this%ccl%nstruct),ncell_(1:this%ccl%nstruct),n_ligament_(1:this%ccl%nstruct),n_ligament(1:this%ccl%nstruct))
         ncell=0.0_WP;ncell_=0.0_WP;n_ligament=0.0_WP;n_ligament_=0.0_WP
         do n=1,this%ccl%nstruct
            ncell_(n) = 1.0_WP*this%ccl%struct(n)%n_
            do nn=1,this%ccl%struct(n)%n_
               i=this%ccl%struct(n)%map(1,nn); j=this%ccl%struct(n)%map(2,nn); k=this%ccl%struct(n)%map(3,nn)
-              if(film_type(i,j,k).eq.1) n_ligament_(n)=n_ligament_(n)+1.0_WP
+              if(struct_type(i,j,k).eq.1) n_ligament_(n)=n_ligament_(n)+1.0_WP
            end do
         end do
         call MPI_ALLREDUCE(ncell_,ncell,this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)   
@@ -4273,7 +4277,7 @@ contains
         logical function make_label(i,j,k)
            implicit none
            integer, intent(in) :: i,j,k
-           if ((this%VF(i,j,k).gt.VFlo).and.(this%thickness(i,j,k).lt.ligament_detectratio*this%cfg%min_meshsize).and.(this%thickness(i,j,k).gt.0.0_WP))then
+           if ((this%VF(i,j,k).ge.VFlo).and.(this%thickness(i,j,k).lt.ligament_detectratio*this%cfg%min_meshsize).and.(this%thickness(i,j,k).gt.0.0_WP))then
               make_label=.true.
            else
               make_label=.false.

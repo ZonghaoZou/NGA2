@@ -32,7 +32,7 @@ module breakup_class
       real(WP) :: vol_convert            =0.0_WP
       real(WP) :: d_film_rp
       real(WP) :: numfilmcell            = 20.0_WP
-      real(WP), dimension(:,:,:), allocatable :: film_type            !< Tmp film_type for output purposes
+      real(WP), dimension(:,:,:), allocatable :: struct_type            !< Tmp struct_type for output purposes
    contains
       procedure :: initialize
       procedure :: spray_statistics_setup
@@ -43,7 +43,7 @@ module breakup_class
       procedure :: get_cclstats
    end type breakup
 
-   integer, dimension(:,:,:), allocatable :: tmpfilm_type
+   integer, dimension(:,:,:), allocatable :: tmpstruct_type
    real(WP), dimension(:,:,:), allocatable :: tmpVF,tmpthin_sensor
 
 contains
@@ -58,13 +58,13 @@ contains
       do kk = k-ncell,k+ncell
          do jj = j-ncell,j+ncell
             do ii = i-ncell,i+ncell
-               if(tmpfilm_type(ii,jj,kk).eq.2) then
+               if(tmpstruct_type(ii,jj,kk).eq.2) then
                   sum_f = sum_f + 1
                end if
             end do
          end do
       end do
-      if ((tmpVF(i,j,k).gt.VFlo).and.((tmpfilm_type(i,j,k).eq.2).or.(tmpfilm_type(i,j,k).eq.1.and.sum_f.ge.3)).and.tmpthin_sensor(i,j,k).eq.1.0_WP) then
+      if ((tmpVF(i,j,k).gt.VFlo).and.((tmpstruct_type(i,j,k).eq.2).or.(tmpstruct_type(i,j,k).eq.1.and.sum_f.ge.3)).and.tmpthin_sensor(i,j,k).eq.1.0_WP) then
          make_label_film=.true.
       else
          make_label_film=.false.
@@ -104,9 +104,9 @@ contains
       call this%ccl%initialize(pg=this%vf%cfg%pgrid,name='ccl')
       call this%ccl_film%initialize(pg=this%vf%cfg%pgrid,name='ccl_film')
 
-      allocate(this%film_type(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_));this%film_type=0.0_WP
+      allocate(this%struct_type(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_));this%struct_type=0.0_WP
       allocate(tmpVF(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
-      allocate(tmpfilm_type(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
+      allocate(tmpstruct_type(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
       allocate(tmpthin_sensor(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
       call this%spray_statistics_setup()
    end subroutine initialize
@@ -135,11 +135,11 @@ contains
       implicit none
       class(breakup), intent(inout) :: this
       ! set up tmp variables for ccl detection
-      call this%vf%get_localfilmtype(tmpfilm_type); this%film_type = tmpfilm_type
+      call this%vf%get_localstructtype(tmpstruct_type); this%struct_type = tmpstruct_type
       tmpVF=this%vf%VF; tmpthin_sensor=this%vf%thin_sensor
       ! First build an all encompasing ccl to remove detached liquid structures
       call this%ccl%build(make_label,same_label)
-      if (this%ccl%nstruct .gt.1) call this%transfer_detached_struct()
+      if (this%ccl%nstruct .ge.1) call this%transfer_detached_struct()
       ! Lastly final all the existing films and perform instantenous breakup based on minium local thickness
       call this%ccl_film%build(make_label_film,same_label)
       if (this%ccl_film%nstruct .ge.1) call this%breakup_film_instantaneous()
@@ -153,7 +153,7 @@ contains
       use irl_fortran_interface
       implicit none
       class(breakup), intent(inout) :: this
-      integer  :: n,nn,i,j,k,ierr,np,ip,m,iunit!,iunit,var
+      integer  :: n,nn,i,j,k,ierr,np,ip,m,iunit
       character(len=str_medium) :: filename
       ! Stats of the ccl objects
       real(WP), dimension(:), allocatable :: x,y,z,u,v,w,vol
@@ -452,7 +452,7 @@ contains
       class(cclabel), intent(in)::ccl
       real(WP), dimension(1:), intent(inout) :: x,y,z,u,v,w,vol
       real(WP), dimension(1:,1:), intent(inout) :: lengths
-      integer :: n,nn,i,j,k,ii,jj,kk,ierr,np,ip,m,iunit,rank,per_x,per_y,per_z
+      integer :: n,nn,nnn,i,j,k,ii,jj,kk,ierr,np,ip,m,iunit,rank,per_x,per_y,per_z
       ! Allocate variables to get stats
       real(WP), dimension(:), allocatable :: vol_,x_vol_,y_vol_,z_vol_
       real(WP), dimension(:), allocatable :: u_vol_,v_vol_,w_vol_
@@ -460,8 +460,6 @@ contains
       real(WP), dimension(:), allocatable :: y_min_,y_min,y_max_,y_max
       real(WP), dimension(:), allocatable :: z_min_,z_min,z_max_,z_max
       real(WP), dimension(:,:,:), allocatable :: Imom_,Imom
-      ! For ligament type
-      real(WP), dimension(:), allocatable :: ncell_,ncell,n_ligament_,n_ligament
       real(WP) :: xtmp,ytmp,ztmp
       ! Moment of inertia variable
       real(WP), dimension(:), allocatable :: work
@@ -481,33 +479,28 @@ contains
       allocate(x_vol_(1:ccl%nstruct),y_vol_(1:ccl%nstruct),z_vol_(1:ccl%nstruct));x_vol_=0.0_WP;y_vol_=0.0_WP;z_vol_=0.0_WP
       allocate(u_vol_(1:ccl%nstruct),v_vol_(1:ccl%nstruct),w_vol_(1:ccl%nstruct));u_vol_=0.0_WP;v_vol_=0.0_WP;w_vol_=0.0_WP
       allocate(Imom(1:ccl%nstruct,3,3),Imom_(1:ccl%nstruct,3,3));Imom=0.0_WP;Imom_=0.0_WP
-      allocate(ncell(1:ccl%nstruct),ncell_(1:ccl%nstruct),n_ligament_(1:ccl%nstruct),n_ligament(1:ccl%nstruct))
-      ncell=0;ncell_=0;n_ligament=0;n_ligament_=0
       ! Query optimal work array size
       call dsyev('V','U',order,A,order,d,lwork_query,-1,info); lwork=int(lwork_query(1)); allocate(work(lwork))
-      do i=1,ccl%nstruct
+      do n=1,ccl%nstruct
          ! Periodicity
-         per_x = ccl%struct(i)%per(1); per_y = ccl%struct(i)%per(2); per_z = ccl%struct(i)%per(3)
+         per_x = ccl%struct(n)%per(1); per_y = ccl%struct(n)%per(2); per_z = ccl%struct(n)%per(3)
          ! get number of local cells
-         ncell_(i) = 1.0_WP*ccl%struct(i)%n_
-         do j=1,ccl%struct(i)%n_
-            ii=ccl%struct(i)%map(1,j); jj=ccl%struct(i)%map(2,j); kk=ccl%struct(i)%map(3,j)
+         do nn=1,ccl%struct(n)%n_
+            i=ccl%struct(n)%map(1,nn); j=ccl%struct(n)%map(2,nn); k=ccl%struct(n)%map(3,nn)
             ! Location of struct node
-            xtmp = this%vf%cfg%xm(ii)-per_x*this%vf%cfg%xL
-            ytmp = this%vf%cfg%ym(jj)-per_y*this%vf%cfg%yL
-            ztmp = this%vf%cfg%zm(kk)-per_z*this%vf%cfg%zL
+            xtmp = this%vf%cfg%xm(i)-per_x*this%vf%cfg%xL
+            ytmp = this%vf%cfg%ym(j)-per_y*this%vf%cfg%yL
+            ztmp = this%vf%cfg%zm(k)-per_z*this%vf%cfg%zL
             ! Volume
-            vol_(i) = vol_(i) + this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
+            vol_(n) = vol_(n) + this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
             ! Center of gravity
-            x_vol_(i) = x_vol_(i) + xtmp*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            y_vol_(i) = y_vol_(i) + ytmp*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            z_vol_(i) = z_vol_(i) + ztmp*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
+            x_vol_(n) = x_vol_(n) + xtmp*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            y_vol_(n) = y_vol_(n) + ytmp*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            z_vol_(n) = z_vol_(n) + ztmp*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
             ! Average gas velocity inside struct
-            u_vol_(i) = u_vol_(i) + this%fs%U(ii,jj,kk)*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            v_vol_(i) = v_vol_(i) + this%fs%V(ii,jj,kk)*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            w_vol_(i) = w_vol_(i) + this%fs%W(ii,jj,kk)*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-
-            if(tmpfilm_type(ii,jj,kk).eq.1) n_ligament_(i)=n_ligament_(i)+1.0_WP
+            u_vol_(n) = u_vol_(n) + this%fs%U(i,j,k)*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            v_vol_(n) = v_vol_(n) + this%fs%V(i,j,k)*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            w_vol_(n) = w_vol_(n) + this%fs%W(i,j,k)*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
          end do
       end do
       ! Sum parallel stats
@@ -518,37 +511,33 @@ contains
       call MPI_ALLREDUCE(u_vol_,u,ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(v_vol_,v,ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(w_vol_,w,ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-
-      call MPI_ALLREDUCE(ncell_,ncell,ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-      call MPI_ALLREDUCE(n_ligament_,n_ligament,ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-      do i=1,ccl%nstruct
+      do n=1,ccl%nstruct
          ! Periodicity
-         per_x = ccl%struct(i)%per(1); per_y = ccl%struct(i)%per(2); per_z = ccl%struct(i)%per(3)
-         do j=1,ccl%struct(i)%n_
+         per_x = ccl%struct(n)%per(1); per_y = ccl%struct(n)%per(2); per_z = ccl%struct(n)%per(3)
+         do nn=1,ccl%struct(n)%n_
             ! Indices of struct node
-            ii=ccl%struct(i)%map(1,j); jj=ccl%struct(i)%map(2,j); kk=ccl%struct(i)%map(3,j)
-            xtmp = this%vf%cfg%xm(ii)-per_x*this%vf%cfg%xL-x(i)/vol(i)
-            ytmp = this%vf%cfg%ym(jj)-per_y*this%vf%cfg%yL-y(i)/vol(i)
-            ztmp = this%vf%cfg%zm(kk)-per_z*this%vf%cfg%zL-z(i)/vol(i)
+            i=ccl%struct(n)%map(1,nn); j=ccl%struct(n)%map(2,nn); k=ccl%struct(n)%map(3,nn)
+            xtmp = this%vf%cfg%xm(i)-per_x*this%vf%cfg%xL-x(n)/vol(n)
+            ytmp = this%vf%cfg%ym(j)-per_y*this%vf%cfg%yL-y(n)/vol(n)
+            ztmp = this%vf%cfg%zm(k)-per_z*this%vf%cfg%zL-z(n)/vol(n)
             ! Moment of Inertia
-            Imom_(i,1,1) = Imom_(i,1,1) + (ytmp**2 + ztmp**2)*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            Imom_(i,2,2) = Imom_(i,2,2) + (xtmp**2 + ztmp**2)*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            Imom_(i,3,3) = Imom_(i,3,3) + (xtmp**2 + ytmp**2)*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            Imom_(i,1,2) = Imom_(i,1,2) - xtmp*ytmp*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            Imom_(i,1,3) = Imom_(i,1,3) - xtmp*ztmp*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            Imom_(i,2,3) = Imom_(i,2,3) - ytmp*ztmp*this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)
-            do n=1,2
-               if (getNumberOfVertices(this%vf%interface_polygon(n,ii,jj,kk)).gt.0) then
-                  d = calculateCentroid(this%vf%interface_polygon(n,ii,jj,kk))
-                  x_min_(i) = min(x_min_(i),d(1)); x_max_(i) = max(x_max_(i),d(1))
-                  y_min_(i) = min(y_min_(i),d(2)); y_max_(i) = max(y_max_(i),d(2))
-                  z_min_(i) = min(z_min_(i),d(3)); z_max_(i) = max(z_max_(i),d(3))
+            Imom_(n,1,1) = Imom_(n,1,1) + (ytmp**2 + ztmp**2)*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            Imom_(n,2,2) = Imom_(n,2,2) + (xtmp**2 + ztmp**2)*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            Imom_(n,3,3) = Imom_(n,3,3) + (xtmp**2 + ytmp**2)*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            Imom_(n,1,2) = Imom_(n,1,2) - xtmp*ytmp*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            Imom_(n,1,3) = Imom_(n,1,3) - xtmp*ztmp*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            Imom_(n,2,3) = Imom_(n,2,3) - ytmp*ztmp*this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            do nnn=1,2
+               if (getNumberOfVertices(this%vf%interface_polygon(nnn,i,j,k)).gt.0) then
+                  d = calculateCentroid(this%vf%interface_polygon(nnn,i,j,k))
+                  x_min_(n) = min(x_min_(n),d(1)); x_max_(n) = max(x_max_(n),d(1))
+                  y_min_(n) = min(y_min_(n),d(2)); y_max_(n) = max(y_max_(n),d(2))
+                  z_min_(n) = min(z_min_(n),d(3)); z_max_(n) = max(z_max_(n),d(3))
                end if
             end do
-            ! ! Min thickness
-            ! min_thickness_(i) = min(min_thickness_(i),this%struct_thickness(ii,jj,kk))
          end do 
       end do
+
       ! Sum parallel stat on Imom
       do i=1,3
          do j=1,3
@@ -562,34 +551,31 @@ contains
       call MPI_ALLREDUCE(y_max_,y_max,ccl%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(z_min_,z_min,ccl%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(z_max_,z_max,ccl%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
-      !!  Get min thickness
-      !  call MPI_ALLREDUCE(min_thickness_,min_thickness,this%ccl_ligament%nstruct,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr)
       ! Store data
-      do i=1,ccl%nstruct
+      do n=1,ccl%nstruct
          ! Center of gravity
-         x(i) = x(i)/vol(i); y(i) = y(i)/vol(i); z(i) = z(i)/vol(i)
+         x(n) = x(n)/vol(n); y(n) = y(n)/vol(n); z(n) = z(n)/vol(n)
          ! Periodicity: transport back inside domain if needed
-         if (x(i).lt.this%vf%cfg%x(this%vf%cfg%imin)) x(i) = x(i)+this%vf%cfg%xL
-         if (y(i).lt.this%vf%cfg%y(this%vf%cfg%jmin)) y(i) = y(i)+this%vf%cfg%yL
-         if (z(i).lt.this%vf%cfg%z(this%vf%cfg%kmin)) z(i) = z(i)+this%vf%cfg%zL
-         u(i)=u(i)/vol(i); v(i)=v(i)/vol(i); w(i)=w(i)/vol(i)
+         if (x(n).lt.this%vf%cfg%x(this%vf%cfg%imin)) x(n) = x(n)+this%vf%cfg%xL
+         if (y(n).lt.this%vf%cfg%y(this%vf%cfg%jmin)) y(n) = y(n)+this%vf%cfg%yL
+         if (z(n).lt.this%vf%cfg%z(this%vf%cfg%kmin)) z(n) = z(n)+this%vf%cfg%zL
+         u(n)=u(n)/vol(n); v(n)=v(n)/vol(n); w(n)=w(n)/vol(n)
          ! Eigenvalues/eigenvectors of moments of inertia tensor
-         A = Imom(i,:,:); n = 3
+         A = Imom(n,:,:); nnn = 3
          ! On exit, A contains eigenvectors, and d contains eigenvalues in ascending order
-         call dsyev('V','U',n,A,n,d,work,lwork,info)
+         call dsyev('V','U',nnn,A,nnn,d,work,lwork,info)
          ! Get rid of very small negative values (due to machine accuracy)
          d = max(0.0_WP,d)
          ! Store characteristic lengths
-         lengths(i,1) = sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/vol(i))
-         lengths(i,2) = sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/vol(i))
-         lengths(i,3) = sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/vol(i))
+         lengths(n,1) = sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/vol(n))
+         lengths(n,2) = sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/vol(n))
+         lengths(n,3) = sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/vol(n))
          ! Zero out length in 3rd dimension if 2D
-         if (this%vf%cfg%nx.eq.1.or.this%vf%cfg%ny.eq.1.or.this%vf%cfg%nz.eq.1) lengths(i,3)=0.0_WP
+         if (this%vf%cfg%nx.eq.1.or.this%vf%cfg%ny.eq.1.or.this%vf%cfg%nz.eq.1) lengths(n,3)=0.0_WP
       end do
       ! Deallocate arrays
       deallocate(vol_,x_vol_,y_vol_,z_vol_,u_vol_,v_vol_,w_vol_,Imom_,Imom)
       deallocate(x_min_,y_min_,z_min_,x_max_,y_max_,z_max_)
       deallocate(x_min,y_min,z_min,x_max,y_max,z_max)
-      deallocate(ncell,ncell_,n_ligament,n_ligament_)
    end subroutine get_cclstats
 end module
