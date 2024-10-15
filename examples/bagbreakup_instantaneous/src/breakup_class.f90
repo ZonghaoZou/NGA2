@@ -31,7 +31,7 @@ module breakup_class
       real(WP) :: d_threshold            =6.0e-1_WP
       real(WP) :: vol_convert            =0.0_WP
       real(WP) :: d_film_rp
-      real(WP) :: numfilmcell            = 20.0_WP
+      real(WP) :: numfilmcell            = 100.0_WP
       real(WP), dimension(:,:,:), allocatable :: struct_type            !< Tmp struct_type for output purposes
    contains
       procedure :: initialize
@@ -44,7 +44,8 @@ module breakup_class
    end type breakup
 
    integer, dimension(:,:,:), allocatable :: tmpstruct_type
-   real(WP), dimension(:,:,:), allocatable :: tmpVF,tmpthin_sensor
+   real(WP), dimension(:,:,:), allocatable :: tmpVF,tmpthickness!,tmpthin_sensor
+   real(WP) :: min_meshsize
 
 contains
 
@@ -64,7 +65,8 @@ contains
             end do
          end do
       end do
-      if ((tmpVF(i,j,k).gt.VFlo).and.((tmpstruct_type(i,j,k).eq.2).or.(tmpstruct_type(i,j,k).eq.1.and.sum_f.ge.3)).and.tmpthin_sensor(i,j,k).eq.1.0_WP) then
+      ! if ((tmpVF(i,j,k).gt.VFlo).and.((tmpstruct_type(i,j,k).eq.2)).and.tmpthin_sensor(i,j,k).eq.1.0_WP) then
+      if ((tmpVF(i,j,k).gt.VFlo).and.((tmpstruct_type(i,j,k).eq.2)).and.tmpthickness(i,j,k).lt.min_meshsize) then
          make_label_film=.true.
       else
          make_label_film=.false.
@@ -107,7 +109,9 @@ contains
       allocate(this%struct_type(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_));this%struct_type=0.0_WP
       allocate(tmpVF(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
       allocate(tmpstruct_type(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
-      allocate(tmpthin_sensor(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
+      ! allocate(tmpthin_sensor(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
+      allocate(tmpthickness(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_))
+      min_meshsize = this%vf%cfg%min_meshsize
       call this%spray_statistics_setup()
    end subroutine initialize
 
@@ -135,11 +139,15 @@ contains
       implicit none
       class(breakup), intent(inout) :: this
       ! set up tmp variables for ccl detection
-      call this%vf%get_localstructtype(tmpstruct_type); this%struct_type = tmpstruct_type
-      tmpVF=this%vf%VF; tmpthin_sensor=this%vf%thin_sensor
+      tmpVF=this%vf%VF;
       ! First build an all encompasing ccl to remove detached liquid structures
       call this%ccl%build(make_label,same_label)
       if (this%ccl%nstruct .ge.1) call this%transfer_detached_struct()
+
+      call this%vf%get_localstructtype(tmpstruct_type); this%struct_type = tmpstruct_type
+      call this%vf%get_thickness();tmpthickness = this%vf%thickness; tmpVF=this%vf%VF
+      !call this%vf%detect_thin_regions(); tmpthin_sensor=this%vf%thin_sensor; 
+      
       ! Lastly final all the existing films and perform instantenous breakup based on minium local thickness
       call this%ccl_film%build(make_label_film,same_label)
       if (this%ccl_film%nstruct .ge.1) call this%breakup_film_instantaneous()
@@ -244,7 +252,7 @@ contains
       character(len=str_medium) :: filename
       real(WP), dimension(:), allocatable :: min_thickness,min_thickness_,thickness_list
       integer, dimension(:), allocatable :: id
-      real(WP), dimension(:), allocatable :: vol_,vol
+      real(WP), dimension(:), allocatable :: vol_,vol!,number_of_cell_,number_of_cell
       integer :: n,nn,i,j,k,l,np,np_old,np_start,total_id,rank,iunit,ierr,ip,ii,jj,temp_id
       real(WP)  :: d0,curv_sum,ncurv,alpha,beta,Vt,Vl,Vd,myint,integral,temp_thickness
       real(WP), dimension(3) :: nref,tref,sref
@@ -252,8 +260,10 @@ contains
       allocate(min_thickness(1:this%ccl_film%nstruct),min_thickness_(1:this%ccl_film%nstruct))
       min_thickness = this%vf%cfg%min_meshsize; min_thickness_=5.0_WP*this%vf%cfg%min_meshsize
       allocate(vol_(1:this%ccl_film%nstruct),vol(1:this%ccl_film%nstruct));vol_=0.0_WP;vol=0.0_WP
+      ! allocate(number_of_cell_(1:this%ccl_film%nstruct),number_of_cell(1:this%ccl_film%nstruct));number_of_cell_=0.0_WP;number_of_cell=0.0_WP;
       call this%vf%get_thickness()
       do n=1,this%ccl_film%nstruct
+         ! number_of_cell_(n) = 1.0_WP*this%ccl_film%struct(n)%n_
          do nn=1,this%ccl_film%struct(n)%n_
             i=this%ccl_film%struct(n)%map(1,nn); j=this%ccl_film%struct(n)%map(2,nn); k=this%ccl_film%struct(n)%map(3,nn)
             vol_(n) = vol_(n) + this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
@@ -262,13 +272,14 @@ contains
       end do
       call MPI_ALLREDUCE(vol_,vol,this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(min_thickness_,min_thickness,this%ccl_film%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
+      ! call MPI_ALLREDUCE(number_of_cell_,number_of_cell,this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
 
       d0=1.0_WP; np_start=this%lp%np_; hassampled=.false.
       do n=1,this%ccl_film%nstruct
          ! Breakup film instantaneously if the minimal thickness is below the criterion and the film is large enough
          if (min_thickness(n).gt.this%min_filmthickness) cycle
          if (vol(n).lt.this%numfilmcell*this%min_filmthickness*(this%vf%cfg%min_meshsize**2)) cycle
-         if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", min_thickness(n), "and this is id:", n ,"vol is:", vol(n)
+         if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", min_thickness(n), "and this is id:", n ,"vol is:", vol(n)!, "this is number of cells", number_of_cell(n)
          if (this%ccl_film%struct(n)%n_ .ge.1) then
             allocate(id(1:this%ccl_film%struct(n)%n_)) 
             allocate(thickness_list(1:this%ccl_film%struct(n)%n_))
@@ -385,6 +396,7 @@ contains
 
       call this%lp%sync()
       deallocate(min_thickness,min_thickness_,vol_,vol)
+      ! deallocate(number_of_cell,number_of_cell_)
 
       contains
          !> Sort film indices by increasing thickness

@@ -6,7 +6,7 @@ module vfs_class
    use string,         only: str_medium
    use config_class,   only: config
    use iterator_class, only: iterator
-   use cclabel_class, only: cclabel
+   ! use cclabel_class, only: cclabel
    use irl_fortran_interface
    implicit none
    private
@@ -112,8 +112,9 @@ module vfs_class
       
 
       integer, dimension(:,:,:), allocatable :: lig_ind
+      integer, dimension(:,:,:), allocatable :: struct_type
 
-      type(cclabel):: ccl
+      ! type(cclabel):: ccl
 
       ! Interface handling methods
       integer :: reconstruction_method                    !< Interface reconstruction method
@@ -321,8 +322,9 @@ contains
          allocate(this%edge_normal(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%edge_normal=0.0_WP
 
          ! Only for detecting almost resolved ligament like structures
-         call this%ccl%initialize(pg=this%cfg%pgrid,name='r2plig')
+         ! call this%ccl%initialize(pg=this%cfg%pgrid,name='r2plig')
          allocate(this%lig_ind(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%lig_ind=0
+         allocate(this%struct_type(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%struct_type=0
          ! By default, use thin structure removal
          this%thin_thld_min=1.0e-4_WP !< This removes any thin structure with thickness below dx/1000
          ! By default, use flotsam removal
@@ -4165,7 +4167,7 @@ contains
      class(vfs), intent(inout) :: this
      integer, dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: struct_type
      integer , parameter        :: order = 3
-     integer :: ii,jj,kk,i,j,k,lwork,info
+     integer :: ii,jj,kk,i,j,k,lwork,info,nneigh,nfilm,nlig
      real(WP) :: lvol,ratio
      real(WP), dimension(:), allocatable :: work
      real(WP), dimension(1)   :: lwork_query
@@ -4218,6 +4220,37 @@ contains
      end do 
      deallocate(work)
      call this%cfg%sync(struct_type)
+
+     this%struct_type = struct_type
+      nneigh=1
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               ! Skip wall/bcond/full cells
+               if (this%mask(i,j,k).ne.0) cycle
+               if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
+               if (struct_type(i,j,k).eq.1) then
+                  nfilm=0;nlig=0
+                  do kk = k-nneigh,k+nneigh
+                     do jj = j-nneigh, j+nneigh
+                        do ii = i-nneigh,i+nneigh
+                           ! Skip wall/bcond/full cells
+                           if (this%mask(ii,jj,kk).ne.0) cycle
+                           if (this%VF(ii,jj,kk).lt.VFlo.or.this%VF(ii,jj,kk).gt.VFhi) cycle
+
+                           if (struct_type(ii,jj,kk).eq.2) nfilm = nfilm+1
+                           if (struct_type(ii,jj,kk).eq.1) nlig  = nlig +1
+                  
+                        end do 
+                     end do
+                  end do 
+                  if (nfilm.gt.nlig) struct_type(i,j,k) = 2
+               end if
+               
+            end do 
+         end do
+      end do
+      call this%cfg%sync(struct_type)
   end subroutine get_localstructtype
 
 
@@ -4237,59 +4270,68 @@ contains
      ligament_detectratio =1.5_WP;ligament_ratio=0.8_WP;
 
      call this%get_thickness()
-
+     call this%get_localstructtype(struct_type)
      this%lig_ind = 0
-     call this%ccl%build(make_label,same_label)
+     do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               if ((this%VF(i,j,k).gt.VFlo).and.(this%thickness(i,j,k).lt.ligament_detectratio*this%cfg%min_meshsize).and.(this%thickness(i,j,k).gt.0.0_WP).and.struct_type(i,j,k).eq.1)then
+                  this%lig_ind(i,j,k) =1
+               end if
+            end do 
+         end do 
+      end do
+   !   call this%ccl%build(make_label,same_label)
      
-     if (this%ccl%nstruct .ge.1) then
-        call this%get_localstructtype(struct_type)
-        allocate(ncell(1:this%ccl%nstruct),ncell_(1:this%ccl%nstruct),n_ligament_(1:this%ccl%nstruct),n_ligament(1:this%ccl%nstruct))
-        ncell=0.0_WP;ncell_=0.0_WP;n_ligament=0.0_WP;n_ligament_=0.0_WP
-        do n=1,this%ccl%nstruct
-           ncell_(n) = 1.0_WP*this%ccl%struct(n)%n_
-           do nn=1,this%ccl%struct(n)%n_
-              i=this%ccl%struct(n)%map(1,nn); j=this%ccl%struct(n)%map(2,nn); k=this%ccl%struct(n)%map(3,nn)
-              if(struct_type(i,j,k).eq.1) n_ligament_(n)=n_ligament_(n)+1.0_WP
-           end do
-        end do
-        call MPI_ALLREDUCE(ncell_,ncell,this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)   
-        call MPI_ALLREDUCE(n_ligament_,n_ligament,this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   !   if (this%ccl%nstruct .ge.1) then
+   !      call this%get_localstructtype(struct_type)
+   !      allocate(ncell(1:this%ccl%nstruct),ncell_(1:this%ccl%nstruct),n_ligament_(1:this%ccl%nstruct),n_ligament(1:this%ccl%nstruct))
+   !      ncell=0.0_WP;ncell_=0.0_WP;n_ligament=0.0_WP;n_ligament_=0.0_WP
+   !      do n=1,this%ccl%nstruct
+   !         ncell_(n) = 1.0_WP*this%ccl%struct(n)%n_
+   !         do nn=1,this%ccl%struct(n)%n_
+   !            i=this%ccl%struct(n)%map(1,nn); j=this%ccl%struct(n)%map(2,nn); k=this%ccl%struct(n)%map(3,nn)
+   !            if(struct_type(i,j,k).eq.1) n_ligament_(n)=n_ligament_(n)+1.0_WP
+   !         end do
+   !      end do
+   !      call MPI_ALLREDUCE(ncell_,ncell,this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)   
+   !      call MPI_ALLREDUCE(n_ligament_,n_ligament,this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
 
-        do n=1,this%ccl%nstruct
-          lig_pct = 0.0_WP
-          if(ncell(n).eq.0.0_WP) then
-            lig_pct = 0.0_WP
-          else
-            lig_pct = 1.0_WP*n_ligament(n)/(1.0_WP*ncell(n))
-          end if
-         !  if (this%cfg%amRoot) print *, "This is id:", n ,"f_ligament is:", lig_pct  
-          if (lig_pct.lt.ligament_ratio) cycle
-          ! Mark the cells with ligament detected to 1 for reconstruction with lvira or plicnet
-          do nn=1,this%ccl%struct(n)%n_
-             i=this%ccl%struct(n)%map(1,nn); j=this%ccl%struct(n)%map(2,nn); k=this%ccl%struct(n)%map(3,nn)
-             this%lig_ind(i,j,k) = 1
-          end do
-        end do
-     end if
-     call this%cfg%sync(this%lig_ind)
+   !      do n=1,this%ccl%nstruct
+   !        lig_pct = 0.0_WP
+   !        if(ncell(n).eq.0.0_WP) then
+   !          lig_pct = 0.0_WP
+   !        else
+   !          lig_pct = 1.0_WP*n_ligament(n)/(1.0_WP*ncell(n))
+   !        end if
+   !       !  if (this%cfg%amRoot) print *, "This is id:", n ,"f_ligament is:", lig_pct  
+   !        if (lig_pct.lt.ligament_ratio) cycle
+   !        ! Mark the cells with ligament detected to 1 for reconstruction with lvira or plicnet
+   !        do nn=1,this%ccl%struct(n)%n_
+   !           i=this%ccl%struct(n)%map(1,nn); j=this%ccl%struct(n)%map(2,nn); k=this%ccl%struct(n)%map(3,nn)
+   !           this%lig_ind(i,j,k) = 1
+   !        end do
+   !      end do
+   !   end if
+   !   call this%cfg%sync(this%lig_ind)
 
-     contains 
-        logical function make_label(i,j,k)
-           implicit none
-           integer, intent(in) :: i,j,k
-           if ((this%VF(i,j,k).ge.VFlo).and.(this%thickness(i,j,k).lt.ligament_detectratio*this%cfg%min_meshsize).and.(this%thickness(i,j,k).gt.0.0_WP))then
-              make_label=.true.
-           else
-              make_label=.false.
-           end if
-        end function make_label
+   !   contains 
+   !      logical function make_label(i,j,k)
+   !         implicit none
+   !         integer, intent(in) :: i,j,k
+   !         if ((this%VF(i,j,k).ge.VFlo).and.(this%thickness(i,j,k).lt.ligament_detectratio*this%cfg%min_meshsize).and.(this%thickness(i,j,k).gt.0.0_WP))then
+   !            make_label=.true.
+   !         else
+   !            make_label=.false.
+   !         end if
+   !      end function make_label
 
-        !> Function that identifies if cell pairs have same label
-        logical function same_label(i1,j1,k1,i2,j2,k2)
-           implicit none
-           integer, intent(in) :: i1,j1,k1,i2,j2,k2
-           same_label=.true.
-        end function same_label
+   !      !> Function that identifies if cell pairs have same label
+   !      logical function same_label(i1,j1,k1,i2,j2,k2)
+   !         implicit none
+   !         integer, intent(in) :: i1,j1,k1,i2,j2,k2
+   !         same_label=.true.
+   !      end function same_label
   end subroutine get_ligament
 
 

@@ -446,9 +446,10 @@ contains
          this%smesh%varname(5)='thickness'
          this%smesh%varname(6)='struct_type'
          this%smesh%varname(7)='id_ccl_film'
-         this%smesh%varname(8)='id_ccl_ligament'
-         this%smesh%varname(9)='id_ccl'
-         this%smesh%varname(10)='lig_ind'
+         ! this%smesh%varname(8)='id_ccl_ligament'
+         this%smesh%varname(8)='id_ccl'
+         this%smesh%varname(9)='lig_ind'
+         this%smesh%varname(10)='struct_type_ori'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh(this%smesh)
          ! Also populate nplane variable
@@ -466,9 +467,10 @@ contains
                         this%smesh%var(5,np)=this%vf%thickness  (i,j,k)
                         this%smesh%var(6,np)=real(this%bu%struct_type(i,j,k),WP)
                         this%smesh%var(7,np)=real(this%bu%ccl_film%id(i,j,k),WP)
-                        this%smesh%var(8,np)=real(this%vf%ccl%id(i,j,k),WP)
-                        this%smesh%var(9,np)=real(this%bu%ccl%id(i,j,k),WP)
-                        this%smesh%var(10,np)=real(this%vf%lig_ind(i,j,k),WP)
+                        ! this%smesh%var(8,np)=real(this%vf%ccl%id(i,j,k),WP)
+                        this%smesh%var(8,np)=real(this%bu%ccl%id(i,j,k),WP)
+                        this%smesh%var(9,np)=real(this%vf%lig_ind(i,j,k),WP)
+                        this%smesh%var(10,np)=real(this%vf%struct_type(i,j,k),WP) 
                      end if
                   end do
                end do
@@ -688,9 +690,10 @@ contains
                            this%smesh%var(5,np)=this%vf%thickness  (i,j,k)
                            this%smesh%var(6,np)=real(this%bu%struct_type(i,j,k),WP)
                            this%smesh%var(7,np)=real(this%bu%ccl_film%id(i,j,k),WP)
-                           this%smesh%var(8,np)=real(this%vf%ccl%id(i,j,k),WP)
-                           this%smesh%var(9,np)=real(this%bu%ccl%id(i,j,k),WP)
-                           this%smesh%var(10,np)=real(this%vf%lig_ind(i,j,k),WP)
+                           ! this%smesh%var(8,np)=real(this%vf%ccl%id(i,j,k),WP)
+                           this%smesh%var(8,np)=real(this%bu%ccl%id(i,j,k),WP)
+                           this%smesh%var(9,np)=real(this%vf%lig_ind(i,j,k),WP)
+                           this%smesh%var(10,np)=real(this%vf%struct_type(i,j,k),WP) 
                         end if
                      end do
                   end do
