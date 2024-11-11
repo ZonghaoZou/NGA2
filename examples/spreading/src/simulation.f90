@@ -16,8 +16,8 @@ module simulation
    
    !> Single two-phase flow solver and volume fraction solver and corresponding time tracker
    type(hypre_str),   public :: ps
-   type(ddadi),       public :: vs
-   !type(hypre_str),   public :: vs
+   !type(ddadi),       public :: vs
+   type(hypre_str),   public :: vs
    type(tpns),        public :: fs
    type(vfs),         public :: vf
    type(timetracker), public :: time
@@ -314,9 +314,9 @@ contains
          call param_read('Pressure iteration',ps%maxit)
          call param_read('Pressure tolerance',ps%rcvg)
          ! Configure implicit velocity solver
-         vs=ddadi(cfg=cfg,name='Velocity',nst=7)
-         !vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg2,nst=7)
-         !vs%maxlevel=ps%maxlevel; vs%maxit=ps%maxit; vs%rcvg=ps%rcvg
+         !vs=ddadi(cfg=cfg,name='Velocity',nst=7)
+         vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg2,nst=7)
+         vs%maxlevel=ps%maxlevel; vs%maxit=ps%maxit; vs%rcvg=ps%rcvg
          ! Setup the solver
          call fs%setup(pressure_solver=ps,implicit_solver=vs)
          ! Zero initial field
@@ -466,6 +466,22 @@ contains
          
          ! VOF solver step
          call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)
+         
+         ! Put back no-slip here
+         !no_slip: block
+         !   integer :: i,j,k
+         !   do k=fs%cfg%kmin_,fs%cfg%kmax_+1
+         !      do j=fs%cfg%jmin_,fs%cfg%jmax_+1
+         !         do i=fs%cfg%imin_,fs%cfg%imax_+1
+         !            ! Check if there is a wall in y-
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) fs%U(i,j-1,k)=0.0_WP
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i,j-1,k-1).eq.1) fs%W(i,j-1,k)=0.0_WP
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) fs%Uold(i,j-1,k)=0.0_WP
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i,j-1,k-1).eq.1) fs%Wold(i,j-1,k)=0.0_WP
+         !         end do
+         !      end do
+         !   end do
+         !end block no_slip
          
          ! Prepare new staggered viscosity (at n+1)
          call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
@@ -656,6 +672,8 @@ contains
                
                ! Check if there is a wall in y-
                if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) then
+                  ! Start from no-slip
+                  fs%U(i,j-1,k)=0.0_WP
                   ! Define wall normal
                   nw=[0.0_WP,+1.0_WP,0.0_WP]
                   ! Handle U-slip
@@ -668,6 +686,14 @@ contains
                      beta=beta_cst*fs%cfg%dx(i)
                      fs%U(i,j-1,k)=beta*fs%sigma*(mycos-cos_contact_angle)*sum(fs%divu_x(:,i,j,k)*vf%VF(i-1:i,j,k))
                   end if
+               end if
+               
+               ! Check if there is a wall in y-
+               if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i,j-1,k-1).eq.1) then
+                  ! Start from no-slip
+                  fs%W(i,j-1,k)=0.0_WP
+                  ! Define wall normal
+                  nw=[0.0_WP,+1.0_WP,0.0_WP]
                   ! Handle W-slip
                   mysurf=abs(calculateVolume(vf%interface_polygon(1,i,j,k-1)))+abs(calculateVolume(vf%interface_polygon(1,i,j,k)))
                   if (mysurf.gt.0.0_WP.and.fs%wmask(i,j,k).eq.0) then
