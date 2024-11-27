@@ -4,9 +4,9 @@ I/O partition : 1 1 1
 
 # Mesh definition
 X ligament : 2
-Lx : 20  !40
-Ly : 10  !20
-Lz : 10  !20
+Lx : 20  
+Ly : 10  
+Lz : 10  
 nx : 512
 ny : 256
 nz : 256
@@ -18,6 +18,10 @@ Viscosity ratio :      66.7!50
 Density ratio :        657.5!1000
 Target Re_lambda :     45
 Turbulence intensity : 0.019!0.05
+
+# Break-up model
+Transfer drops : .true.
+Film breakup : .true.
 
 # Time integration
 Max timestep size : 1.5e-2
