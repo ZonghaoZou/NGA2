@@ -115,7 +115,7 @@ contains
         real(WP), dimension(:,:)  , allocatable :: dvel
         real(WP), dimension(:,:,:), allocatable :: dmoi
         real(WP), dimension(:)    , allocatable :: drem
-        integer :: n,m,ierr,i,j,k,nmax,iunit,np_start
+        integer :: n,m,ierr,i,j,k,iunit,np_start
         real(WP) :: x,y,z,x0,y0,z0,diam,ecc,lmax,lmid,lmin
         character(len=str_medium) :: filename
         logical :: transfer
@@ -210,9 +210,6 @@ contains
         dvel(n,:)=dvel(n,:)/dvol(n)
         end do
         
-        ! Find the liquid core
-        nmax=maxloc(dvol,dim=1)
-        
         ! Zero out monitoring variables
         this%vof_transfered=0.0_WP
         this%vof_deleted=0.0_WP
@@ -264,9 +261,6 @@ contains
         
         ! Force transfer if drop touches auto-transfer layer
         if (drem(n).gt.0.0_WP) transfer=.true.
-        
-        ! But prevent transfer if that's the core
-        if (n.eq.nmax) transfer=.false.
         
         ! Perform transfer
         if (transfer) then
@@ -363,7 +357,6 @@ contains
         real(WP), dimension(:), allocatable :: fvol
         real(WP), dimension(:), allocatable :: fthc
         real(WP), dimension(:), allocatable :: frem
-
         character(len=str_medium) :: filename
         real(WP), dimension(:), allocatable :: sort_ke
         integer, dimension(:), allocatable ::  sort_id,plist,dispels
@@ -380,7 +373,6 @@ contains
         allocate(fvol(1:this%ccl%nstruct)); fvol=0.0_WP
         allocate(fthc(1:this%ccl%nstruct)); fthc=0.0_WP
         allocate(frem(1:this%ccl%nstruct)); frem=0.0_WP
-
         ! Get local thickness of the film to determine if film should be convereted
         call this%vf%get_thickness()
         ! First pass to accumulate volume and get minimum thickness
@@ -406,9 +398,8 @@ contains
         call MPI_ALLREDUCE(MPI_IN_PLACE,fvol,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
         call MPI_ALLREDUCE(MPI_IN_PLACE,fthc,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
         call MPI_ALLREDUCE(MPI_IN_PLACE,frem,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
-    
-        np_start=this%lp%np_
-        ! Second pass to decide if the film has reached a minimum thickness to be burst
+        np_start=this%lp%np_; this%vof_converted=0.0_WP
+        ! Second pass to decide if the film has reached a minimum thickness to burst
         do n=1,this%ccl_film%nstruct
         ! check minimum thikcness 
         if (fthc(n).le.this%fmin .and. fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
@@ -416,8 +407,6 @@ contains
         else
             cycle
         end if
-
-        this%vof_transfered=0.0_WP
         ! output to confirm
         if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", fthc(n), "and this is id:", n ,"vol is:", fvol(n)
         ! sort cell index based on local film thickness
@@ -447,9 +436,7 @@ contains
                    end if
                 end do
              end do
-
-            sampled=.false.
-            Vt=0.0_WP; Vl=0.0_WP; Vd=0.0_WP
+            sampled=.false.; Vt=0.0_WP; Vl=0.0_WP
             np_old=this%lp%np_
             do m=1,ncell_
                i=this%ccl_film%struct(n)%map(1,sort_id(m))
@@ -458,7 +445,7 @@ contains
                ! Accumulate 
                Vl=Vl+this%vf%VF(i,j,k)*this%vf%cfg%vol(i,j,k)
                if (.not.sampled) then
-                  ! Get a localized cell curvature
+                  ! Get droplet information based on localized curvature
                   curv_sum=0.0_WP; ncurv=0.0_WP
                   do l=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
                      if (getNumberOfVertices(this%vf%interface_polygon(l,i,j,k)).gt.0) then
@@ -496,7 +483,6 @@ contains
                   this%lp%p(this%lp%np_)%dt  =0.0_WP                                     
                   this%lp%p(this%lp%np_)%Acol=0.0_WP                                     
                   this%lp%p(this%lp%np_)%Tcol=0.0_WP  
-
                   ! Update tracked volumes
                   Vl=Vl-Vd
                   Vt=Vt+Vd
@@ -521,20 +507,19 @@ contains
                call this%lp%resize(this%lp%np_)
                ! Add the drop
                this%lp%p(this%lp%np_)%id  =int(3,8)                                   
-               this%lp%p(this%lp%np_)%dt  =0.0_WP                                     
-               this%lp%p(this%lp%np_)%Acol =0.0_WP                                    
-               this%lp%p(this%lp%np_)%Tcol =0.0_WP                                    
                this%lp%p(this%lp%np_)%d   =(6.0_WP*Vl/pi)**(1.0_WP/3.0_WP)            
                this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)                     
                this%lp%p(this%lp%np_)%vel =this%fs%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W) !< Interpolate local cell velocity as drop velocity
                this%lp%p(this%lp%np_)%ind =this%lp%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin]) !< Place the drop in the proper cell for the this%lp%cfg
                this%lp%p(this%lp%np_)%flag=0                                          
+               this%lp%p(this%lp%np_)%dt  =0.0_WP                                     
+               this%lp%p(this%lp%np_)%Acol =0.0_WP                                    
+               this%lp%p(this%lp%np_)%Tcol =0.0_WP                                    
             else ! Some particles were created, make them all larger
                do ip=np_old+1,this%lp%np_
                   this%lp%p(ip)%d=this%lp%p(ip)%d*((Vt+Vl)/Vt)**(1.0_WP/3.0_WP)
                end do
             end if
-  
            end if
         end do
 
@@ -548,7 +533,6 @@ contains
         ! If there is any particle generated
         if (totalnewp .gt. 0) then
             allocate(pinfo_(1:9,1:newp))
-            
             allocate(pinfo(1:9,1:totalnewp))
             allocate(dispels(0:this%vf%cfg%nproc-1))
             ! Get info
@@ -559,7 +543,6 @@ contains
                 pinfo_(6:8,ip-np_start)=this%lp%p(ip)%pos
                 pinfo_(9,ip-np_start)=this%lp%p(ip)%id
             end do
-
             count = 0
             do rank=0,this%vf%cfg%nproc-1
                 dispels(rank) = count
@@ -581,12 +564,9 @@ contains
             end if
             call this%vf%cfg%sync(this%vf%VF)
             call this%vf%clean_irl_and_band()
+            ! Synchronize particles
             call this%lp%sync()
         end if
-
-  
-        ! Synchronize particles
-        call this%lp%sync()
         deallocate(fvol,fthc,frem)
   
         contains
@@ -980,9 +960,12 @@ contains
       create_smesh: block
          use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
          integer :: i,j,k,np,nplane
-         this%smesh=surfmesh(nvar=2,name='plic')
+         this%smesh=surfmesh(nvar=5,name='plic')
          this%smesh%varname(1)='nplane'
          this%smesh%varname(2)='thickness'
+         this%smesh%varname(3)='ccl_film'
+         this%smesh%varname(4)='norm_abs'
+         this%smesh%varname(5)='norm_sig'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh(this%smesh)
          ! Calculate thickness
@@ -998,6 +981,9 @@ contains
                      if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
                         np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
                         this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                        this%smesh%var(3,np)=real(this%ccl_film%id(i,j,k),WP)
+                        this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
+                        this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
                      end if
                   end do
                end do
@@ -1306,9 +1292,10 @@ contains
       ! Transfer VOF into droplets
       call this%ttrans%start() ! Start transfer timer
       if (this%use_drop_transfer) call this%transfer_drops()
-      if (this%use_film_burst) call this%burst_film()
       call this%ttrans%stop() ! Stop transfer timer
-
+      call this%tburst%start() ! Start burst timer
+      if (this%use_film_burst) call this%burst_film()
+      call this%tburst%stop() ! Stop burst timer
       ! Remove VOF at edge of domain
       remove_vof: block
          use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
@@ -1345,6 +1332,9 @@ contains
                         if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
                            np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
                            this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                           this%smesh%var(3,np)=real(this%ccl_film%id(i,j,k),WP)
+                           this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
+                           this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
                         end if
                      end do
                   end do
