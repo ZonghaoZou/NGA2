@@ -78,14 +78,16 @@ module ligament_class
       real(WP) :: dmin             !< Minimum diameter below which transfer is automatic
       real(WP) :: ddel             !< Minimum diameter below which structure is directly deleted
       real(WP) :: emax             !< Maximum eccentricity for transfer
-      real(WP) :: vof_transfered   !< Integral of VOF transfered
+      real(WP) :: vof_tf_drop      !< Integral of VOF transfered by conversion to droplet
       real(WP) :: vof_deleted      !< Integral of VOF deleted
+      integer  :: np_drop
 
       real(WP) :: frp
       real(WP) :: fmin
       real(WP) :: fd0
       real(WP) :: fnumcell
-      real(WP) :: vof_converted
+      real(WP) :: vof_tf_film       !< Integral of VOF transfered by film burst
+      integer  :: np_film
  
       !> Provide a pardata and an event tracker for saving restarts
       type(event)   :: save_evt
@@ -211,12 +213,10 @@ contains
         end do
         
         ! Zero out monitoring variables
-        this%vof_transfered=0.0_WP
+        this%vof_tf_drop=0.0_WP
         this%vof_deleted=0.0_WP
-        this%lp%np_new=0
-        this%lp%vp_new=0.0_WP
-        
-        
+        this%np_drop=0
+
         ! Transfer drops based on our criteria
         do n=1,this%ccl%nstruct
         
@@ -303,7 +303,8 @@ contains
             end do
             
             ! Increment monitoring variables
-            this%vof_transfered=this%vof_transfered+dvol(n)
+            this%vof_tf_drop=this%vof_tf_drop+dvol(n)
+            this%np_drop=this%np_drop+1
             this%lp%np_new=this%lp%np_new+1
             this%lp%vp_new=this%lp%vp_new+dvol(n)
 
@@ -350,7 +351,7 @@ contains
         use vfs_class, only: VFlo,VFhi
         use mathtools, only: Pi,normalize,cross_product
         use random,    only: random_uniform,random_gamma
-        use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_MAX,MPI_IN_PLACE,MPI_INTEGER,MPI_MIN
+        use mpi_f08
         use parallel,  only: MPI_REAL_WP
         implicit none
         class(ligament), intent(inout) :: this
@@ -361,20 +362,22 @@ contains
         real(WP), dimension(:), allocatable :: sort_ke
         integer, dimension(:), allocatable ::  sort_id,plist,dispels
         real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
-        integer :: n,nn,m,i,j,k,ii,jj,kk,ncell_,tmp_id,l,totalnewp,newp,np_start,np_old,count,ierr,ind,ip,iunit,rank
+        integer :: n,nn,m,i,j,k,ii,jj,kk,ncell_,tmp_id,l,totalnewp,np_start,np_old,count,ierr,ind,ip,iunit,rank
         real(WP)  :: tmp_ke,curv_sum,ncurv,Vt,Vl,Vd,alpha,beta
         real(WP), dimension(3) :: nref,tref,sref
         logical :: sampled
 
-        ! Start by performing a CCL
+        ! Start by performing a CCL based on film criteria
         call this%ccl_film%build(make_label,same_label)
         
         ! Allocate film stats arrays
-        allocate(fvol(1:this%ccl%nstruct)); fvol=0.0_WP
-        allocate(fthc(1:this%ccl%nstruct)); fthc=0.0_WP
-        allocate(frem(1:this%ccl%nstruct)); frem=0.0_WP
+        allocate(fvol(1:this%ccl_film%nstruct)); fvol=0.0_WP
+        allocate(fthc(1:this%ccl_film%nstruct)); fthc=5.0_WP*this%cfg%min_meshsize
+        allocate(frem(1:this%ccl_film%nstruct)); frem=0.0_WP
+
         ! Get local thickness of the film to determine if film should be convereted
         call this%vf%get_thickness()
+
         ! First pass to accumulate volume and get minimum thickness
         do n=1,this%ccl_film%nstruct
         ! Loop over cells in structure
@@ -398,11 +401,17 @@ contains
         call MPI_ALLREDUCE(MPI_IN_PLACE,fvol,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
         call MPI_ALLREDUCE(MPI_IN_PLACE,fthc,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
         call MPI_ALLREDUCE(MPI_IN_PLACE,frem,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
-        np_start=this%lp%np_; this%vof_converted=0.0_WP
+
+        ! Zero out monitoring variables
+        this%vof_tf_film=0.0_WP
+        this%np_film=0
+        ! Record initial droplets in each processor for future outputing purpose
+        np_start=this%lp%np_; sampled=.false.; 
         ! Second pass to decide if the film has reached a minimum thickness to burst
         do n=1,this%ccl_film%nstruct
-        ! check minimum thikcness 
+        ! Min thickness below threshold and film volume greater than a threshold 
         if (fthc(n).le.this%fmin .and. fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
+        ! Too close to the end of domain
         else if (frem(n).gt.0.0_WP) then
         else
             cycle
@@ -410,7 +419,7 @@ contains
         ! output to confirm
         if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", fthc(n), "and this is id:", n ,"vol is:", fvol(n)
         ! sort cell index based on local film thickness
-        if (this%ccl_film%struct(n)%n_ .ge.1) then
+        if (this%ccl_film%struct(n)%n_.ge.1) then
             allocate(sort_id(1:this%ccl_film%struct(n)%n_)) 
             allocate(sort_ke(1:this%ccl_film%struct(n)%n_))
             ncell_ = this%ccl_film%struct(n)%n_
@@ -436,7 +445,7 @@ contains
                    end if
                 end do
              end do
-            sampled=.false.; Vt=0.0_WP; Vl=0.0_WP
+            Vt=0.0_WP; Vl=0.0_WP
             np_old=this%lp%np_
             do m=1,ncell_
                i=this%ccl_film%struct(n)%map(1,sort_id(m))
@@ -487,13 +496,15 @@ contains
                   Vl=Vl-Vd
                   Vt=Vt+Vd
                   sampled = .false.
+
+                  ! Increment monitoring variables
+                  this%vof_tf_film=this%vof_tf_film+Vd
+                  this%np_film=this%np_film+1
+                  this%lp%np_new=this%lp%np_new+1
+                  this%lp%vp_new=this%lp%vp_new+Vd
                end if
                ! Remove liquid in that cell
                this%vf%VF(i,j,k)=0.0_WP
-               ! Increment monitoring variables
-               this%vof_converted=this%vof_converted+fvol(n)
-               this%lp%np_new=this%lp%np_new+1
-               this%lp%vp_new=this%lp%vp_new+fvol(n)
             end do
   
             deallocate(sort_id,sort_ke)
@@ -515,24 +526,28 @@ contains
                this%lp%p(this%lp%np_)%dt  =0.0_WP                                     
                this%lp%p(this%lp%np_)%Acol =0.0_WP                                    
                this%lp%p(this%lp%np_)%Tcol =0.0_WP                                    
+               ! Increment monitoring variables
+               this%lp%np_new=this%lp%np_new+1
+               this%np_film=this%np_film+1
             else ! Some particles were created, make them all larger
                do ip=np_old+1,this%lp%np_
                   this%lp%p(ip)%d=this%lp%p(ip)%d*((Vt+Vl)/Vt)**(1.0_WP/3.0_WP)
                end do
             end if
-           end if
-        end do
-
-        ! Prepare information to write to file
+            ! Increment monitoring variables
+            this%vof_tf_film=this%vof_tf_film+Vl
+            this%lp%vp_new=this%lp%vp_new+Vl
+         end if
+         end do
+        ! Gather the number of newly generated particles from each processor due to film burst
         totalnewp = 0
         allocate(plist(0:this%vf%cfg%nproc-1))
         ! Get number of particle generated for each processor
-        newp = this%lp%np_-np_start
-        call MPI_AllGATHER(newp,1,MPI_INTEGER,plist,1,MPI_INTEGER,this%vf%cfg%comm,ierr)
+        call MPI_AllGATHER(this%np_film,1,MPI_INTEGER,plist,1,MPI_INTEGER,this%vf%cfg%comm,ierr)
         totalnewp= sum(plist)
         ! If there is any particle generated
         if (totalnewp .gt. 0) then
-            allocate(pinfo_(1:9,1:newp))
+            allocate(pinfo_(1:9,1:this%np_film))
             allocate(pinfo(1:9,1:totalnewp))
             allocate(dispels(0:this%vf%cfg%nproc-1))
             ! Get info
@@ -543,6 +558,7 @@ contains
                 pinfo_(6:8,ip-np_start)=this%lp%p(ip)%pos
                 pinfo_(9,ip-np_start)=this%lp%p(ip)%id
             end do
+            ! Calculate dispels
             count = 0
             do rank=0,this%vf%cfg%nproc-1
                 dispels(rank) = count
@@ -550,8 +566,9 @@ contains
             end do
             ! Communicate to root
             do i = 1,9
-                call MPI_GATHERV(pinfo_(i,:),newp,MPI_REAL_WP,pinfo(i,:),plist,dispels,MPI_REAL_WP,0,this%vf%cfg%comm)
+                call MPI_GATHERV(pinfo_(i,:),this%np_film,MPI_REAL_WP,pinfo(i,:),plist,dispels,MPI_REAL_WP,0,this%vf%cfg%comm)
             end do
+            !!! Write to droplet list !!!
             if (this%vf%cfg%amRoot)  then
                 filename='spray-all/droplets'
                 open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
@@ -562,6 +579,7 @@ contains
                 end do
                 close(iunit)
             end if
+            ! Synchronize VF fields
             call this%vf%cfg%sync(this%vf%VF)
             call this%vf%clean_irl_and_band()
             ! Synchronize particles
@@ -602,15 +620,13 @@ contains
            logical function make_label(i,j,k)
            implicit none
            integer, intent(in) :: i,j,k
-           if ((this%vf%VF(i,j,k).gt.VFlo).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).gt.0.8_WP)) then
+           if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).ge.0.95_WP)) then
                make_label=.true.
            else
                make_label=.false.
            end if
            end function make_label
-
            
-            
            !> Function that identifies if cell pairs have same label
            logical function same_label(i1,j1,k1,i2,j2,k2)
            implicit none
@@ -696,9 +712,10 @@ contains
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver
          call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
-         this%vf%thin_thld_min=0.0_WP
-         this%vf%flotsam_thld=0.0_WP
-         this%vf%maxcurv_times_mesh=1.0_WP
+         ! this%vf%thin_thld_min=0.0_WP
+         ! this%vf%flotsam_thld=0.0_WP
+         ! this%vf%maxcurv_times_mesh=1.0_WP
+         ! this%vf%smoothing_maxite =1
          ! Initialize the interface to a drop/ligament
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
@@ -814,9 +831,9 @@ contains
             this%ddel=0.2_WP*this%cfg%min_meshsize
             this%dmin=1.5_WP*this%cfg%min_meshsize
             this%dmax=7.0e-1_WP!1.0e-3_WP
-            this%emax=0.8_WP
+            this%emax=0.75_WP
             ! Zero out transfered volume
-            this%vof_transfered=0.0_WP
+            this%vof_tf_drop=0.0_WP
          end if
 
          if (this%use_film_burst) then
@@ -827,7 +844,7 @@ contains
             this%fmin=1.0e-3_WP
             this%fnumcell=100.0_WP
             ! Zero out transfered volume
-            this%vof_converted=0.0_WP
+            this%vof_tf_film=0.0_WP
          end if
 
          if (this%use_drop_transfer.or.this%use_film_burst) then
@@ -995,12 +1012,14 @@ contains
       if (this%use_drop_transfer.or.this%use_film_burst) then
         create_pmesh: block
            integer :: i
-           this%pmesh=partmesh(nvar=1,nvec=1,name='lpt')
+           this%pmesh=partmesh(nvar=2,nvec=1,name='lpt')
            this%pmesh%varname(1)='radius'
+           this%pmesh%varname(2)='id'
            this%pmesh%vecname(1)='velocity'
            call this%lp%update_partmesh(this%pmesh)
            do i=1,this%lp%np_
               this%pmesh%var(1,i)=0.5_WP*this%lp%p(i)%d
+              this%pmesh%var(2,i)=this%lp%p(i)%id
               this%pmesh%vec(:,1,i)=this%lp%p(i)%vel
            end do
         end block create_pmesh
@@ -1046,8 +1065,8 @@ contains
          call this%mfile%add_column(this%vf%SDint,'SD integral')
          call this%mfile%add_column(this%vof_removed,'VOF removed')
          call this%mfile%add_column(this%vof_deleted,'VOF deleted')
-         call this%mfile%add_column(this%vof_transfered,'VOF transfered')
-         call this%mfile%add_column(this%vof_converted,'VOF converted')
+         call this%mfile%add_column(this%vof_tf_drop,'VOF tf drop')
+         call this%mfile%add_column(this%vof_tf_film,'VOF tf film')
          call this%mfile%add_column(this%vof_removed,'VOF removed')
          call this%mfile%add_column(this%vf%flotsam_error,'Flotsam error')
          call this%mfile%add_column(this%vf%thinstruct_error,'Film error')
@@ -1076,6 +1095,8 @@ contains
             call this%pfile%add_column(this%lp%np,'Particle number')
             call this%pfile%add_column(this%lp%vp_tot,'Particle volume')
             call this%pfile%add_column(this%lp%np_new,'Npart new')
+            call this%pfile%add_column(this%np_drop,'Npart new drop')
+            call this%pfile%add_column(this%np_film,'Npart new film')
             call this%pfile%add_column(this%lp%vp_new,'Vpart new')
             call this%pfile%add_column(this%lp%np_out,'Npart removed')
             call this%pfile%add_column(this%lp%vp_out,'Vpart removed')
@@ -1289,13 +1310,18 @@ contains
       call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
       call this%fs%get_div()
       
-      ! Transfer VOF into droplets
-      call this%ttrans%start() ! Start transfer timer
-      if (this%use_drop_transfer) call this%transfer_drops()
-      call this%ttrans%stop() ! Stop transfer timer
-      call this%tburst%start() ! Start burst timer
-      if (this%use_film_burst) call this%burst_film()
-      call this%tburst%stop() ! Stop burst timer
+      ! attempt transfter
+      attempt_transfer : block
+         ! Zero out monitoring variables
+         this%lp%np_new=0
+         this%lp%vp_new=0.0_WP
+         call this%ttrans%start() ! Start transfer timer
+         if (this%use_drop_transfer) call this%transfer_drops()
+         call this%ttrans%stop() ! Stop transfer timer
+         call this%tburst%start() ! Start burst timer
+         if (this%use_film_burst) call this%burst_film()
+         call this%tburst%stop() ! Stop burst timer
+      end block attempt_transfer
       ! Remove VOF at edge of domain
       remove_vof: block
          use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
@@ -1348,6 +1374,7 @@ contains
                call this%lp%update_partmesh(this%pmesh)
                do i=1,this%lp%np_
                   this%pmesh%var(1,i)=0.5_WP*this%lp%p(i)%d
+                  this%pmesh%var(2,i)=this%lp%p(i)%id
                   this%pmesh%vec(:,1,i)=this%lp%p(i)%vel
                end do
             end block update_pmesh 
