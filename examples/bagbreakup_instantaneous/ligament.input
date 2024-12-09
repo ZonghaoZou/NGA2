@@ -21,7 +21,8 @@ Turbulence intensity : 0.019!0.05
 
 # Break-up model
 Transfer drops : .true.
-Film breakup : .true.
+Transfer films : .true.
+Transfer ligaments : .true.
 
 # Time integration
 Max timestep size : 1.5e-2
