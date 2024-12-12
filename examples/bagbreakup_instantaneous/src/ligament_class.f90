@@ -53,6 +53,7 @@ module ligament_class
       !> Work arrays
       real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
       real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
+      real(WP), dimension(:,:,:), allocatable :: thickness,struct_type
       
       !> Iterator for VOF removal
       type(iterator) :: vof_removal_layer  !< Edge of domain where we actively remove VOF
@@ -381,7 +382,7 @@ contains
 
         ! Start by performing a CCL based on film criteria
         call this%ccl_film%build(make_label,same_label)
-        
+        if (this%ccl_film%nstruct.ge.1) then
         ! Allocate film stats arrays
         allocate(fvol(1:this%ccl_film%nstruct)); fvol=0.0_WP
         allocate(fthc(1:this%ccl_film%nstruct)); fthc=HUGE(alpha)!5.0_WP*this%cfg%min_meshsize
@@ -597,11 +598,11 @@ contains
             ! Synchronize particles
             call this%lp%sync()
             ! Integrate monitoring variables 
-            call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_film,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-            call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_film    ,1*this%ccl_film%nstruct,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
+            call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_film,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+            call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_film    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
         end if
         deallocate(fvol,fthc,frem)
-  
+        end if 
         contains
            subroutine bag_droplet_gamma(h,R)
             implicit none
@@ -635,7 +636,7 @@ contains
            logical function make_label(i,j,k)
            implicit none
            integer, intent(in) :: i,j,k
-           if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).ge.0.95_WP)) then
+           if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).ge.0.925_WP)) then
                make_label=.true.
            else
                make_label=.false.
@@ -698,8 +699,12 @@ contains
       allocate(struct_type(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));struct_type=0
       call get_liginfo()
 
+      this%thickness=thickness
+      this%struct_type=struct_type*1.0_WP
       ! Start by performing a CCL based on ligament criteria
       call this%ccl_lig%build(make_label,same_label)
+
+      if (this%ccl_lig%nstruct.ge.1) then
 
       ! Allocate ligament stats arrays
       allocate(lvol(1:this%ccl_lig%nstruct        )); lvol=0.0_WP
@@ -733,7 +738,7 @@ contains
           lpos(n,:)=lpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
           lvel(n,:)=lvel(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[this%Ui(i,j,k),this%Vi(i,j,k),this%Wi(i,j,k)]
           lthc(n)=min(lthc(n),thickness(i,j,k))
-          if (struct_type(i,j,k).eq.2) lper(n)=lper(n)+1.0_WP
+          if (struct_type(i,j,k).eq.1) lper(n)=lper(n)+1.0_WP
           ! Check if drop touches auto-transfer layer
           if (i.ge.this%vf%cfg%imax-this%nlayer.or.&
           &   j.le.this%vf%cfg%jmin+this%nlayer.or.&
@@ -807,13 +812,16 @@ contains
       A=lmoi(n,:,:)
       call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
       d=max(0.0_WP,d)    
+      ! Replace with corrected eigenvectors for future ligament droplet placement
+      lmoi(n,:,:)=A
       ! Get characteristic lengths of drop
       lmax=sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/lvol(n))
       lmid=sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/lvol(n))
       lmin=sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/lvol(n))
       if (lmin.eq.0.0_WP) lmin=lmid ! Handle 2D case
       ! Use max of bounding box and MoI-derived lengths as length
-      llen(n) = max(hypot(hypot(xmax(n)-xmin(n),ymax(n)-ymin(n))**2,zmax(n)-zmin(n)),lmax)
+      !hypot(hypot(xmax(n)-xmin(n),ymax(n)-ymin(n))**2,zmax(n)-zmin(n))
+      llen(n) = max(sqrt((xmax(n)-xmin(n))**2+(ymax(n)-ymin(n))**2+(zmax(n)-zmin(n))**2),lmax)
       end do
 
       ! Zero out monitoring variables
@@ -829,7 +837,8 @@ contains
          cycle
       end if
       ! output to confirm
-      if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),"vol:",lvol(n),"and id:", n
+      if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),&
+      & "how many cells",lnum(n), "vol:",lvol(n),"and id:", n
       ! Assume a cylinder ligament
       Lrim=llen(n)
       Vrim=lvol(n)
@@ -1019,29 +1028,28 @@ contains
           ! Synchronize particles
           call this%lp%sync()
           ! Integrate monitoring variables 
-          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_lig,1*this%ccl_lig%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-          call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_lig    ,1*this%ccl_lig%nstruct,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
+          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_lig,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+          call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_lig    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
       end if
-
+      end if
       contains 
       ! Calculate thickness and struct_type based on moment of inertia
       subroutine get_liginfo()
          implicit none 
          real(WP) :: tmpvol,tmparea
          real(WP), dimension(1:3) :: tmpxvol, tmpL
-         integer :: nneigh
-         nneigh=2 ! Try thickness with a 5 by 5 by 5
+         integer :: nneigh_moi, nneigh_thickness
+         nneigh_moi=2; nneigh_thickness=3
          do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
             do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
                do i=this%vf%cfg%imin_,this%vf%cfg%imax_
-                  tmpvol=0.0_WP; tmparea=0.0_WP; tmpxvol=0.0_WP
-                  ! First pass to accumulate volume, surface area, and position
-                  do kk = k-nneigh,k+nneigh
-                     do jj = j-nneigh,j+nneigh
-                        do ii = i-nneigh,i+nneigh
+                  ! calculate thickness
+                  tmpvol=0.0_WP; tmparea=0.0_WP
+                  do kk = k-nneigh_thickness,k+nneigh_thickness
+                     do jj = j-nneigh_thickness,j+nneigh_thickness
+                        do ii = i-nneigh_thickness,i+nneigh_thickness
                            tmpvol = tmpvol + this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
                            tmparea = tmparea + this%vf%SD(ii,jj,kk)*this%cfg%vol(i,j,k)
-                           tmpxvol = tmpxvol + this%vf%Lbary(:,ii,jj,kk)*this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
                         end do
                      end do
                   end do
@@ -1053,11 +1061,23 @@ contains
                   else
                      thickness(i,j,k) = 3.0_WP*this%cfg%min_meshsize
                   end if
+
+                  ! Calculate moi
+                  tmpvol=0.0_WP; tmpxvol=0.0_WP; A=0.0_WP
+                  ! First pass to accumulate volume, surface area, and position
+                  do kk = k-nneigh_moi,k+nneigh_moi
+                     do jj = j-nneigh_moi,j+nneigh_moi
+                        do ii = i-nneigh_moi,i+nneigh_moi
+                           tmpvol = tmpvol + this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
+                           tmpxvol = tmpxvol + this%vf%Lbary(:,ii,jj,kk)*this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
+                        end do
+                     end do
+                  end do
                   ! Second pass to accumulate moment of inertia
                   tmpxvol = tmpxvol/tmpvol
-                  do kk = k-nneigh,k+nneigh
-                     do jj = j-nneigh,j+nneigh
-                        do ii = i-nneigh,i+nneigh
+                  do kk = k-nneigh_moi,k+nneigh_moi
+                     do jj = j-nneigh_moi,j+nneigh_moi
+                        do ii = i-nneigh_moi,i+nneigh_moi
                            ! Location of film node
                            tmpL = this%vf%Lbary(:,ii,jj,kk) - tmpxvol
                            A(1,1)=A(1,1)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(2)**2+tmpL(3)**2)
@@ -1163,12 +1183,14 @@ contains
          allocate(this%Ui  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Vi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Wi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%thickness  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%struct_type  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       end block allocate_work_arrays
       
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
-         use vfs_class, only: remap,VFlo,VFhi,plicnet,r2pnet
+         use vfs_class, only: remap,VFlo,VFhi,plicnet,r2pnet,r2p
          use mms_geom,  only: cube_refine_vol
          integer :: i,j,k,n,si,sj,sk
          real(WP), dimension(3,8) :: cube_vertex
@@ -1176,7 +1198,7 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2p,transport_method=remap,name='VOF')
          this%vf%thin_thld_min=0.0_WP
          this%vf%flotsam_thld=0.0_WP
          this%vf%maxcurv_times_mesh=1.0_WP
@@ -1459,12 +1481,15 @@ contains
       create_smesh: block
          use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
          integer :: i,j,k,np,nplane
-         this%smesh=surfmesh(nvar=5,name='plic')
+         this%smesh=surfmesh(nvar=8,name='plic')
          this%smesh%varname(1)='nplane'
          this%smesh%varname(2)='thickness'
          this%smesh%varname(3)='ccl_film'
          this%smesh%varname(4)='norm_abs'
          this%smesh%varname(5)='norm_sig'
+         this%smesh%varname(6)='ccl_lig'
+         this%smesh%varname(7)='thickness_unfilt'
+         this%smesh%varname(8)='struct_type'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh(this%smesh)
          ! Calculate thickness
@@ -1483,6 +1508,9 @@ contains
                         this%smesh%var(3,np)=real(this%ccl_film%id(i,j,k),WP)
                         this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
                         this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
+                        this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
+                        this%smesh%var(7,np)=this%thickness(i,j,k)
+                        this%smesh%var(8,np)=this%struct_type(i,j,k)
                      end if
                   end do
                end do
@@ -1693,6 +1721,7 @@ contains
       call this%tpres%reset()
       call this%ttrans%reset()
       call this%tftrans%reset()
+      call this%tltrans%reset()
       call this%tstep%start()
       
       ! Increment time
@@ -1827,7 +1856,6 @@ contains
          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_removed,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
          call this%vf%clean_irl_and_band()
       end block remove_vof
-      
       ! Output to ensight
       if (this%ens_evt%occurs()) then
          ! Update surface mesh
@@ -1850,6 +1878,9 @@ contains
                            this%smesh%var(3,np)=real(this%ccl_film%id(i,j,k),WP)
                            this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
                            this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
+                           this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
+                           this%smesh%var(7,np)=this%thickness(i,j,k)
+                           this%smesh%var(8,np)=this%struct_type(i,j,k)
                         end if
                      end do
                   end do
@@ -1944,7 +1975,6 @@ contains
             if (this%use_drop_transfer.or.this%use_film_transfer.or.this%use_lig_transfer) call this%lp%write(filename='restart/part_'//trim(adjustl(timestamp)))
          end block save_restart
       end if
-      
    end subroutine step
    
    
