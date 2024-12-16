@@ -304,7 +304,7 @@ contains
                 ! Output diameter, velocity, and position
                 write(iunit,*) this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
                 &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
-                &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),'detached',this%lp%p(this%lp%np_)%id  
+                &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
                 ! Close the file
                 close(iunit)
 
@@ -670,6 +670,7 @@ contains
       real(WP), dimension(:,:)  , allocatable :: lvel
       real(WP), dimension(:,:,:), allocatable :: lmoi
       real(WP), dimension(:)    , allocatable :: lrem
+      real(WP), dimension(:)    , allocatable :: lSR
       real(WP), dimension(:)    , allocatable :: xmin,xmax,ymin,ymax,zmin,zmax
       integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_start,np_old,count,ip,rank
       real(WP) :: x,y,z,x0,y0,z0,lmax,lmid,lmin
@@ -677,6 +678,9 @@ contains
       integer, dimension(:), allocatable ::  plist,dispels
       real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
       real(WP) :: Vt,Vl,Vd,minor_radius,diam,Vrim,Lrim
+      real(WP) :: Oh,Trp,Tsr,SR_tmp
+      real(WP), dimension(1:3) :: tangent
+      real(WP), dimension(:,:,:,:), allocatable :: SR
       integer  :: nmain,nsat
       real(WP), dimension(:,:,:), allocatable :: thickness
       integer,  dimension(:,:,:), allocatable :: struct_type
@@ -716,10 +720,12 @@ contains
       allocate(lvel(1:this%ccl_lig%nstruct,1:3    )); lvel=0.0_WP
       allocate(lmoi(1:this%ccl_lig%nstruct,1:3,1:3)); lmoi=0.0_WP
       allocate(lrem(1:this%ccl_lig%nstruct        )); lrem=0.0_WP
+      allocate(lSR(1:this%ccl_lig%nstruct        )); lSR=-HUGE(x)
       allocate(xmin(1:this%ccl_lig%nstruct),xmax(1:this%ccl_lig%nstruct)); xmin=HUGE(x);xmax=-HUGE(x)
       allocate(ymin(1:this%ccl_lig%nstruct),ymax(1:this%ccl_lig%nstruct)); ymin=HUGE(x);ymax=-HUGE(x)
       allocate(zmin(1:this%ccl_lig%nstruct),zmax(1:this%ccl_lig%nstruct)); zmin=HUGE(x);zmax=-HUGE(x)
-
+      allocate(SR(1:6,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));SR=0.0_WP
+      call this%fs%get_strainrate(SR)
       ! First pass to accumulate volume, position, min thickness and ligament percentage
       do n=1,this%ccl_lig%nstruct
       ! Loop over cells in structure
@@ -822,7 +828,21 @@ contains
       ! Use max of bounding box and MoI-derived lengths as length
       !hypot(hypot(xmax(n)-xmin(n),ymax(n)-ymin(n))**2,zmax(n)-zmin(n))
       llen(n) = max(sqrt((xmax(n)-xmin(n))**2+(ymax(n)-ymin(n))**2+(zmax(n)-zmin(n))**2),lmax)
+
+      ! With the tangent direction of the ligament, we can evaluate the strain rate of each cell of the ligament
+      tangent = lmoi(n,:,1)
+      do m=1,this%ccl_lig%struct(n)%n_
+         ! Get cell indices
+         i=this%ccl_lig%struct(n)%map(1,m)
+         j=this%ccl_lig%struct(n)%map(2,m)
+         k=this%ccl_lig%struct(n)%map(3,m)
+         SR_tmp =SR(1,i,j,k)*tangent(1)**2        +SR(2,i,j,k)*tangent(2)**2        +SR(3,i,j,k)*tangent(3)**2 + &
+       & 2.0_WP*(SR(4,i,j,k)*tangent(1)*tangent(2)+SR(5,i,j,k)*tangent(2)*tangent(3)+SR(6,i,j,k)*tangent(1)*tangent(3))
+         lSR(n) = max(lSR(n),abs(SR_tmp))
       end do
+      end do
+      ! Find the maximum tangential strain rate of each ligament
+      call MPI_ALLREDUCE(MPI_IN_PLACE,lSR,1*this%ccl_lig%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
 
       ! Zero out monitoring variables
       this%vof_tf_lig=0.0_WP
@@ -831,14 +851,15 @@ contains
       np_start=this%lp%np_
       ! Perform transfer
       do n=1,this%ccl_lig%nstruct
-      if (lthc(n).le.this%lmin*this%cfg%min_meshsize .and. lvol(n).ge.this%cfg%min_meshsize**3 .and. lper(n).ge.this%lper) then
+      ! Calculate breakup time scale based on inviscid RP instability analysis
+      Trp=2.91258_WP*sqrt(this%fs%rho_l*minor_radius**3/this%fs%sigma)
+      ! Calcuate time scale based on maximum local strainrate
+      Tsr=1.0_WP/lSR(n)
+      if (lthc(n).le.this%lmin*this%cfg%min_meshsize .and. lvol(n).ge.this%cfg%min_meshsize**3 .and. lper(n).ge.this%lper .and. Trp.le.Tsr) then
       else if(lrem(n).gt.0.0_WP) then
       else
          cycle
       end if
-      ! output to confirm
-      if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),&
-      & "how many cells",lnum(n), "vol:",lvol(n),"and id:", n
       ! Assume a cylinder ligament
       Lrim=llen(n)
       Vrim=lvol(n)
@@ -850,9 +871,12 @@ contains
 
       nsat=nmain+1
       diam=(6.0_WP*Vrim/pi/(real(nmain,WP)+this%size_ratio**3*real(nsat,WP)))**(1.0_WP/3.0_WP)
+      ! Oh=this%fs%visc_l/sqrt(this%fs%rho_l*minor_radius*this%fs%sigma)
+      ! output to confirm
+      if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),&
+      & "how many cells",lnum(n), "vol:",lvol(n),"nmain", nmain, "Trp:", Trp, "Tsr:", Tsr, "Trp/Tsr", Trp/Tsr,"and id:", n
       ! ! Restriction on the smallest droplet diameter via breakup
       ! diam=max(diam,this%ldmin)
-
       if (nmain.gt.1) then
          Vd=pi/6.0_WP*(diam**3+(this%size_ratio*diam)**3)
          Vt=0.0_WP; Vl=0.0_WP     
@@ -1059,7 +1083,7 @@ contains
                   else if (tmparea .gt. 0.0_WP) then    
                      thickness(i,j,k) = 2.0_WP*tmpvol/(tmparea+tiny(1.0_WP))
                   else
-                     thickness(i,j,k) = 3.0_WP*this%cfg%min_meshsize
+                     thickness(i,j,k) = 3.5_WP*this%cfg%min_meshsize
                   end if
 
                   ! Calculate moi
@@ -1341,7 +1365,7 @@ contains
             call this%ccl_lig%initialize(pg=this%cfg%pgrid,name='ccl_lig')
             this%ldmin=1.0e-2_WP
             this%dw =0.697_WP
-            this%size_ratio=0.707_WP 
+            this%size_ratio=0.015_WP!0.707_WP 
             this%lmin=1.0_WP
             this%lmake=1.5_WP
             this%lper=0.9_WP
