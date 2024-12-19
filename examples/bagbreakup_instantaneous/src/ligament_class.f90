@@ -678,7 +678,7 @@ contains
       integer, dimension(:), allocatable ::  plist,dispels
       real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
       real(WP) :: Vt,Vl,Vd,minor_radius,diam,Vrim,Lrim
-      real(WP) :: Oh,Trp,Tsr,SR_tmp
+      real(WP) :: Oh,Trp,Lrp,Tsr,SR_tmp
       real(WP), dimension(1:3) :: tangent
       real(WP), dimension(:,:,:,:), allocatable :: SR
       integer  :: nmain,nsat
@@ -851,210 +851,84 @@ contains
       np_start=this%lp%np_
       ! Perform transfer
       do n=1,this%ccl_lig%nstruct
+      ! Assume a cylinder ligament
+      Lrim=llen(n)
+      Vrim=lvol(n)
+      minor_radius=sqrt(Vrim/pi/Lrim)    
+      ! Drop size method from Kim & Moin (2020)
+      nmain=floor(this%dw*Lrim/(twoPi*minor_radius))
       ! Calculate breakup time scale based on inviscid RP instability analysis
       Trp=2.91258_WP*sqrt(this%fs%rho_l*minor_radius**3/this%fs%sigma)
       ! Calcuate time scale based on maximum local strainrate
       Tsr=1.0_WP/lSR(n)
-      if (lthc(n).le.this%lmin*this%cfg%min_meshsize .and. lvol(n).ge.this%cfg%min_meshsize**3 .and. lper(n).ge.this%lper .and. Trp.le.Tsr) then
+      ! Only breakup if minimum thickness is reached, sufficient volume of the ligament, enough of local ligament-like structures,
+      ! local time scale asscoiated with strain rate is on par or bigger than the RP time scale, and its length is longer than the inviscid most unstable wavelength
+      if ((lthc(n).le.this%lmin*this%cfg%min_meshsize).and.(lvol(n).ge.this%cfg%min_meshsize**3).and.(lper(n).ge.this%lper).and.(Trp.le.Tsr).and.(nmain.ge.1)) then
       else if(lrem(n).gt.0.0_WP) then
       else
          cycle
       end if
-      ! Assume a cylinder ligament
-      Lrim=llen(n)
-      Vrim=lvol(n)
-      minor_radius=sqrt(Vrim/pi/Lrim)                  
-      ! Drop size method from Kim & Moin (2011)
-      nmain=floor(this%dw*Lrim/twoPi/minor_radius)
-
-      if (nmain .lt. 1) cycle
-
-      nsat=nmain+1
-      diam=(6.0_WP*Vrim/pi/(real(nmain,WP)+this%size_ratio**3*real(nsat,WP)))**(1.0_WP/3.0_WP)
-      ! Oh=this%fs%visc_l/sqrt(this%fs%rho_l*minor_radius*this%fs%sigma)
-      ! output to confirm
+      
       if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),&
       & "how many cells",lnum(n), "vol:",lvol(n),"nmain", nmain, "Trp:", Trp, "Tsr:", Tsr, "Trp/Tsr", Trp/Tsr,"and id:", n
-      ! ! Restriction on the smallest droplet diameter via breakup
-      ! diam=max(diam,this%ldmin)
-      if (nmain.gt.1) then
-         Vd=pi/6.0_WP*(diam**3+(this%size_ratio*diam)**3)
-         Vt=0.0_WP; Vl=0.0_WP     
-         np_old=this%lp%np_  ! Remember old number of particles
-         do m=1,this%ccl_lig%struct(n)%n_
-            i=this%ccl_lig%struct(n)%map(1,m)
-            j=this%ccl_lig%struct(n)%map(2,m)
-            k=this%ccl_lig%struct(n)%map(3,m)
-            ! Increment liquid volume to remove
-            Vl=Vl+this%vf%VF(i,j,k)*this%vf%cfg%vol(i,j,k)
-            ! Create drops from available liquid volume
-            do while (Vl-Vd.gt.0.0_WP)            
-               ! Increment particle counter
-               this%lp%np_=this%lp%np_+1
-               ! Make room for new drop
-               call this%lp%resize(this%lp%np_)
-               ! Add the drop
-               this%lp%p(this%lp%np_)%id  =int(8,8)                                                                                          
-               this%lp%p(this%lp%np_)%d   =diam                                                                                              
-               this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)                                                                            
-               this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)
-               this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])
-               this%lp%p(this%lp%np_)%flag=0                                                                                                 
-               this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                            
-               this%lp%p(this%lp%np_)%Acol=0.0_WP                                                                                            
-               this%lp%p(this%lp%np_)%Tcol=0.0_WP                                                                                            
-               ! Increment particle counter
-               this%lp%np_=this%lp%np_+1
-               ! Make room for new drop
-               call this%lp%resize(this%lp%np_)
-               ! Add the drop
-               this%lp%p(this%lp%np_)%id  =int(9,8)                                                                                   
-               this%lp%p(this%lp%np_)%d   =this%size_ratio*diam                                                                                       
-               this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)+2.0_WP*diam*lmoi(n,:,1)
-               this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)    
-               this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])    
-               this%lp%p(this%lp%np_)%flag=0                                                                                          
-               this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                     
-               this%lp%p(this%lp%np_)%Acol=0.0_WP                                                                                     
-               this%lp%p(this%lp%np_)%Tcol=0.0_WP                                                                                     
-               ! Update tracked volumes
-               Vl=Vl-Vd
-               Vt=Vt+Vd
-               ! Increment monitoring variables
-               this%vof_tf_lig=this%vof_tf_lig+Vd
-               this%np_lig=this%np_lig+2
-               this%lp%np_new=this%lp%np_new+2
-               this%lp%vp_new=this%lp%vp_new+Vd
-            end do
-            ! Remove liquid in that cell
-            this%vf%VF(i,j,k)=0.0_WP
-         end do
-         ! Based on how many particles were created, decide what to do with left-over volume
-         if (Vl.gt.0.0_WP) then
-            if (Vt.eq.0.0_WP) then ! No particle was created, we need one...
-               ! Increment particle counter
-               this%lp%np_=this%lp%np_+1
-               ! Make room for new drop
-               call this%lp%resize(this%lp%np_)
-               ! Add the drop
-               this%lp%p(this%lp%np_)%id  =int(10,8)                                 
-               this%lp%p(this%lp%np_)%d   =(6.0_WP*Vl/pi)**(1.0_WP/3.0_WP)           
-               this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)                    
-               this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W) 
-               this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin]) 
-               this%lp%p(this%lp%np_)%flag=0                                  
-               this%lp%p(this%lp%np_)%dt  =0.0_WP                                    
-               this%lp%p(this%lp%np_)%Acol=0.0_WP                                    
-               this%lp%p(this%lp%np_)%Tcol=0.0_WP                                    
-               ! Increment monitoring variables
-               this%lp%np_new=this%lp%np_new+1
-               this%np_lig=this%np_lig+1
-            else ! Some particles were created, make them all larger
-               do ip=np_old+1,this%lp%np_
-                  this%lp%p(ip)%d=this%lp%p(ip)%d*((Vt+Vl)/Vt)**(1.0_WP/3.0_WP)
-               end do
-            end if
-            ! Increment monitoring variables
-            this%vof_tf_lig=this%vof_tf_lig+Vl
-            this%lp%vp_new=this%lp%vp_new+Vl
-         end if
+      
+      nsat=nmain+1
+      diam=(6.0_WP*Vrim/pi/(real(nmain,WP)+this%size_ratio**3*real(nsat,WP)))**(1.0_WP/3.0_WP)
 
-      else ! nmain=1
-         if (this%vf%cfg%amRoot) then
+      ! Only the main processor is in charge of creating droplets
+      if (this%cfg%amRoot) then
+         Lrp = twoPi*minor_radius/this%dw
+         filename='spray-all/droplets'
+         open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
+         if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
+         do l=1,nsat+nmain
             ! Increment particle counter
             this%lp%np_=this%lp%np_+1
             ! Make room for new drop
             call this%lp%resize(this%lp%np_)
             ! Add the drop
             this%lp%p(this%lp%np_)%id  =int(11,8)                                                                               
-            this%lp%p(this%lp%np_)%d   =diam                                                                                    
-            this%lp%p(this%lp%np_)%pos =lpos(n,:)
+            if (mod(l,2).eq.1) then
+               this%lp%p(this%lp%np_)%d=diam*this%size_ratio                                                                                    
+            else
+               this%lp%p(this%lp%np_)%d=diam                                                                                    
+            end if
+            this%lp%p(this%lp%np_)%pos =lpos(n,:)+0.5_WP*Lrp*(l-(nmain+1))*lmoi(n,:,1)
             this%lp%p(this%lp%np_)%vel =lvel(n,:)
             this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])     
             this%lp%p(this%lp%np_)%flag=0                                                                                        
             this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                  
             this%lp%p(this%lp%np_)%Acol=0.0_WP                                                                                  
-            this%lp%p(this%lp%np_)%Tcol=0.0_WP                                                                                  
-            do l=1,2
-               ! Increment particle counter
-               this%lp%np_=this%lp%np_+1
-               ! Make room for new drop
-               call this%lp%resize(this%lp%np_)
-               ! Add the drop
-               this%lp%p(this%lp%np_)%id  =int(12,8)                                                                               
-               this%lp%p(this%lp%np_)%d   =this%size_ratio*diam                                                                         
-               this%lp%p(this%lp%np_)%pos =lpos(n,:)+sign(1.0_WP,real(l,WP)-1.5_WP)*2.0_WP*diam*lmoi(n,:,1)
-               this%lp%p(this%lp%np_)%vel =lvel(n,:)
-               this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin]) 
-               this%lp%p(this%lp%np_)%flag=0                                                                                          
-               this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                  
-               this%lp%p(this%lp%np_)%Acol=0.0_WP                                                                                  
-               this%lp%p(this%lp%np_)%Tcol=0.0_WP                                                                                  
-            end do
-            ! Increment monitoring variables
-            this%lp%np_new=this%lp%np_new+3
-            this%np_lig=this%np_lig+3
-            this%vof_tf_lig=this%vof_tf_lig+lvol(n)
-            this%lp%vp_new=this%lp%vp_new+lvol(n)
-         end if
-
+            this%lp%p(this%lp%np_)%Tcol=0.0_WP
+            ! Output diameter, velocity, and position
+            write(iunit,*) this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
+            &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
+            &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
+         end do
+         ! Close the file
+         close(iunit)
+         ! Increment monitoring variables
+         this%lp%np_new=this%lp%np_new+nmain+nsat
+         this%np_lig=this%np_lig+nmain+nsat
+         this%vof_tf_lig=this%vof_tf_lig+lvol(n)
+         this%lp%vp_new=this%lp%vp_new+lvol(n)
+      end if
          ! empty out the VF
          do m=1,this%ccl_lig%struct(n)%n_
             i=this%ccl_lig%struct(n)%map(1,m); j=this%ccl_lig%struct(n)%map(2,m); k=this%ccl_lig%struct(n)%map(3,m)
             this%vf%VF(i,j,k)=0.0_WP
          end do    
-      end if
+      ! end if
       end do
-
-      ! Gather the number of newly generated particles from each processor due to film burst
-      totalnewp = 0
-      allocate(plist(0:this%vf%cfg%nproc-1))
-      ! Get number of particle generated for each processor
-      call MPI_AllGATHER(this%np_lig,1,MPI_INTEGER,plist,1,MPI_INTEGER,this%vf%cfg%comm,ierr)
-      totalnewp= sum(plist)
-      ! If there is any particle generated
-      if (totalnewp .gt. 0) then
-          allocate(pinfo_(1:9,1:this%np_lig))
-          allocate(pinfo(1:9,1:totalnewp))
-          allocate(dispels(0:this%vf%cfg%nproc-1))
-          ! Get info
-          do ip = np_start+1, this%lp%np_
-              pinfo_(1,ip-np_start)=this%lp%p(ip)%d
-              pinfo_(2:4,ip-np_start)=this%lp%p(ip)%vel
-              pinfo_(5,ip-np_start)=norm2(this%lp%p(ip)%vel)
-              pinfo_(6:8,ip-np_start)=this%lp%p(ip)%pos
-              pinfo_(9,ip-np_start)=this%lp%p(ip)%id
-          end do
-          ! Calculate dispels
-          count = 0
-          do rank=0,this%vf%cfg%nproc-1
-              dispels(rank) = count
-              count = count + plist(rank)
-          end do
-          ! Communicate to root
-          do i = 1,9
-              call MPI_GATHERV(pinfo_(i,:),this%np_lig,MPI_REAL_WP,pinfo(i,:),plist,dispels,MPI_REAL_WP,0,this%vf%cfg%comm)
-          end do
-          !!! Write to droplet list !!!
-          if (this%vf%cfg%amRoot)  then
-              filename='spray-all/droplets'
-              open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
-              if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
-              do i = 1,totalnewp
-              write(iunit,'(f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,f24.16,1x,f24.16,1x,f24.16,1x,I2)')pinfo(1,i),pinfo(2,i),pinfo(3,i)&
-              &,pinfo(4,i),pinfo(5,i),pinfo(6,i),pinfo(7,i),pinfo(8,i),INT(pinfo(9,i))
-              end do
-              close(iunit)
-          end if
-          ! Synchronize VF fields
-          call this%vf%cfg%sync(this%vf%VF)
-          call this%vf%clean_irl_and_band()
-          ! Synchronize particles
-          call this%lp%sync()
-          ! Integrate monitoring variables 
-          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_lig,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-          call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_lig    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
-      end if
+      ! Synchronize VF fields
+      call this%vf%cfg%sync(this%vf%VF)
+      call this%vf%clean_irl_and_band()
+      ! Synchronize particles
+      call this%lp%sync()
+      ! Integrate monitoring variables 
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_lig,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_lig    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
+      ! end if
       end if
       contains 
       ! Calculate thickness and struct_type based on moment of inertia
