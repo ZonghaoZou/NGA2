@@ -189,40 +189,40 @@ contains
          fs%rho_Wold=fs%rho_W
          ! assign velocity field
          fs%U=0.0_WP;fs%W=0.0_WP;fs%V=0.0_WP
-         ! fs%Uhat=0.0_WP;fs%What=0.0_WP;fs%Vhat=0.0_WP
-         do k=cfg%kmin_,cfg%kmax_
-            do j=cfg%jmin_,cfg%jmax_
-               do i=cfg%imin_,cfg%imax_
-                  if(vf%VF(i,j,k).gt.VFlo) then
-                     fs%V(i,j  ,k)=-1.0_WP
-                     fs%V(i,j+1,k)=-1.0_WP
-                  else
-                     fs%V(i,j,k)=0.0_WP
-                  end if
-               end do 
-            end do 
-         end do
-         call cfg%sync(fs%V)
-         fs%Uhat=fs%U
-         fs%Vhat=fs%V
-         fs%What=fs%W
-         ! Make the initial velocity field divergence free
-         call fs%update_laplacian()
-         call fs%get_div()
-         fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
-         fs%psolv%sol=0.0_WP
-         call fs%psolv%solve()
-         call fs%shift_p(fs%psolv%sol)
-         ! Correct velocity
-         call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
-         fs%P=fs%P+fs%psolv%sol
-         fs%U=fs%U-time%dt*resU/(fs%rho_U**2)
-         fs%V=fs%V-time%dt*resV/(fs%rho_V**2)
-         fs%W=fs%W-time%dt*resW/(fs%rho_W**2)
-         ! Correct Uhat
-         fs%Uhat=fs%Uhat-(time%dt*resU)/((fs%rho_U+fs%rho_Uold)*fs%rho_U)
-         fs%Vhat=fs%Vhat-(time%dt*resV)/((fs%rho_V+fs%rho_Vold)*fs%rho_V)
-         fs%What=fs%What-(time%dt*resW)/((fs%rho_W+fs%rho_Wold)*fs%rho_W)
+         fs%Uhat=0.0_WP;fs%What=0.0_WP;fs%Vhat=0.0_WP
+         ! do k=cfg%kmin_,cfg%kmax_
+         !    do j=cfg%jmin_,cfg%jmax_
+         !       do i=cfg%imin_,cfg%imax_
+         !          if(vf%VF(i,j,k).gt.VFlo) then
+         !             fs%V(i,j  ,k)=-1.0_WP
+         !             fs%V(i,j+1,k)=-1.0_WP
+         !          else
+         !             fs%V(i,j,k)=0.0_WP
+         !          end if
+         !       end do 
+         !    end do 
+         ! end do
+         ! call cfg%sync(fs%V)
+         ! fs%Uhat=fs%U
+         ! fs%Vhat=fs%V
+         ! fs%What=fs%W
+         ! ! Make the initial velocity field divergence free
+         ! call fs%update_laplacian()
+         ! call fs%get_div()
+         ! fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
+         ! fs%psolv%sol=0.0_WP
+         ! call fs%psolv%solve()
+         ! call fs%shift_p(fs%psolv%sol)
+         ! ! Correct velocity
+         ! call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
+         ! fs%P=fs%P+fs%psolv%sol
+         ! fs%U=fs%U-time%dt*resU/(fs%rho_U**2)
+         ! fs%V=fs%V-time%dt*resV/(fs%rho_V**2)
+         ! fs%W=fs%W-time%dt*resW/(fs%rho_W**2)
+         ! ! Correct Uhat
+         ! fs%Uhat=fs%Uhat-(time%dt*resU)/((fs%rho_U+fs%rho_Uold)*fs%rho_U)
+         ! fs%Vhat=fs%Vhat-(time%dt*resV)/((fs%rho_V+fs%rho_Vold)*fs%rho_V)
+         ! fs%What=fs%What-(time%dt*resW)/((fs%rho_W+fs%rho_Wold)*fs%rho_W)
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%interp_velhat(Uihat,Vihat,Wihat)
       end block create_and_initialize_flow_solver
@@ -284,6 +284,7 @@ contains
          call mfile%add_column(fs%convect_err,'convect_err')
          call mfile%add_column(fs%PdivU,'PdivU')
          call mfile%add_column(fs%UsqCont,'UsqCont')
+         call mfile%add_column(fs%gzgradrhoUhat,'gravity')
          call mfile%add_column(fs%KEcheck,'KEcheck')
 
          call mfile%write()

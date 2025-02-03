@@ -150,7 +150,7 @@ module tpns_class
       
       ! Monitoring quantities
       real(WP) :: Umax,Vmax,Wmax,Pmax,divmax                              !< Maximum velocity, pressure, divergence
-      real(WP) :: dKEdt,KE,convect_err,PdivU,UsqCont,KEcheck
+      real(WP) :: dKEdt,KE,convect_err,PdivU,UsqCont,gzgradrhoUhat,KEcheck
       
    contains
       procedure :: print=>tpns_print                      !< Output solver to the screen
@@ -2685,8 +2685,26 @@ contains
          call this%cfg%integrate_without_VF(stmp,integral=this%UsqCont)
       end block calculate_uucont
 
+       ! Assume y is the gravity direction
+      calculate_gzgradU: block
+         stmp=0.0_WP
+         do k=this%cfg%kmin_,this%cfg%kmax_
+            do j=this%cfg%jmin_,this%cfg%jmax_
+               do i=this%cfg%imin_,this%cfg%imax_
+
+                  stmp(i,j,k)=sum(this%divp_x(:,i,j,k)*(this%rho_U(i:i+1,j,k)**2)*this%Uhat(i:i+1,j,k))+&
+                  &           sum(this%divp_y(:,i,j,k)*(this%rho_V(i,j:j+1,k)**2)*this%Vhat(i,j:j+1,k))+&
+                  &           sum(this%divp_z(:,i,j,k)*(this%rho_W(i,j,k:k+1)**2)*this%What(i,j,k:k+1))
+                  stmp(i,j,k)=-this%gravity(2)*this%cfg%ym(j)*stmp(i,j,k) 
+                  ! stmp(i,j,k)=-this%gravity(2)*this%cfg%ym(j)*sum(this%divp_y(:,i,j,k)*(this%rho_V(i,j:j+1,k)**2)*this%Vhat(i,j:j+1,k))
+               end do
+            end do
+         end do
+         call this%cfg%integrate_without_VF(stmp,integral=this%gzgradrhoUhat)
+      end block calculate_gzgradU 
+
       !sanity check (this should be machine zero)
-      this%KEcheck= this%dKEdt-this%convect_err-this%PdivU+this%UsqCont
+      this%KEcheck= this%dKEdt-this%convect_err-this%PdivU+this%UsqCont-this%gzgradrhoUhat
 
       deallocate(Utmp,Vtmp,Wtmp,stmp,FX,FY,FZ)
    end subroutine get_KE_monitor
