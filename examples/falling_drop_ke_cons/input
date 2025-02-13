@@ -1,0 +1,35 @@
+# Parallelization
+Partition :	8 1 1
+
+# Mesh definition
+Lx :	10
+Ly :	10
+Lz :	0.078125
+nx :	128
+ny :	128
+nz :	1
+
+# Case parameters
+Droplet center : 0 5 0
+Pool depth : 2
+
+# Fluid properties
+Galileo number :  1e5
+Bond number :     1e3
+Density ratio :   1000
+Viscosity ratio : 50
+
+# SGS modeling
+Use SGS model : .true.
+
+# Time integration
+Max timestep size : 1e-2
+Max cfl number :    0.9
+Max time :          10
+
+# Pressure solver
+Pressure tolerance : 1e-5
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 1e-1
