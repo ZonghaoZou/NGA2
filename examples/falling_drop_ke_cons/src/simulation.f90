@@ -33,7 +33,6 @@ module simulation
    
    !> Private work arrays
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
-   real(WP), dimension(:,:,:), allocatable :: resUtmp,resVtmp,resWtmp
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    real(WP), dimension(:,:,:), allocatable :: Uihat,Vihat,Wihat
    
@@ -68,9 +67,6 @@ contains
          allocate(resU (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(resV (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(resW (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(resUtmp(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(resVtmp(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(resWtmp(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Ui   (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Vi   (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Wi   (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
@@ -94,14 +90,14 @@ contains
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
          use mms_geom,  only: cube_refine_vol
-         use vfs_class, only: lvira,VFhi,VFlo,flux_storage,flux
+         use vfs_class, only: plicnet,VFhi,VFlo,flux_storage,flux
          integer :: i,j,k,n,si,sj,sk
          real(WP), dimension(3,8) :: cube_vertex
          real(WP), dimension(3) :: v_cent,a_cent
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver
-         call vf%initialize(cfg=cfg,reconstruction_method=lvira,transport_method=flux,name='VOF')
+         call vf%initialize(cfg=cfg,reconstruction_method=plicnet,transport_method=flux,name='VOF')
          ! Initialize to a droplet and a pool
          center=[0.0_WP,0.05_WP,0.0_WP]
          !radius=0.005_WP
@@ -188,7 +184,7 @@ contains
          fs%rho_Vold=fs%rho_V
          fs%rho_Wold=fs%rho_W
          ! assign velocity field
-         fs%U=0.0_WP;fs%W=0.0_WP;fs%V=0.0_WP
+         fs%U=0.0_WP;fs%V=0.0_WP;fs%W=0.0_WP
          fs%Uhat=0.0_WP;fs%What=0.0_WP;fs%Vhat=0.0_WP
          ! do k=cfg%kmin_,cfg%kmax_
          !    do j=cfg%jmin_,cfg%jmax_
@@ -196,8 +192,6 @@ contains
          !          if(vf%VF(i,j,k).gt.VFlo) then
          !             fs%V(i,j  ,k)=-1.0_WP
          !             fs%V(i,j+1,k)=-1.0_WP
-         !          else
-         !             fs%V(i,j,k)=0.0_WP
          !          end if
          !       end do 
          !    end do 
@@ -209,20 +203,21 @@ contains
          ! ! Make the initial velocity field divergence free
          ! call fs%update_laplacian()
          ! call fs%get_div()
-         ! fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
+         ! fs%psolv%rhs=-fs%cfg%vol*fs%div!/time%dt
          ! fs%psolv%sol=0.0_WP
          ! call fs%psolv%solve()
          ! call fs%shift_p(fs%psolv%sol)
          ! ! Correct velocity
          ! call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
-         ! fs%P=fs%P+fs%psolv%sol
-         ! fs%U=fs%U-time%dt*resU/(fs%rho_U**2)
-         ! fs%V=fs%V-time%dt*resV/(fs%rho_V**2)
-         ! fs%W=fs%W-time%dt*resW/(fs%rho_W**2)
+         ! ! fs%P=fs%P+fs%psolv%sol
+         ! fs%P=0.0_WP
+         ! fs%U=fs%U-resU/(fs%rho_U**2)
+         ! fs%V=fs%V-resV/(fs%rho_V**2)
+         ! fs%W=fs%W-resW/(fs%rho_W**2)
          ! ! Correct Uhat
-         ! fs%Uhat=fs%Uhat-(time%dt*resU)/((fs%rho_U+fs%rho_Uold)*fs%rho_U)
-         ! fs%Vhat=fs%Vhat-(time%dt*resV)/((fs%rho_V+fs%rho_Vold)*fs%rho_V)
-         ! fs%What=fs%What-(time%dt*resW)/((fs%rho_W+fs%rho_Wold)*fs%rho_W)
+         ! fs%Uhat=fs%Uhat-resU/((fs%rho_U+fs%rho_Uold)*fs%rho_U)
+         ! fs%Vhat=fs%Vhat-resV/((fs%rho_V+fs%rho_Vold)*fs%rho_V)
+         ! fs%What=fs%What-resW/((fs%rho_W+fs%rho_Wold)*fs%rho_W)
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%interp_velhat(Uihat,Vihat,Wihat)
       end block create_and_initialize_flow_solver
@@ -327,9 +322,6 @@ contains
          fs%Uold=fs%U; fs%rho_Uold=fs%rho_U 
          fs%Vold=fs%V; fs%rho_Vold=fs%rho_V 
          fs%Wold=fs%W; fs%rho_Wold=fs%rho_W 
-         
-         ! Apply time-varying Dirichlet conditions
-         ! This is where time-dpt Dirichlet would be enforced
 
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
@@ -385,7 +377,7 @@ contains
             call fs%update_laplacian()
             call fs%correct_mfr()
             call fs%get_div()
-            ! call fs%add_surface_tension_jump(dt=time%dt,div=fs%div,vf=vf)
+            call fs%add_surface_tension_jump(dt=time%dt,div=fs%div,vf=vf)
             fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
             fs%psolv%sol=0.0_WP
             call fs%psolv%solve()
