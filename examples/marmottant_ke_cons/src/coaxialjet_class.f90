@@ -303,11 +303,7 @@ contains
          integer :: n,i,j,k
          real(WP) :: r
          ! Initialize density
-         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
-         call this%fs%update_density(rho=this%resU)
-         this%fs%sRHOxold=this%fs%sRHOx
-         this%fs%sRHOyold=this%fs%sRHOy
-         this%fs%sRHOzold=this%fs%sRHOz
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
          ! Read in inflow conditions
          call param_read('Gas height',this%Hg)
          call param_read('Lip height',this%lip,default=0.0_WP)
@@ -331,12 +327,9 @@ contains
          end do
          ! Apply all other boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
-         ! Adjust MFR for global mass balance
-         call this%fs%correct_mfr()
          ! Copy to Umid and make it solenoidal
-         this%fs%Umid=this%fs%U
-         this%fs%Vmid=this%fs%V
-         this%fs%Wmid=this%fs%W
+         call this%fs%get_Umid()
+         call this%fs%correct_mfr()
          call this%fs%update_laplacian()
          call this%fs%get_div()
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div
@@ -344,11 +337,12 @@ contains
          call this%fs%psolv%solve()
          call this%fs%shift_p(this%fs%psolv%sol)
          call this%fs%get_pgrad(this%fs%psolv%sol,this%resU,this%resV,this%resW)
-         this%fs%Umid=this%fs%Umid-this%resU/this%fs%sRHOX**2; this%fs%U=this%fs%Umid
-         this%fs%Vmid=this%fs%Vmid-this%resV/this%fs%sRHOY**2; this%fs%V=this%fs%Vmid
-         this%fs%Wmid=this%fs%Wmid-this%resW/this%fs%sRHOZ**2; this%fs%W=this%fs%Wmid
+         this%fs%Umid=this%fs%Umid-this%resU/this%fs%sRHOX**2
+         this%fs%Vmid=this%fs%Vmid-this%resV/this%fs%sRHOY**2
+         this%fs%Wmid=this%fs%Wmid-this%resW/this%fs%sRHOZ**2
+         call this%fs%get_U()
          ! Calculate cell-centered velocities and divergence
-         call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
+         call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
          call this%fs%get_div()
       end block initialize_velocity
       
@@ -365,10 +359,13 @@ contains
          use string,                only: str_medium
          use filesys,               only: makedir,isdir
          use irl_fortran_interface, only: setNumberOfPlanes,setPlane
+         use tpns_class,            only: bcond
          character(len=str_medium) :: filename
          integer, dimension(3) :: iopartition
          real(WP), dimension(:,:,:), allocatable :: P11,P12,P13,P14
-         integer :: i,j,k
+         integer :: i,j,k,n
+         type(bcond), pointer :: mybc
+         real(WP) :: r
          ! Create event for saving restart files
          this%save_evt=event(this%time,'Restart output')
          call param_read('Restart output period',this%save_evt%tper)
@@ -411,9 +408,6 @@ contains
             ! Recalculate density
             this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
             call this%fs%update_density(rho=this%resU)
-            this%fs%sRHOxold=this%fs%sRHOx
-            this%fs%sRHOyold=this%fs%sRHOy
-            this%fs%sRHOzold=this%fs%sRHOz
             ! Now read in the velocity solver data
             call this%df%pull(name='U',var=this%fs%U)
             call this%df%pull(name='V',var=this%fs%V)
@@ -425,12 +419,23 @@ contains
             call this%df%pull(name='Pjx',var=this%fs%Pjx)
             call this%df%pull(name='Pjy',var=this%fs%Pjy)
             call this%df%pull(name='Pjz',var=this%fs%Pjz)
+            ! Re-apply inflow velocity profile
+            call this%fs%get_bcond('inflow',mybc)
+            do n=1,mybc%itr%no_
+               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+               ! Compute radius
+               r=sqrt(this%cfg%ym(j)**2+this%cfg%zm(k)**2)
+               ! Set liquid Poiseuille profile
+               if (r.le.0.5_WP*this%Dl) this%fs%U(i,j,k)=2.0_WP*this%Ul*(1.0_WP-r/(0.5_WP*this%Dl))**2
+               ! Set gas profile
+               if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-(0.5_WP*this%Dl+this%lip))/this%dg)*erf(((0.5_WP*this%Dl+this%lip+this%Hg)-r)/this%dg)
+            end do
             ! Apply all other boundary conditions
             call this%fs%apply_bcond(this%time%t,this%time%dt)
             ! Adjust MFR for global mass balance
             call this%fs%correct_mfr()
             ! Compute cell-centered velocity
-            call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
+            call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
             ! Compute divergence
             call this%fs%get_div()
             ! Also update time
@@ -656,15 +661,15 @@ contains
          
          ! Prepare new staggered viscosity (at n+1)
          call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
-
+         
          ! Turbulence modeling
          if (this%use_sgs) then
             sgs_modeling: block
                use sgsmodel_class, only: vreman
                integer :: i,j,k
                this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
-               call this%fs%get_gradu(this%gradU)
-               call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
+               call this%fs%get_gradUmid(this%gradU)
+               call this%sgs%get_visc(type=vreman,dt=this%time%dt,rho=this%resU,gradu=this%gradU)
                do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_
                   do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_
                      do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_
@@ -698,17 +703,13 @@ contains
          ! Sync and apply boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
          
-         ! Enforce global conservation wrt Umid
-         call this%fs%correct_mfr()
-         
          ! Poisson equation ================================================
-         ! Compute predictor Umid
-         this%fs%Umid=(this%fs%sRHOX*this%fs%U*this%fs%theta+this%fs%sRHOXold*this%fs%Uold*(1.0_WP-this%fs%theta))/(this%fs%sRHOX*this%fs%theta+this%fs%sRHOXold*(1.0_WP-this%fs%theta))
-         this%fs%Vmid=(this%fs%sRHOY*this%fs%V*this%fs%theta+this%fs%sRHOYold*this%fs%Vold*(1.0_WP-this%fs%theta))/(this%fs%sRHOY*this%fs%theta+this%fs%sRHOYold*(1.0_WP-this%fs%theta))
-         this%fs%Wmid=(this%fs%sRHOZ*this%fs%W*this%fs%theta+this%fs%sRHOZold*this%fs%Wold*(1.0_WP-this%fs%theta))/(this%fs%sRHOZ*this%fs%theta+this%fs%sRHOZold*(1.0_WP-this%fs%theta))
+         ! Compute Umid from U and Uold
+         call this%fs%get_Umid()
          
          ! Solve Poisson equation
          call this%fs%update_laplacian()
+         call this%fs%correct_mfr()
          call this%fs%get_div()
          call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
@@ -716,24 +717,23 @@ contains
          call this%fs%psolv%solve()
          call this%fs%shift_p(this%fs%psolv%sol)
          
-         ! Correct pressure, U, and Umid
+         ! Correct pressure and Umid
          call this%fs%get_pgrad(this%fs%psolv%sol,this%resU,this%resV,this%resW)
          this%fs%P=this%fs%P+this%fs%psolv%sol
-         this%fs%U=this%fs%U-this%time%dt*this%resU/(this%fs%sRHOX**2)
-         this%fs%V=this%fs%V-this%time%dt*this%resV/(this%fs%sRHOY**2)
-         this%fs%W=this%fs%W-this%time%dt*this%resW/(this%fs%sRHOZ**2)
          this%fs%Umid=this%fs%Umid-this%time%dt*this%resU/((this%fs%sRHOX+this%fs%sRHOXold*(1.0_WP-this%fs%theta)/this%fs%theta)*this%fs%sRHOX)
          this%fs%Vmid=this%fs%Vmid-this%time%dt*this%resV/((this%fs%sRHOY+this%fs%sRHOYold*(1.0_WP-this%fs%theta)/this%fs%theta)*this%fs%sRHOY)
          this%fs%Wmid=this%fs%Wmid-this%time%dt*this%resW/((this%fs%sRHOZ+this%fs%sRHOZold*(1.0_WP-this%fs%theta)/this%fs%theta)*this%fs%sRHOZ)
+         
+         ! Regenerate U from Umid and Uold
+         call this%fs%get_U()
          
          ! Increment sub-iteration counter =================================
          this%time%it=this%time%it+1
          
       end do
-
       
       ! Recompute interpolated velocity and divergence
-      call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
+      call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
       call this%fs%get_div()
       
       ! Remove VOF at edge of domain
@@ -753,8 +753,7 @@ contains
          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_removed,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
          call this%vf%clean_irl_and_band()
          ! Also adjust density
-         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
-         call this%fs%update_density(rho=this%resU)
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
       end block remove_vof
       
       ! Output to ensight
