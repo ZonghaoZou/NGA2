@@ -62,9 +62,11 @@ module coaxialjet_class
       logical       :: restarted  !< Is the simulation restarted?
       type(pardata) :: df         !< Pardata object for restart I/O
       type(event)   :: save_evt   !< Event to trigger restart I/O
-
+      
       !> Flow definition
-      real(WP) :: Dl,Hg,Ul,Ug,dg,lip
+      real(WP) :: Dl,Ul,delta_l
+      real(WP) :: Hg,Ug,delta_g
+      real(WP) :: lip
       
    contains
       
@@ -309,10 +311,11 @@ contains
          call param_read('Lip height',this%lip,default=0.0_WP)
          call param_read('Gas velocity',this%Ug)
          call param_read('Liquid velocity',this%Ul)
+         call param_read('Liquid thickness',this%delta_l,default=0.1_WP*this%Dl)
          ! Compute gas vorticity thickness from Marmottant's correlation
-         this%dg=this%Hg*5.6_WP*(this%fs%rho_g*this%Ug*this%Hg/this%fs%visc_g)**(-0.5_WP)
+         this%delta_g=this%Hg*5.6_WP*(this%fs%rho_g*this%Ug*this%Hg/this%fs%visc_g)**(-0.5_WP)
          if (this%fs%cfg%amRoot) then
-            write(message,'("[Gas vorticity thickness] => dg =",es12.5)') this%dg; call log(message)
+            write(message,'("[Gas vorticity thickness] => dg =",es12.5)') this%delta_g; call log(message)
          end if
          ! Apply inflow velocity profile
          call this%fs%get_bcond('inflow',mybc)
@@ -320,10 +323,10 @@ contains
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
             ! Compute radius
             r=sqrt(this%cfg%ym(j)**2+this%cfg%zm(k)**2)
-            ! Set liquid Poiseuille profile
-            if (r.le.0.5_WP*this%Dl) this%fs%U(i,j,k)=2.0_WP*this%Ul*(1.0_WP-r/(0.5_WP*this%Dl))**2
+            ! Set liquid profile
+            if (r.le.0.5_WP*this%Dl) this%fs%U(i,j,k)=this%Ul*erf((0.5_WP*this%Dl-r)/this%delta_l)
             ! Set gas profile
-            if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-(0.5_WP*this%Dl+this%lip))/this%dg)*erf(((0.5_WP*this%Dl+this%lip+this%Hg)-r)/this%dg)
+            if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-(0.5_WP*this%Dl+this%lip))/this%delta_g)*erf(((0.5_WP*this%Dl+this%lip+this%Hg)-r)/this%delta_g)
          end do
          ! Apply all other boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
@@ -425,10 +428,10 @@ contains
                i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
                ! Compute radius
                r=sqrt(this%cfg%ym(j)**2+this%cfg%zm(k)**2)
-               ! Set liquid Poiseuille profile
-               if (r.le.0.5_WP*this%Dl) this%fs%U(i,j,k)=2.0_WP*this%Ul*(1.0_WP-r/(0.5_WP*this%Dl))**2
+               ! Set liquid profile
+               if (r.le.0.5_WP*this%Dl) this%fs%U(i,j,k)=this%Ul*erf((0.5_WP*this%Dl-r)/this%delta_l)
                ! Set gas profile
-               if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-(0.5_WP*this%Dl+this%lip))/this%dg)*erf(((0.5_WP*this%Dl+this%lip+this%Hg)-r)/this%dg)
+               if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-(0.5_WP*this%Dl+this%lip))/this%delta_g)*erf(((0.5_WP*this%Dl+this%lip+this%Hg)-r)/this%delta_g)
             end do
             ! Apply all other boundary conditions
             call this%fs%apply_bcond(this%time%t,this%time%dt)
