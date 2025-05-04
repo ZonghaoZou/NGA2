@@ -1,0 +1,36 @@
+# Parallelization
+Partition :	3 2 1
+
+# Mesh definition
+Ly :	20
+Lx :	20
+Lz :	20
+nx :	128
+ny :	128
+nz :	128
+
+# Case parameters
+Droplet diameter : 4
+Droplet center : 0 0 0
+Axis Length: 1.01 1 1 
+Lambda: 0.01
+
+# Fluid properties
+Gravity :                     0 0 0
+Liquid dynamic viscosity :    1.0e-2
+Gas dynamic viscosity :       1.0e-4
+Liquid density :              1
+Gas density :                 0.01
+Surface tension coefficient : 1.0
+
+# Time integration
+Max timestep size : 1.5e-2
+Max cfl number :    0.9
+Max time :          20
+
+# Pressure solver
+Pressure tolerance : 1e-6
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 3.0e-1

@@ -1,0 +1,2 @@
+This is an implementation of a 2D random solenoidal inviscid test case for the kinetic energy conserving scheme.
+The matlab file reproduces Fig 5

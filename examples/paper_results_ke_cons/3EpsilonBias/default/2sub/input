@@ -1,0 +1,28 @@
+# Parallelization
+Partition :	2 1 1
+
+# Mesh definition
+nx :	16
+
+# Fluid properties
+Gravity :                     0 0 0
+Liquid dynamic viscosity :    0
+Gas dynamic viscosity :       0
+Liquid density :              1000
+Gas density :                 1
+Surface tension coefficient : 0
+
+# Time integration
+Max timestep size : 1.5e-3
+Max cfl number :    0.9
+Max time :          10
+Subiterations:      2
+# Theta parameter
+epsilon : 0
+
+# Pressure solver
+Pressure tolerance : 1e-9
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 1.0e-3

@@ -1,0 +1,3 @@
+This is an implementation of a 2D stationary spurious current test
+Laplace number of 1.2e+2,1.2e+4,and 1.2e+6 are tested on grid resolution of 8,16,32,and 64
+The matlab file reproduces Fig 6

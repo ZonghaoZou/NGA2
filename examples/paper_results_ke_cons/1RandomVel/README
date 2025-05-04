@@ -1,0 +1,3 @@
+This is an implementation of a 2D random solenoidal inviscid test case for the kinetic energy conservative scheme.
+The code for default implementaion is included in 3EpsilonBias
+The matlab script reproduces Fig 1 and Fig 2

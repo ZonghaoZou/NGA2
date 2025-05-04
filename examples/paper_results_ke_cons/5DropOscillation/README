@@ -1,0 +1,2 @@
+This is an implementation of a 3D droplet oscillation case. The initial droplet is slightly perturbed.
+The matlab file reproduces the droplet oscillation frequencies. "DE" and "KE" in the file input indicating default v.s. kientic energy conservative scheme.

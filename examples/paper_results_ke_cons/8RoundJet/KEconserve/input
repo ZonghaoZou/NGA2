@@ -1,0 +1,44 @@
+# Parallelization
+Partition :     52 8 8
+I/O partition : 1 1 1
+
+# Mesh definition
+Lx : 7.5e-2!6e-2
+Ly : 3e-2
+Lz : 3e-2
+nx : 1280!640!256
+ny : 512!256!128
+nz : 512!256!128
+
+# Inflow definition
+Liquid diameter : 7.8e-3
+Liquid velocity : 0.94
+Gas height :      1.7e-3
+Gas velocity :    27
+Lip height :      0.2e-3
+Noise amp : 0.1
+# Fluid properties
+Liquid density :              1000
+Liquid dynamic viscosity :    1.137e-3
+Gas density :                 1.226
+Gas dynamic viscosity :       1.780e-5
+Surface tension coefficient : 0.069
+
+# Subgrid scale modeling
+Use SGS model : .false.
+
+# Restart handling
+Restart output period : 2.5e-3
+Restart from : 
+
+# Ensight output
+Ensight output period : 2.5e-4
+
+# Time integration
+Max timestep size : 9.0e-7
+Max cfl number :    0.9
+Max time :          1e-1
+
+# Pressure solver
+Pressure tolerance : 1e-6
+Pressure iteration : 30

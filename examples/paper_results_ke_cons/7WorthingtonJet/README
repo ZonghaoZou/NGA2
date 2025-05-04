@@ -1,0 +1,7 @@
+This is an implementation of a 3D falling drop cases to investigate the formation of Worthington jet.
+
+Two sets of parameters are tested based on experimental result showcased in Splash formation by spherical drops by Liow Jong Leng
+
+Cases that are run:
+1. Default 6.4 12.8 and 25.6 cells across the droplet for Jet and nojet case without SGS model
+1. KE conserving scheme 6.4 12.8 and 25.6 cells across the droplet for Jet and nojet case with SGS model activated

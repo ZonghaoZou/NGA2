@@ -1,0 +1,6 @@
+This is an implementation of a 2D standing wave test case.
+Arithmetic viscousity is used.
+Various mesh size of 8,16,32,64 have been tested on two cases
+1. Unity density: rho_l=rho_g=1, nu_l=nu_g=0.064720863
+1. Different density: rho_l=1000, rho_g=1, nu_l=nu_g=0.0064720863
+The matlab files reproduce Fig 7 and Fig 8. RMS errors are also generated.
