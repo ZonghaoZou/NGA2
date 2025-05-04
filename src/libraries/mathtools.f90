@@ -12,6 +12,7 @@ module mathtools
    public :: qrotate
    public :: arctan
    public :: eigensolve3
+   public :: quadrature_rule
    
    ! Trigonometric parameters
    real(WP), parameter :: Pi   =3.1415926535897932385_WP
@@ -49,7 +50,7 @@ contains
       real(WP), dimension(:,:), allocatable :: A,B
       integer :: i,j
       ! Allocate the work arrays
-      allocate(A(n,n),B(n,n))
+      allocate(A(n,n))
       ! Form the matrix
       do j=1,n
          do i=1,n
@@ -57,7 +58,7 @@ contains
          end do
       end do
       ! Invert it
-      call inverse_matrix(A,B,n)
+      B=inverse_matrix(A)
       ! Compute metrics
       coeff=0.0_WP
       do j=1,n
@@ -80,7 +81,7 @@ contains
       real(WP), dimension(:,:), allocatable :: A,B
       integer :: i,j
       ! Allocate the work arrays
-      allocate(A(n,n),B(n,n))
+      allocate(A(n,n))
       ! Form the matrix
       do j=1,n
          do i=1,n
@@ -88,7 +89,7 @@ contains
          end do
       end do
       ! Invert it
-      call inverse_matrix(A,B,n)
+      B=inverse_matrix(A)
       ! Compute metrics
       coeff=B(1,:)
       ! Deallocate the work arrays
@@ -96,32 +97,28 @@ contains
    end subroutine fd_itp_build
    
    
-   !> Inverse matrix using Gauss elimination
-   subroutine inverse_matrix(A,B,n)
+   function inverse_matrix(A) result(Ainv)
+      use messager, only: die
       implicit none
-      integer,  intent(in) :: n                    !< Matrix size
-      real(WP), intent(inout), dimension(n,n) :: A   !< Matrix to inverse - it is destroyed
-      real(WP), intent(out),   dimension(n,n) :: B   !< Matrix inverse
-      integer :: i,l
-      ! Zero out inverse
-      B=0.0_WP
-      ! Forward elimination
-      do i=1,n
-         B(i,i)=1.0_WP
-         B(i,:)=B(i,:)/A(i,i)
-         A(i,:)=A(i,:)/A(i,i)
-         do l=i+1,n
-            B(l,:)=B(l,:)-A(l,i)*B(i,:)
-            A(l,:)=A(l,:)-A(l,i)*A(i,:)
-         end do
-      end do
-      ! Backward substitution
-      do i=n,1,-1
-         do l=i+1,n
-            B(i,:)=B(i,:)-A(i,l)*B(l,:)
-         end do
-      end do
-   end subroutine inverse_matrix
+      real(WP), dimension(:,:), intent(in) :: A
+      real(WP), dimension(size(A,1),size(A,2)) :: Ainv
+      real(WP), dimension(size(A,1)) :: work
+      integer , dimension(size(A,1)) :: ipiv
+      integer :: n,info
+      external DGETRF
+      external DGETRI
+      ! Copy A over to Ainv to prevent it from being overwritten by LAPACK
+      Ainv=A
+      ! Store size
+      n=size(A,1)
+      ! Compute LU factorization of matrix A using partial pivoting with row interchanges
+      call DGETRF(n,n,Ainv,n,ipiv,info)
+      ! Error handling
+      if (info.ne.0) call die('[inverse_matrix] Matrix is numerically singular')
+      ! Compute inverse of matrix using LU factorization computed above
+      call DGETRI(n,Ainv,n,ipiv,work,n,info)
+      if (info.ne.0) call die('[inverse_matrix] Matrix inversion failed')
+    end function inverse_matrix
    
    
    ! Returns normalized vector: w=v/|v|
@@ -302,5 +299,46 @@ contains
    
    end subroutine eigensolve3
    
-
+   
+   !> Compute a nth order Clenshaw-Curtis quadrature rule on [0,1]
+   !> int(f(x)) in [0,1] is approximated by sum(w_i*f(x_i)) for i=1..N
+   subroutine quadrature_rule(n,x,w)
+      use messager, only: die
+      implicit none
+      integer, intent(in) :: n
+      real(WP), dimension(n) :: x,w
+      real(WP) :: b,theta
+      integer :: i,j
+      ! Ensure input is usable
+      if (n.lt.1) call die('[quadrature_rule] n must be at least 1')
+      ! Handle n=1 case
+      if (n.eq.1) then
+         x(1)=0.5_WP
+         w(1)=1.0_WP
+         return
+      end if
+      ! Calculate quadrature point in general case
+      do i=1,n
+         x(i)=cos(real(n-i,WP)*Pi/real(n-1,WP))
+      end do
+      x(1)=-1.0_WP; x(n)=+1.0_WP; if (mod(n,2).eq.1) x((n+1)/2)=0.0_WP
+      ! Calculate quadrature weight in general case
+      do i=1,n
+         theta=real(i-1,WP)*Pi/real(n-1,WP)
+         w(i)=1.0_WP
+         do j=1,(n-1)/2
+            if (2*j.eq.n-1) then
+               b=1.0_WP
+            else
+               b=2.0_WP
+            end if            
+            w(i)=w(i)-b*cos(2.0_WP*real(j,WP)*theta)/real(4*j*j-1,WP)
+         end do
+      end do
+      w=w/real(n-1,WP); w(2:n-1)=2.0_WP*w(2:n-1)
+      ! Rescale to be in [0,1]
+      x=0.5_WP*(1.0_WP+x); w=0.5_WP*w
+   end subroutine quadrature_rule
+   
+   
 end module mathtools

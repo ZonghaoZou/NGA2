@@ -26,6 +26,7 @@ module simulation
    real(WP), dimension(:,:,:), allocatable :: RHO,RHOold,RHOmid
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
+   real(WP), dimension(:,:,:), allocatable :: Z,Zold,Zmid
    
 contains
    
@@ -108,6 +109,9 @@ contains
          allocate(FX    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(FY    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(FZ    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Z     (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Zold  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Zmid  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       end block create_work_arrays
       
       ! Initialize time tracker with 2 subiterations
@@ -122,12 +126,23 @@ contains
       
       ! Initialize the problem
       initialize_problem: block
+         integer :: i,j,k
+         real(WP), parameter :: width=0.1_WP
+         real(WP), dimension(3), parameter :: center=[-0.1_WP,0.0_WP,0.0_WP]
          ! Initialize RHO
          RHO=1.0_WP
          ! Initialize velocity
          call set_phipsi(time%tmid)
          call calc_vel()
          call interp_vel()
+         ! Initialize Z
+         do k=cfg%kmino_,cfg%kmaxo_
+            do j=cfg%jmino_,cfg%jmaxo_
+               do i=cfg%imino_,cfg%imaxo_
+                  Z(i,j,k)=exp(-((cfg%xm(i)-center(1))**2+(cfg%ym(j)-center(2))**2+(cfg%zm(k)-center(3))**2)/(2.0_WP*width**2))
+               end do
+            end do
+         end do 
       end block initialize_problem
       
       ! Setup ensight output
@@ -140,6 +155,7 @@ contains
          ! Add variables to output
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
          call ens_out%add_scalar('RHO',RHO)
+         call ens_out%add_scalar('Z',Z)
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
@@ -153,23 +169,23 @@ contains
       use parallel, only: MPI_REAL_WP
       implicit none
       integer :: i,j,k,n,ierr
-      real(WP) :: RHOerr
+      real(WP) :: RHOerr,Zerr
       real(WP), parameter :: RHOcvg=1.0e-9_WP
+      real(WP), parameter ::   Zcvg=1.0e-9_WP
       
       ! Perform time integration
       do while (.not.time%done())
          
-         ! Increment time
+         ! Increment time ==================
          call time%increment()
          
          ! Recalculate velocity ============
          call set_phipsi(time%tmid)
          call calc_vel()
-
+         
          ! Advance RHO =====================
          ! Remember RHOold
          RHOold=RHO
-         
          ! Advance RHO
          n=0
          RHOerr=huge(1.0_WP)
@@ -198,7 +214,41 @@ contains
             call MPI_ALLREDUCE(MPI_IN_PLACE,RHOerr,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
          end do
          if (cfg%amroot) print*,'RHO converged!',n,RHOerr
-
+         
+         ! Advance Z =======================
+         ! Remember Zold
+         Zold=Z
+         ! Set RHOmid
+         RHOmid=0.5_WP*(RHO+RHOold)
+         ! Advance Z
+         n=0
+         Zerr=huge(1.0_WP)
+         do while (Zerr.gt.Zcvg)
+            n=n+1
+            Zmid=(sqrt(RHO)*Z+sqrt(RHOold)*Zold)/(sqrt(RHO)+sqrt(RHOold))
+            do k=cfg%kmin_,cfg%kmax_+1
+               do j=cfg%jmin_,cfg%jmax_+1
+                  do i=cfg%imin_,cfg%imax_+1
+                     FX(i,j,k)=0.5_WP*(RHOmid(i,j,k)+RHOmid(i-1,j,k))*U(i,j,k)*0.5_WP*(Zmid(i,j,k)+Zmid(i-1,j,k))
+                     FY(i,j,k)=0.5_WP*(RHOmid(i,j,k)+RHOmid(i,j-1,k))*V(i,j,k)*0.5_WP*(Zmid(i,j,k)+Zmid(i,j-1,k))
+                     FZ(i,j,k)=0.5_WP*(RHOmid(i,j,k)+RHOmid(i,j,k-1))*W(i,j,k)*0.5_WP*(Zmid(i,j,k)+Zmid(i,j,k-1))
+                  end do
+               end do
+            end do
+            Zmid=Z
+            do k=cfg%kmin_,cfg%kmax_
+               do j=cfg%jmin_,cfg%jmax_
+                  do i=cfg%imin_,cfg%imax_
+                     Z(i,j,k)=(RHOold(i,j,k)*Zold(i,j,k)-time%dt*((FX(i+1,j,k)-FX(i,j,k))/dx+(FY(i,j+1,k)-FY(i,j,k))/dy+(FZ(i,j,k+1)-FZ(i,j,k))/dz))/RHO(i,j,k)
+                  end do
+               end do
+            end do
+            call cfg%sync(Z)
+            Zerr=maxval(abs(Z-Zmid))
+            call MPI_ALLREDUCE(MPI_IN_PLACE,Zerr,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
+         end do
+         if (cfg%amroot) print*,'Z converged!',n,Zerr
+         
          ! Output to ensight
          if (ens_evt%occurs()) then
             call interp_vel()
@@ -213,7 +263,7 @@ contains
    !> Finalize the NGA2 simulation
    subroutine simulation_final
       implicit none
-      deallocate(U,V,W,Ui,Vi,Wi,RHO,RHOmid,RHOold,phi,psi,FX,FY,FZ)
+      deallocate(U,V,W,Ui,Vi,Wi,RHO,RHOmid,RHOold,phi,psi,FX,FY,FZ,Z,Zold,Zmid)
    end subroutine simulation_final
    
    

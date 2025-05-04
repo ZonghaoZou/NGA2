@@ -305,7 +305,7 @@ contains
          integer :: n,i,j,k
          real(WP) :: r
          ! Initialize density
-         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_sRHO(rho=this%resU)
          ! Read in inflow conditions
          call param_read('Gas height',this%Hg)
          call param_read('Lip height',this%lip,default=0.0_WP)
@@ -410,7 +410,7 @@ contains
             call this%vf%get_curvature()
             ! Recalculate density
             this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
-            call this%fs%update_density(rho=this%resU)
+            call this%fs%update_sRHO(rho=this%resU)
             ! Now read in the velocity solver data
             call this%df%pull(name='U',var=this%fs%U)
             call this%df%pull(name='V',var=this%fs%V)
@@ -657,7 +657,7 @@ contains
          end if
          
          ! Update sqrt(face density) and momentum vector
-         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_sRHO(rho=this%resU)
          this%fs%rhoU=this%fs%rho_l*this%vf%UFl(1,:,:,:)+this%fs%rho_g*this%vf%UFg(1,:,:,:)
          this%fs%rhoV=this%fs%rho_l*this%vf%UFl(2,:,:,:)+this%fs%rho_g*this%vf%UFg(2,:,:,:)
          this%fs%rhoW=this%fs%rho_l*this%vf%UFl(3,:,:,:)+this%fs%rho_g*this%vf%UFg(3,:,:,:)
@@ -756,7 +756,7 @@ contains
          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_removed,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
          call this%vf%clean_irl_and_band()
          ! Also adjust density
-         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_sRHO(rho=this%resU)
       end block remove_vof
       
       ! Output to ensight

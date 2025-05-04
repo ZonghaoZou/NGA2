@@ -187,7 +187,7 @@ contains
          use vfs_class, only: VFlo
          integer :: i,j,k
          ! Initialize density
-         resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
+         resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_sRHO(rho=resU)
          ! Initialize velocity
          do k=cfg%kmin_,cfg%kmax_
             do j=cfg%jmin_,cfg%jmax_
@@ -356,7 +356,7 @@ contains
             end if
             
             ! Update sqrt(face density) and momentum vector
-            resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
+            resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_sRHO(rho=resU)
             fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
             fs%rhoV=fs%rho_l*vf%UFl(2,:,:,:)+fs%rho_g*vf%UFg(2,:,:,:)
             fs%rhoW=fs%rho_l*vf%UFl(3,:,:,:)+fs%rho_g*vf%UFg(3,:,:,:)
@@ -459,7 +459,7 @@ contains
             call MPI_ALLREDUCE(MPI_IN_PLACE,vof_removed,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
             call vf%clean_irl_and_band()
             ! Also adjust density
-            resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
+            resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_sRHO(rho=resU)
          end block remove_vof
          
          ! Output to ensight

@@ -20,13 +20,14 @@ module timetracker_class
    type :: timetracker
       logical :: amRoot                                !< Timetracker needs to know who's the boss
       character(len=str_medium) :: name='UNNAMED_TIME' !< Name for timetracker
-      integer  ::  it, itmax                           !< Current and max sub-iteration
+      integer  ::  it, itmax, itmin                    !< Current and max sub-iteration and min sub-iteration
       integer  ::   n,  nmax                           !< Current and max timestep
       real(WP) ::   t,  tmax                           !< Current and max time
       real(WP) ::  dt, dtmax                           !< Current and max timestep size
       real(WP) :: cfl,cflmax                           !< Current and max CFL
       real(WP) ::  wt, wtmax                           !< Current and max wallclock time
       real(WP) :: told,dtold,tmid,dtmid                !< Old/mid time and timestep size
+      real(WP) :: relax                                !< Relaxation coefficient (nominally between 0 and 1, default is 1) to improve convergence of subiterations
       logical  :: print_info=.true.                    !< Should I print time information?
    contains
       procedure :: increment                           !< Default method for incrementing time
@@ -66,7 +67,8 @@ contains
       self%dtold=0.0_WP
       self%tmid =0.0_WP
       self%dtmid=0.0_WP
-      self%it   =1;            self%itmax=1
+      self%it   =1;            self%itmax=1; self%itmin=0
+      self%relax=1.0_WP
    end function constructor
    
    

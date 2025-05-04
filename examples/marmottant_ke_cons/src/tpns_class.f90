@@ -145,7 +145,6 @@ module tpns_class
       
       ! Monitoring quantities
       real(WP) :: Umax,Vmax,Wmax,Pmax,divmax                              !< Maximum velocity, pressure, divergence
-      real(WP) :: dKEdt,KE,convect_err,PdivU,UsqCont,gzgradrhoUhat,KEcheck
       
    contains
       procedure :: print=>tpns_print                      !< Output solver to the screen
@@ -172,7 +171,7 @@ module tpns_class
       procedure :: get_mfr                                !< Calculate outgoing MFR through each bcond
       procedure :: correct_mfr                            !< Correct for mfr mismatch to ensure global conservation
       procedure :: shift_p                                !< Shift pressure to have zero average
-      procedure :: update_density                         !< Calculate sqrt of face density from volume fraction field
+      procedure :: update_sRHO                            !< Calculate sqrt of face density from density
       procedure :: get_Umid                               !< Calculate Umid from U and Uold
       procedure :: get_U                                  !< Calculate U from Umid and Uold
       procedure :: get_viscosity                          !< Calculate viscosity fields from subcell phasic volume data in a vfs object
@@ -1123,7 +1122,7 @@ contains
    end subroutine apply_bcond
    
    
-   !> Explicitly calculate the time derivative of momentum given Umid and rhoU
+   !> Calculate the explicit time derivative of momentum given Umid, rhoU, U, and P
    subroutine get_dmomdt(this,drhoUdt,drhoVdt,drhoWdt)
       implicit none
       class(tpns), intent(inout) :: this
@@ -2035,9 +2034,9 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               my_Umax=max(my_Umax,abs(this%U(i,j,k)))
-               my_Vmax=max(my_Vmax,abs(this%V(i,j,k)))
-               my_Wmax=max(my_Wmax,abs(this%W(i,j,k)))
+               my_Umax=max(my_Umax,abs(this%U(i,j,k)),abs(this%Umid(i,j,k)))
+               my_Vmax=max(my_Vmax,abs(this%V(i,j,k)),abs(this%Vmid(i,j,k)))
+               my_Wmax=max(my_Wmax,abs(this%W(i,j,k)),abs(this%Wmid(i,j,k)))
                if (this%cfg%VF(i,j,k).gt.0.0_WP) my_Pmax  =max(my_Pmax  ,abs(this%P(i,j,k)  ))
                if (this%cfg%VF(i,j,k).gt.0.0_WP) my_divmax=max(my_divmax,abs(this%div(i,j,k)))
             end do
@@ -2054,7 +2053,7 @@ contains
    end subroutine get_max
    
    
-   !> Compute MFR through all bcs => NEEDS TO BE FOCUSED ON Umid
+   !> Compute MFR through all bcs: based on Umid/Vmid/Wmid
    subroutine get_mfr(this)
       use mpi_f08,  only: MPI_SUM,MPI_ALLREDUCE
       use parallel, only: MPI_REAL_WP
@@ -2146,7 +2145,7 @@ contains
    end subroutine get_mfr
    
    
-   !> Correct MFR through correctable bconds => NEEDS TO BE FOCUSED ON Umid
+   !> Correct MFR through correctable bconds: corrects Umid/Vmid/Wmid
    subroutine correct_mfr(this,src)
       use mpi_f08, only: MPI_SUM
       implicit none
@@ -2237,13 +2236,7 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resU !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resV !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resW !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      real(WP), dimension(:,:,:), allocatable :: FX
-      real(WP), dimension(:,:,:), allocatable :: FY
-      real(WP), dimension(:,:,:), allocatable :: FZ
-      real(WP), dimension(:,:,:), allocatable :: Utmp
-      real(WP), dimension(:,:,:), allocatable :: Vtmp
-      real(WP), dimension(:,:,:), allocatable :: Wtmp
-      integer :: i,j,k,ii,jj,kk
+      integer :: i,j,k
       real(WP) :: rhoUp,rhoUm,rhoVp,rhoVm,rhoWp,rhoWm
       
       ! If no implicit solver available, just divide by density and return
@@ -2409,9 +2402,9 @@ contains
       
    end subroutine solve_implicit
    
-
-   !> Update density from rho field at n+1
-   subroutine update_density(this,rho)
+   
+   !> Compute sRHOX/Y/Z from passed rho field
+   subroutine update_sRHO(this,rho)
       implicit none
       class(tpns), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: rho !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -2446,7 +2439,7 @@ contains
       call this%cfg%sync(this%sRHOX)
       call this%cfg%sync(this%sRHOY)
       call this%cfg%sync(this%sRHOZ)
-   end subroutine update_density
+   end subroutine update_sRHO
    
    
    !> Get Umid from U and Uold
