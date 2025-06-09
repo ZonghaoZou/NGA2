@@ -6,14 +6,19 @@ nx : 128
 ny : 128
 nz : 128
 
+# Fluid definition
+GammaL :    1.4
+PLinf :     0
+GammaG :    1.4
+PGinf :     0
+
 # Flow definition
-Gamma :    1.4
 Mach :     1.25
 Reynolds : 1600
 Prandtl :  0.71
 
 # Time integration
-Max timestep size : 0.05
+Max timestep size : 0.025
 Max cfl number :    10.0
 Max time :          10
 

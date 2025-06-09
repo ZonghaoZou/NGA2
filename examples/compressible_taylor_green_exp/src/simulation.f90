@@ -26,14 +26,15 @@ module simulation
    
    !> Monitoring of conservation
    type(monitor) :: consfile
-   real(WP) :: RHOKint,RHOSint,DilDiss,SolDiss
+   real(WP) :: RHOKint!,RHOSint,DilDiss,SolDiss
    
    !> Private work arrays
    real(WP), dimension(:,:,:,:,:), allocatable :: dQdt
    real(WP), dimension(:,:,:)    , allocatable :: Ui,Vi,Wi,C,Ma
    
    !> Equation of state and flow conditions
-   real(WP) :: Gamma,Mach,Reynolds,Prandtl
+   real(WP) :: Mach,Reynolds,Prandtl
+   real(WP) :: GammaL,PLinf,CvL,GammaG,PGinf,CvG
    
    !> Drop radius and center
    real(WP) :: radius=1.0_WP
@@ -43,13 +44,45 @@ contains
    
    
    !> Sutherland's law for viscosity as a function of temperature
-   subroutine get_visc()
+   !subroutine get_visc()
+   !   implicit none
+   !   integer :: i,j,k
+   !   do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
+   !      fs%visc(i,j,k)=Reynolds**(-1.0_WP)*(1.4042_WP*fs%T(i,j,k)**1.5_WP)/(fs%T(i,j,k)+0.4042_WP)
+   !   end do; end do; end do
+   !end subroutine get_visc
+   
+   
+   !> P=EOS(RHO,E) for liquid
+   real(WP) function get_PL(RHOL,EL)
       implicit none
-      integer :: i,j,k
-      do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-         !fs%visc(i,j,k)=Reynolds**(-1.0_WP)*(1.4042_WP*(fs%E(i,j,k)/fs%Cv)**1.5_WP)/(fs%E(i,j,k)/fs%Cv+0.4042_WP)
-      end do; end do; end do
-   end subroutine get_visc
+      real(WP), intent(in) :: RHOL,EL
+      get_PL=RHOL*EL*(GammaL-1.0_WP)+PLinf
+   end function get_PL
+   
+   
+   !> T=f(E) for liquid
+   real(WP) function get_TL(EL)
+      implicit none
+      real(WP), intent(in) :: EL
+      get_TL=EL/CvL
+   end function get_TL
+   
+   
+   !> P=EOS(RHO,E) for gas
+   real(WP) function get_PG(RHOG,EG)
+      implicit none
+      real(WP), intent(in) :: RHOG,EG
+      get_PG=RHOG*EG*(GammaG-1.0_WP)+PGinf
+   end function get_PG
+   
+   
+   !> T=f(E) for gas
+   real(WP) function get_TG(EG)
+      implicit none
+      real(WP), intent(in) :: EG
+      get_TG=EG/CvG
+   end function get_TG
    
    
    !> Post-process conservation properties
@@ -59,62 +92,42 @@ contains
       real(WP), dimension(:,:,:), allocatable :: tmp,XY,YZ,ZX
       ! Allocate temporary storage
       allocate(tmp(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      allocate(XY (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      allocate(YZ (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      allocate(ZX (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      !allocate(XY (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      !allocate(YZ (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      !allocate(ZX (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       ! Compute kinetic energy
-      do k=cfg%kmin_,cfg%kmax_
-         do j=cfg%jmin_,cfg%jmax_
-            do i=cfg%imin_,cfg%imax_
-               !tmp(i,j,k)=0.25_WP*(sum(fs%RHOU(i:i+1,j,k)*fs%U(i:i+1,j,k))+sum(fs%RHOV(i,j:j+1,k)*fs%V(i,j:j+1,k))+sum(fs%RHOW(i,j,k:k+1)*fs%W(i,j,k:k+1)))
-            end do
-         end do
-      end do
+      do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
+         tmp(i,j,k)=0.25_WP*(sum(fs%Q(i:i+1,j,k,5)*fs%U(i:i+1,j,k))+sum(fs%Q(i,j:j+1,k,6)*fs%V(i,j:j+1,k))+sum(fs%Q(i,j,k:k+1,7)*fs%W(i,j,k:k+1)))
+      end do; end do; end do
       call cfg%integrate(tmp,integral=RHOKint)
       ! Compute entropy
-      do k=cfg%kmin_,cfg%kmax_
-         do j=cfg%jmin_,cfg%jmax_
-            do i=cfg%imin_,cfg%imax_
-               !tmp(i,j,k)=fs%Cv*log(fs%P(i,j,k)/fs%RHO(i,j,k)**Gamma)
-            end do
-         end do
-      end do
-      call cfg%integrate(tmp,integral=RHOSint)
+      !do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
+      !   tmp(i,j,k)=fs%Cv*log(fs%P(i,j,k)/fs%RHO(i,j,k)**Gamma)
+      !end do; end do; end do
+      !call cfg%integrate(tmp,integral=RHOSint)
       ! Calculate dilatational dissipation
-      do k=cfg%kmin_,cfg%kmax_
-         do j=cfg%jmin_,cfg%jmax_
-            do i=cfg%imin_,cfg%imax_
-               !tmp(i,j,k)=(fs%beta(i,j,k)+4.0_WP/3.0_WP*fs%visc(i,j,k))*(fs%dxi*(fs%U(i+1,j,k)-fs%U(i,j,k))+fs%dyi*(fs%V(i,j+1,k)-fs%V(i,j,k))+fs%dzi*(fs%W(i,j,k+1)-fs%W(i,j,k)))**2
-            end do
-         end do
-      end do
-      call cfg%integrate(tmp,integral=DilDiss)
+      !do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
+      !   tmp(i,j,k)=(fs%beta(i,j,k)+4.0_WP/3.0_WP*fs%visc(i,j,k))*(fs%dxi*(fs%U(i+1,j,k)-fs%U(i,j,k))+fs%dyi*(fs%V(i,j+1,k)-fs%V(i,j,k))+fs%dzi*(fs%W(i,j,k+1)-fs%W(i,j,k)))**2
+      !end do; end do; end do
+      !call cfg%integrate(tmp,integral=DilDiss)
       ! Calculate solenoidal dissipation
-      do k=cfg%kmin_,cfg%kmax_+1
-         do j=cfg%jmin_,cfg%jmax_+1
-            do i=cfg%imin_,cfg%imax_+1
-               ! (dvdx-dudy)^2 at xy edge
-               XY(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j-1:j,k))*(fs%dxi*(fs%V(i,j,k)-fs%V(i-1,j,k))-fs%dyi*(fs%U(i,j,k)-fs%U(i,j-1,k)))**2
-               ! (dwdy-dvdz)^2 at yz edge
-               YZ(i,j,k)=0.25_WP*sum(fs%visc(i,j-1:j,k-1:k))*(fs%dyi*(fs%W(i,j,k)-fs%W(i,j-1,k))-fs%dzi*(fs%V(i,j,k)-fs%V(i,j,k-1)))**2
-               ! (dudz-dwdx)^2 at zx edge
-               ZX(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j,k-1:k))*(fs%dzi*(fs%U(i,j,k)-fs%U(i,j,k-1))-fs%dxi*(fs%W(i,j,k)-fs%W(i-1,j,k)))**2
-            end do
-         end do
-      end do
-      do k=cfg%kmin_,cfg%kmax_
-         do j=cfg%jmin_,cfg%jmax_
-            do i=cfg%imin_,cfg%imax_
-               tmp(i,j,k)=0.25_WP*sum(XY(i:i+1,j:j+1,k))+0.25_WP*sum(YZ(i,j:j+1,k:k+1))+0.25_WP*sum(ZX(i:i+1,j,k:k+1))
-            end do
-         end do
-      end do
-      call cfg%integrate(tmp,integral=SolDiss)
+      !do k=cfg%kmin_,cfg%kmax_+1; do j=cfg%jmin_,cfg%jmax_+1; do i=cfg%imin_,cfg%imax_+1
+         ! (dvdx-dudy)^2 at xy edge
+      !   XY(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j-1:j,k))*(fs%dxi*(fs%V(i,j,k)-fs%V(i-1,j,k))-fs%dyi*(fs%U(i,j,k)-fs%U(i,j-1,k)))**2
+         ! (dwdy-dvdz)^2 at yz edge
+      !   YZ(i,j,k)=0.25_WP*sum(fs%visc(i,j-1:j,k-1:k))*(fs%dyi*(fs%W(i,j,k)-fs%W(i,j-1,k))-fs%dzi*(fs%V(i,j,k)-fs%V(i,j,k-1)))**2
+      !   ! (dudz-dwdx)^2 at zx edge
+      !   ZX(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j,k-1:k))*(fs%dzi*(fs%U(i,j,k)-fs%U(i,j,k-1))-fs%dxi*(fs%W(i,j,k)-fs%W(i-1,j,k)))**2
+      !end do; end do; end do
+      !do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
+      !   tmp(i,j,k)=0.25_WP*sum(XY(i:i+1,j:j+1,k))+0.25_WP*sum(YZ(i,j:j+1,k:k+1))+0.25_WP*sum(ZX(i:i+1,j,k:k+1))
+      !end do; end do; end do
+      !call cfg%integrate(tmp,integral=SolDiss)
       ! Deallocate storage
-      deallocate(tmp,XY,YZ,ZX)
+      deallocate(tmp)!,XY,YZ,ZX)
    end subroutine analyze_conservation
-
-
+   
+   
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
@@ -122,10 +135,14 @@ contains
       
       ! Prepare EoS and flow conditions
       initialize_eos: block
-         call param_read('Gamma'   ,gamma   )
+         call param_read('GammaL'  ,GammaL  )
+         call param_read('PLinf'   ,PLinf   )
+         call param_read('GammaG'  ,GammaG  )
          call param_read('Mach'    ,Mach    )
          call param_read('Reynolds',Reynolds)
          call param_read('Prandtl' ,Prandtl )
+         CvL=1.0_WP/(GammaL*(GammaL-1.0_WP)*Mach**2)
+         CvG=1.0_WP/(GammaG*(GammaG-1.0_WP)*Mach**2)
       end block initialize_eos
       
       ! Initialize time tracker
@@ -140,7 +157,6 @@ contains
       ! Create a fast compressible flow solver
       create_velocity_solver: block
          call fs%initialize(cfg=cfg,name='Compressible NS')
-         fs%Cv=1.0_WP/(Gamma*(Gamma-1.0_WP)*Mach**2) ! Specific heat corresponding to normalized temperature
       end block create_velocity_solver
       
       ! Allocate work arrays
@@ -190,33 +206,38 @@ contains
          do k=cfg%kmino_,cfg%kmaxo_
             do j=cfg%jmino_,cfg%jmaxo_
                do i=cfg%imino_,cfg%imaxo_
-                  !fs%P  (i,j,k)=1.0_WP/(Gamma*Mach**2)!+(cos(2.0_WP*fs%cfg%xm(i))+cos(2.0_WP*fs%cfg%ym(j)))*(cos(2.0_WP*fs%cfg%zm(k))+2.0_WP)/16.0_WP
-                  !fs%E  (i,j,k)=1.0_WP/((Gamma-1.0_WP)*Gamma*Mach**2)
-                  !fs%RHO(i,j,k)=fs%P(i,j,k)/(fs%E(i,j,k)*(Gamma-1.0_WP))
-                  fs%U  (i,j,k)=1.0_WP!+sin(fs%cfg%x (i))*cos(fs%cfg%ym(j))*cos(fs%cfg%zm(k))
-                  fs%V  (i,j,k)=0.0_WP!-cos(fs%cfg%xm(i))*sin(fs%cfg%y (j))*cos(fs%cfg%zm(k))
-                  fs%W  (i,j,k)=0.0_WP
+                  ! Mixture velocity
+                  fs%U(i,j,k)=1.0_WP
+                  fs%V(i,j,k)=0.0_WP
+                  fs%W(i,j,k)=0.0_WP
+                  ! Liquid variables
                   if (fs%VF(i,j,k).gt.0.0_WP) then
-                     fs%RHOL(i,j,k)=1.0_WP+(cos(2.0_WP*fs%cfg%xm(i))+cos(2.0_WP*fs%cfg%ym(j)))*(cos(2.0_WP*fs%cfg%zm(k))+2.0_WP)/16.0_WP
-                     fs%EL(i,j,k)=1.0_WP+(cos(2.0_WP*fs%cfg%xm(i))+cos(2.0_WP*fs%cfg%ym(j)))*(cos(2.0_WP*fs%cfg%zm(k))+2.0_WP)/16.0_WP
+                     fs%PL  (i,j,k)=1.0_WP/(GammaG*Mach**2)
+                     fs%RHOL(i,j,k)=1.0_WP
+                     fs%EL  (i,j,k)=(fs%PL(i,j,k)-PLinf)/(fs%RHOL(i,j,k)*(GammaL-1.0_WP))
                   end if
+                  ! Gas variables
                   if (fs%VF(i,j,k).lt.1.0_WP) then
-                     fs%RHOG(i,j,k)=1.0_WP+(cos(2.0_WP*fs%cfg%xm(i))+cos(2.0_WP*fs%cfg%ym(j)))*(cos(2.0_WP*fs%cfg%zm(k))+2.0_WP)/16.0_WP
-                     fs%EG(i,j,k)=1.0_WP+(cos(2.0_WP*fs%cfg%xm(i))+cos(2.0_WP*fs%cfg%ym(j)))*(cos(2.0_WP*fs%cfg%zm(k))+2.0_WP)/16.0_WP
+                     fs%PG  (i,j,k)=1.0_WP/(GammaG*Mach**2)
+                     fs%RHOG(i,j,k)=1.0_WP
+                     fs%EG  (i,j,k)=(fs%PG(i,j,k)-PGinf)/(fs%RHOG(i,j,k)*(GammaG-1.0_WP))
                   end if
                end do
             end do
          end do
          ! Initialize conserved variables
-         !call fs%get_momentum(); fs%RHOE=fs%RHO*fs%E; fs%T=fs%E/fs%Cv
          fs%Q(:,:,:,1)=        fs%VF *fs%RHOL
          fs%Q(:,:,:,2)=(1.0_WP-fs%VF)*fs%RHOG
-         fs%Q(:,:,:,3)=fs%Q(:,:,:,1)*fs%EL
-         fs%Q(:,:,:,4)=fs%Q(:,:,:,2)*fs%EG
-         ! Interpolate velocity, compute speed of sound and local Mach number
+         fs%Q(:,:,:,3)= fs%Q(:,:,:,1)*fs%EL
+         fs%Q(:,:,:,4)= fs%Q(:,:,:,2)*fs%EG
+         call fs%get_momentum()
+         ! Rebuild primitive variables
+         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         ! Interpolate velocity
          call fs%interp_vel(Ui,Vi,Wi)
-         C=0.0_WP!sqrt(Gamma*(Gamma-1.0_WP)*fs%E)
-         Ma=0.0_WP!sqrt((Ui**2+Vi**2+Wi**2))/C
+         ! Compute speed of sound and local Mach number
+         C=sqrt(GammaG*(GammaG-1.0_WP)*fs%E)
+         Ma=sqrt((Ui**2+Vi**2+Wi**2))/C
       end block initial_conditions
       
       ! Add Ensight output
@@ -233,10 +254,9 @@ contains
          call ens_out%add_scalar('RHOg',fs%RHOG)
          call ens_out%add_scalar('El',fs%EL)
          call ens_out%add_scalar('Eg',fs%EG)
-         !call ens_out%add_scalar('density' ,fs%RHO)
-         !call ens_out%add_scalar('energy'  ,fs%E)
-         !call ens_out%add_scalar('pressure',fs%P)
-         !call ens_out%add_scalar('Mach'    ,Ma)
+         call ens_out%add_scalar('Pl',fs%PL)
+         call ens_out%add_scalar('Pg',fs%PG)
+         call ens_out%add_scalar('Mach',Ma)
          ! Create surface mesh for PLIC
          smesh=surfmesh(nvar=0,name='plic')
          call fs%update_surfmesh(smesh)
@@ -250,7 +270,7 @@ contains
          ! Prepare some info about fields
          call fs%get_cfl(dt=time%dt,C=C,cfl=time%cfl)
          call fs%get_info()
-         !call analyze_conservation()
+         call analyze_conservation()
          ! Create simulation monitor
          mfile=monitor(fs%cfg%amRoot,'simulation')
          call mfile%add_column(time%n,'Timestep number')
@@ -260,20 +280,24 @@ contains
          call mfile%add_column(fs%Umax,'Umax')
          call mfile%add_column(fs%Vmax,'Vmax')
          call mfile%add_column(fs%Wmax,'Wmax')
-         !call mfile%add_column(fs%Pmax,'Pmax')
-         !call mfile%add_column(fs%Pmin,'Pmin')
-         !call mfile%add_column(fs%Emax,'Emax')
-         !call mfile%add_column(fs%Emin,'Emin')
          call mfile%add_column(fs%RHOLmax,'max(RHOL)')
          call mfile%add_column(fs%RHOLmin,'min(RHOL)')
+         call mfile%add_column(fs%ELmax  ,'max(EL)'  )
+         call mfile%add_column(fs%ELmin  ,'min(EL)'  )
+         call mfile%add_column(fs%PLmax  ,'max(PL)'  )
+         call mfile%add_column(fs%PLmin  ,'min(PL)'  )
+         call mfile%add_column(fs%TLmax  ,'max(TL)'  )
+         call mfile%add_column(fs%TLmin  ,'min(TL)'  )
          call mfile%add_column(fs%RHOGmax,'max(RHOG)')
          call mfile%add_column(fs%RHOGmin,'min(RHOG)')
-         call mfile%add_column(fs%ELmax,'max(EL)')
-         call mfile%add_column(fs%ELmin,'min(EL)')
-         call mfile%add_column(fs%EGmax,'max(EG)')
-         call mfile%add_column(fs%EGmin,'min(EG)')
-         call mfile%add_column(fs%VFmax,'VFmax')
-         call mfile%add_column(fs%VFmin,'VFmin')
+         call mfile%add_column(fs%EGmax  ,'max(EG)'  )
+         call mfile%add_column(fs%EGmin  ,'min(EG)'  )
+         call mfile%add_column(fs%PGmax  ,'max(PG)'  )
+         call mfile%add_column(fs%PGmin  ,'min(PG)'  )
+         call mfile%add_column(fs%TGmax  ,'max(TG)'  )
+         call mfile%add_column(fs%TGmin  ,'min(TG)'  )
+         call mfile%add_column(fs%VFmax  ,'VFmax'    )
+         call mfile%add_column(fs%VFmin  ,'VFmin'    )
          call mfile%write()
          ! Create CFL monitor
          cflfile=monitor(fs%cfg%amRoot,'cfl')
@@ -298,12 +322,10 @@ contains
          call consfile%add_column(fs%Qint(2),'Gas mass')
          call consfile%add_column(fs%Qint(3),'Liquid energy')
          call consfile%add_column(fs%Qint(4),'Gas energy')
-         !call consfile%add_column(fs%RHOint ,'Mass'  )
-         !call consfile%add_column(fs%RHOUint,'U Momentum')
-         !call consfile%add_column(fs%RHOVint,'V Momentum')
-         !call consfile%add_column(fs%RHOWint,'W Momentum')
-         !call consfile%add_column(fs%RHOEint,'Internal energy')
-         !call consfile%add_column(   RHOKint,'Kinetic energy')
+         call consfile%add_column(fs%Qint(5),'U Momentum')
+         call consfile%add_column(fs%Qint(6),'V Momentum')
+         call consfile%add_column(fs%Qint(7),'W Momentum')
+         call consfile%add_column(RHOKint,'Kinetic energy')
          !call consfile%add_column(   RHOSint,'Entropy')
          !call consfile%add_column(DilDiss,'Dilatation dissipation')
          !call consfile%add_column(SolDiss,'Solenoidal dissipation')
@@ -342,7 +364,9 @@ contains
          fs%RHOGold=fs%RHOG; fs%EGold=fs%EG
          
          ! Remember volume moments and interface
-         fs%VFold=fs%VF; fs%BLold=fs%BL; fs%BGold=fs%BG
+         fs%VFold=fs%VF
+         fs%BLold=fs%BL
+         fs%BGold=fs%BG
          copy_plic_to_old: block
             use irl_fortran_interface, only: copy
             integer :: i,j,k
@@ -363,46 +387,16 @@ contains
          call fs%rhs(dQdt(:,:,:,:,1)); fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,1)
          ! Increment Q with SL terms
          call fs%SLincrement()
-         ! Recompute phasic variables
-         where (fs%VF.gt.0.0_WP)
-            fs%RHOL=fs%Q(:,:,:,1)/fs%VF
-            fs%EL=fs%Q(:,:,:,3)/fs%Q(:,:,:,1)
-         elsewhere
-            fs%RHOL=0.0_WP
-            fs%EL=0.0_WP
-         end where
-         where (fs%VF.lt.1.0_WP)
-            fs%RHOG=fs%Q(:,:,:,2)/(1.0_WP-fs%VF)
-            fs%EG=fs%Q(:,:,:,4)/fs%Q(:,:,:,2)
-         elsewhere
-            fs%RHOG=0.0_WP
-            fs%EG=0.0_WP
-         end where
          ! Recompute primitive variables
-         !call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
-
+         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         
          ! Second RK step ===================================================================================
          ! Get non-SL RHS and increment
          call fs%rhs(dQdt(:,:,:,:,2)); fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,2)
          ! Increment Q with SL terms
          call fs%SLincrement()
-         ! Recompute phasic variables
-         where (fs%VF.gt.0.0_WP)
-            fs%RHOL=fs%Q(:,:,:,1)/fs%VF
-            fs%EL=fs%Q(:,:,:,3)/fs%Q(:,:,:,1)
-         elsewhere
-            fs%RHOL=0.0_WP
-            fs%EL=0.0_WP
-         end where
-         where (fs%VF.lt.1.0_WP)
-            fs%RHOG=fs%Q(:,:,:,2)/(1.0_WP-fs%VF)
-            fs%EG=fs%Q(:,:,:,4)/fs%Q(:,:,:,2)
-         elsewhere
-            fs%RHOG=0.0_WP
-            fs%EG=0.0_WP
-         end where
          ! Recompute primitive variables
-         !call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
+         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
          
          ! Perform second semi-Lagrangian transport step ====================================================
          call fs%SLstep(dt=1.0_WP*time%dt,U=fs%U,V=fs%V,W=fs%W)
@@ -413,23 +407,8 @@ contains
          call fs%rhs(dQdt(:,:,:,:,3)); fs%Q=fs%Qold+1.0_WP*time%dt*dQdt(:,:,:,:,3)
          ! Increment Q with SL terms
          call fs%SLincrement()
-         ! Recompute phasic variables
-         where (fs%VF.gt.0.0_WP)
-            fs%RHOL=fs%Q(:,:,:,1)/fs%VF
-            fs%EL=fs%Q(:,:,:,3)/fs%Q(:,:,:,1)
-         elsewhere
-            fs%RHOL=0.0_WP
-            fs%EL=0.0_WP
-         end where
-         where (fs%VF.lt.1.0_WP)
-            fs%RHOG=fs%Q(:,:,:,2)/(1.0_WP-fs%VF)
-            fs%EG=fs%Q(:,:,:,4)/fs%Q(:,:,:,2)
-         elsewhere
-            fs%RHOG=0.0_WP
-            fs%EG=0.0_WP
-         end where
          ! Recompute primitive variables
-         !call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
+         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
          
          ! Fourth RK step ===================================================================================
          ! Get non-SL RHS and increment
@@ -437,24 +416,16 @@ contains
          fs%Q=fs%Qold+time%dt/6.0_WP*(dQdt(:,:,:,:,1)+2.0_WP*dQdt(:,:,:,:,2)+2.0_WP*dQdt(:,:,:,:,3)+dQdt(:,:,:,:,4))
          ! Increment Q with SL terms
          call fs%SLincrement()
-         ! Recompute phasic variables
-         where (fs%VF.gt.0.0_WP)
-            fs%RHOL=fs%Q(:,:,:,1)/fs%VF
-            fs%EL=fs%Q(:,:,:,3)/fs%Q(:,:,:,1)
-         elsewhere
-            fs%RHOL=0.0_WP
-            fs%EL=0.0_WP
-         end where
-         where (fs%VF.lt.1.0_WP)
-            fs%RHOG=fs%Q(:,:,:,2)/(1.0_WP-fs%VF)
-            fs%EG=fs%Q(:,:,:,4)/fs%Q(:,:,:,2)
-         elsewhere
-            fs%RHOG=0.0_WP
-            fs%EG=0.0_WP
-         end where
          ! Recompute primitive variables
-         !call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
+         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
          
+         ! Interpolate velocity
+         call fs%interp_vel(Ui,Vi,Wi)
+
+         ! Compute speed of sound and local Mach number
+         C=sqrt(GammaG*(GammaG-1.0_WP)*fs%E)
+         Ma=sqrt((Ui**2+Vi**2+Wi**2))/C
+
          ! Output to ensight
          if (ens_evt%occurs()) then
             call fs%update_surfmesh(smesh)
@@ -463,7 +434,7 @@ contains
          
          ! Perform and output monitoring
          call fs%get_info()
-         !call analyze_conservation()
+         call analyze_conservation()
          call mfile%write()
          call cflfile%write()
          call consfile%write()
