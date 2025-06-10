@@ -2,87 +2,48 @@
 module simulation
    use precision,         only: WP
    use geometry,          only: cfg
-   use mpcomp_class,      only: mpcomp
+   use fastcomp_class,    only: fastcomp
    use sgsmodel_class,    only: sgsmodel
    use timetracker_class, only: timetracker
    use ensight_class,     only: ensight
-   use surfmesh_class,    only: surfmesh
    use event_class,       only: event
    use monitor_class,     only: monitor
    implicit none
    private; public :: simulation_init,simulation_run,simulation_final
    
-   !> Multiphase compressible flow solver and corresponding time tracker
-   type(mpcomp),      public :: fs
+   !> Fast compressible flow solver and corresponding time tracker
+   type(fastcomp),    public :: fs
    type(timetracker), public :: time
    
    !> Ensight postprocessing
-   type(surfmesh) :: smesh
-   type(ensight)  :: ens_out
-   type(event)    :: ens_evt
+   type(ensight) :: ens_out
+   type(event)   :: ens_evt
    
    !> Simulation monitor file
    type(monitor) :: mfile,cflfile
    
    !> Monitoring of conservation
    type(monitor) :: consfile
-   real(WP) :: RHOKint!,RHOSint,DilDiss,SolDiss
+   real(WP) :: RHOKint,RHOSint,DilDiss,SolDiss
    
    !> Private work arrays
-   real(WP), dimension(:,:,:,:,:), allocatable :: dQdt
-   real(WP), dimension(:,:,:)    , allocatable :: Ui,Vi,Wi,C,Ma
+   real(WP), dimension(:,:,:,:), allocatable :: dRHOdt,dRHOUdt,dRHOVdt,dRHOWdt,dRHOEdt
+   real(WP), dimension(:,:,:)  , allocatable :: Ui,Vi,Wi,C,Ma
    
    !> Equation of state and flow conditions
-   real(WP) :: Mach,Reynolds,Prandtl
-   real(WP) :: GammaL,PLinf,CvL,GammaG,PGinf,CvG
-   
-   !> Drop radius and center
-   real(WP) :: radius=1.0_WP
-   real(WP), dimension(3) :: center=[0.0_WP,0.0_WP,0.0_WP]
+   real(WP) :: Gamma,Mach,Reynolds,Prandtl
    
 contains
    
    
    !> Sutherland's law for viscosity as a function of temperature
-   !subroutine get_visc()
-   !   implicit none
-   !   integer :: i,j,k
-   !   do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-   !      fs%visc(i,j,k)=Reynolds**(-1.0_WP)*(1.4042_WP*fs%T(i,j,k)**1.5_WP)/(fs%T(i,j,k)+0.4042_WP)
-   !   end do; end do; end do
-   !end subroutine get_visc
-   
-   
-   !> P=EOS(RHO,E) for liquid
-   real(WP) function get_PL(RHOL,EL)
+   subroutine get_visc()
       implicit none
-      real(WP), intent(in) :: RHOL,EL
-      get_PL=RHOL*EL*(GammaL-1.0_WP)+PLinf
-   end function get_PL
-   
-   
-   !> T=f(E) for liquid
-   real(WP) function get_TL(EL)
-      implicit none
-      real(WP), intent(in) :: EL
-      get_TL=EL/CvL
-   end function get_TL
-   
-   
-   !> P=EOS(RHO,E) for gas
-   real(WP) function get_PG(RHOG,EG)
-      implicit none
-      real(WP), intent(in) :: RHOG,EG
-      get_PG=RHOG*EG*(GammaG-1.0_WP)+PGinf
-   end function get_PG
-   
-   
-   !> T=f(E) for gas
-   real(WP) function get_TG(EG)
-      implicit none
-      real(WP), intent(in) :: EG
-      get_TG=EG/CvG
-   end function get_TG
+      integer :: i,j,k
+      do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
+         fs%visc(i,j,k)=Reynolds**(-1.0_WP)*(1.4042_WP*(fs%E(i,j,k)/fs%Cv)**1.5_WP)/(fs%E(i,j,k)/fs%Cv+0.4042_WP)
+      end do; end do; end do
+   end subroutine get_visc
    
    
    !> Post-process conservation properties
@@ -92,42 +53,62 @@ contains
       real(WP), dimension(:,:,:), allocatable :: tmp,XY,YZ,ZX
       ! Allocate temporary storage
       allocate(tmp(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      !allocate(XY (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      !allocate(YZ (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      !allocate(ZX (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(XY (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(YZ (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(ZX (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       ! Compute kinetic energy
-      do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
-         tmp(i,j,k)=0.25_WP*(sum(fs%Q(i:i+1,j,k,5)*fs%U(i:i+1,j,k))+sum(fs%Q(i,j:j+1,k,6)*fs%V(i,j:j+1,k))+sum(fs%Q(i,j,k:k+1,7)*fs%W(i,j,k:k+1)))
-      end do; end do; end do
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               tmp(i,j,k)=0.25_WP*(sum(fs%RHOU(i:i+1,j,k)*fs%U(i:i+1,j,k))+sum(fs%RHOV(i,j:j+1,k)*fs%V(i,j:j+1,k))+sum(fs%RHOW(i,j,k:k+1)*fs%W(i,j,k:k+1)))
+            end do
+         end do
+      end do
       call cfg%integrate(tmp,integral=RHOKint)
       ! Compute entropy
-      !do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
-      !   tmp(i,j,k)=fs%Cv*log(fs%P(i,j,k)/fs%RHO(i,j,k)**Gamma)
-      !end do; end do; end do
-      !call cfg%integrate(tmp,integral=RHOSint)
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               tmp(i,j,k)=fs%Cv*log(fs%P(i,j,k)/fs%RHO(i,j,k)**Gamma)
+            end do
+         end do
+      end do
+      call cfg%integrate(tmp,integral=RHOSint)
       ! Calculate dilatational dissipation
-      !do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
-      !   tmp(i,j,k)=(fs%beta(i,j,k)+4.0_WP/3.0_WP*fs%visc(i,j,k))*(fs%dxi*(fs%U(i+1,j,k)-fs%U(i,j,k))+fs%dyi*(fs%V(i,j+1,k)-fs%V(i,j,k))+fs%dzi*(fs%W(i,j,k+1)-fs%W(i,j,k)))**2
-      !end do; end do; end do
-      !call cfg%integrate(tmp,integral=DilDiss)
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               tmp(i,j,k)=(fs%beta(i,j,k)+4.0_WP/3.0_WP*fs%visc(i,j,k))*(fs%dxi*(fs%U(i+1,j,k)-fs%U(i,j,k))+fs%dyi*(fs%V(i,j+1,k)-fs%V(i,j,k))+fs%dzi*(fs%W(i,j,k+1)-fs%W(i,j,k)))**2
+            end do
+         end do
+      end do
+      call cfg%integrate(tmp,integral=DilDiss)
       ! Calculate solenoidal dissipation
-      !do k=cfg%kmin_,cfg%kmax_+1; do j=cfg%jmin_,cfg%jmax_+1; do i=cfg%imin_,cfg%imax_+1
-         ! (dvdx-dudy)^2 at xy edge
-      !   XY(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j-1:j,k))*(fs%dxi*(fs%V(i,j,k)-fs%V(i-1,j,k))-fs%dyi*(fs%U(i,j,k)-fs%U(i,j-1,k)))**2
-         ! (dwdy-dvdz)^2 at yz edge
-      !   YZ(i,j,k)=0.25_WP*sum(fs%visc(i,j-1:j,k-1:k))*(fs%dyi*(fs%W(i,j,k)-fs%W(i,j-1,k))-fs%dzi*(fs%V(i,j,k)-fs%V(i,j,k-1)))**2
-      !   ! (dudz-dwdx)^2 at zx edge
-      !   ZX(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j,k-1:k))*(fs%dzi*(fs%U(i,j,k)-fs%U(i,j,k-1))-fs%dxi*(fs%W(i,j,k)-fs%W(i-1,j,k)))**2
-      !end do; end do; end do
-      !do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
-      !   tmp(i,j,k)=0.25_WP*sum(XY(i:i+1,j:j+1,k))+0.25_WP*sum(YZ(i,j:j+1,k:k+1))+0.25_WP*sum(ZX(i:i+1,j,k:k+1))
-      !end do; end do; end do
-      !call cfg%integrate(tmp,integral=SolDiss)
+      do k=cfg%kmin_,cfg%kmax_+1
+         do j=cfg%jmin_,cfg%jmax_+1
+            do i=cfg%imin_,cfg%imax_+1
+               ! (dvdx-dudy)^2 at xy edge
+               XY(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j-1:j,k))*(fs%dxi*(fs%V(i,j,k)-fs%V(i-1,j,k))-fs%dyi*(fs%U(i,j,k)-fs%U(i,j-1,k)))**2
+               ! (dwdy-dvdz)^2 at yz edge
+               YZ(i,j,k)=0.25_WP*sum(fs%visc(i,j-1:j,k-1:k))*(fs%dyi*(fs%W(i,j,k)-fs%W(i,j-1,k))-fs%dzi*(fs%V(i,j,k)-fs%V(i,j,k-1)))**2
+               ! (dudz-dwdx)^2 at zx edge
+               ZX(i,j,k)=0.25_WP*sum(fs%visc(i-1:i,j,k-1:k))*(fs%dzi*(fs%U(i,j,k)-fs%U(i,j,k-1))-fs%dxi*(fs%W(i,j,k)-fs%W(i-1,j,k)))**2
+            end do
+         end do
+      end do
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               tmp(i,j,k)=0.25_WP*sum(XY(i:i+1,j:j+1,k))+0.25_WP*sum(YZ(i,j:j+1,k:k+1))+0.25_WP*sum(ZX(i:i+1,j,k:k+1))
+            end do
+         end do
+      end do
+      call cfg%integrate(tmp,integral=SolDiss)
       ! Deallocate storage
-      deallocate(tmp)!,XY,YZ,ZX)
+      deallocate(tmp,XY,YZ,ZX)
    end subroutine analyze_conservation
-   
-   
+
+
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
@@ -135,15 +116,25 @@ contains
       
       ! Prepare EoS and flow conditions
       initialize_eos: block
-         call param_read('GammaL'  ,GammaL  )
-         call param_read('PLinf'   ,PLinf   )
-         call param_read('GammaG'  ,GammaG  )
+         call param_read('Gamma'   ,gamma   )
          call param_read('Mach'    ,Mach    )
          call param_read('Reynolds',Reynolds)
          call param_read('Prandtl' ,Prandtl )
-         CvL=1.0_WP/(GammaL*(GammaL-1.0_WP)*Mach**2)
-         CvG=1.0_WP/(GammaG*(GammaG-1.0_WP)*Mach**2)
       end block initialize_eos
+      
+      ! Allocate work arrays
+      allocate_work_arrays: block
+         allocate(dRHOdt (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:4))
+         allocate(dRHOUdt(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:4))
+         allocate(dRHOVdt(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:4))
+         allocate(dRHOWdt(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:4))
+         allocate(dRHOEdt(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:4))
+         allocate(Ui(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Vi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Wi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(C (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Ma(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      end block allocate_work_arrays
       
       ! Initialize time tracker
       initialize_timetracker: block
@@ -157,86 +148,40 @@ contains
       ! Create a fast compressible flow solver
       create_velocity_solver: block
          call fs%initialize(cfg=cfg,name='Compressible NS')
+         fs%Cv=1.0_WP/(Gamma*(Gamma-1.0_WP)*Mach**2) ! Specific heat corresponding to normalized temperature
       end block create_velocity_solver
-      
-      ! Allocate work arrays
-      allocate_work_arrays: block
-         allocate(dQdt(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:fs%nQ,1:4))
-         allocate(Ui(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Vi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Wi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(C (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Ma(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      end block allocate_work_arrays
       
       ! Prepare initial conditions
       initial_conditions: block
-         use mms_geom,  only: cube_refine_vol
-         use vfs_class, only: VFhi,VFlo
-         integer :: i,j,k,n,si,sj,sk
-         real(WP), dimension(3,8) :: cube_vertex
-         real(WP), dimension(3) :: v_cent,a_cent
-         real(WP) :: vol,area
-         integer, parameter :: amr_ref_lvl=4
-         ! Initialize a droplet
-         do k=cfg%kmino_,cfg%kmaxo_
-            do j=cfg%jmino_,cfg%jmaxo_
-               do i=cfg%imino_,cfg%imaxo_
-                  ! Set cube vertices
-                  n=0
-                  do sk=0,1; do sj=0,1; do si=0,1
-                     n=n+1; cube_vertex(:,n)=[cfg%x(i+si),cfg%y(j+sj),cfg%z(k+sk)]
-                  end do; end do; end do
-                  ! Call adaptive refinement code to get volume and barycenters recursively
-                  vol=0.0_WP; area=0.0_WP; v_cent=0.0_WP; a_cent=0.0_WP
-                  call cube_refine_vol(cube_vertex,vol,area,v_cent,a_cent,levelset_drop,0.0_WP,amr_ref_lvl)
-                  fs%VF(i,j,k)=vol/cfg%vol(i,j,k)
-                  if (fs%VF(i,j,k).ge.VFlo.and.fs%VF(i,j,k).le.VFhi) then
-                     fs%BL(:,i,j,k)=v_cent
-                     fs%BG(:,i,j,k)=([cfg%xm(i),cfg%ym(j),cfg%zm(k)]-fs%VF(i,j,k)*fs%BL(:,i,j,k))/(1.0_WP-fs%VF(i,j,k))
-                  else
-                     fs%BL(:,i,j,k)=[cfg%xm(i),cfg%ym(j),cfg%zm(k)]
-                     fs%BG(:,i,j,k)=[cfg%xm(i),cfg%ym(j),cfg%zm(k)]
-                  end if
-               end do
-            end do
-         end do
-         call fs%build_interface()
+         use mathtools, only: Pi,twoPi
+         !use random,    only: random_uniform
+         integer :: i,j,k
          ! Initialize primary variables
          do k=cfg%kmino_,cfg%kmaxo_
             do j=cfg%jmino_,cfg%jmaxo_
                do i=cfg%imino_,cfg%imaxo_
-                  ! Mixture velocity
-                  fs%U(i,j,k)=1.0_WP
-                  fs%V(i,j,k)=0.0_WP
-                  fs%W(i,j,k)=0.0_WP
-                  ! Liquid variables
-                  if (fs%VF(i,j,k).gt.0.0_WP) then
-                     fs%PL  (i,j,k)=1.0_WP/(GammaG*Mach**2)
-                     fs%RHOL(i,j,k)=1.0_WP
-                     fs%EL  (i,j,k)=(fs%PL(i,j,k)-PLinf)/(fs%RHOL(i,j,k)*(GammaL-1.0_WP))
-                  end if
-                  ! Gas variables
-                  if (fs%VF(i,j,k).lt.1.0_WP) then
-                     fs%PG  (i,j,k)=1.0_WP/(GammaG*Mach**2)
-                     fs%RHOG(i,j,k)=1.0_WP
-                     fs%EG  (i,j,k)=(fs%PG(i,j,k)-PGinf)/(fs%RHOG(i,j,k)*(GammaG-1.0_WP))
-                  end if
+                  ! Standard TGV
+                  fs%P  (i,j,k)=1.0_WP/(Gamma*Mach**2)+(cos(2.0_WP*fs%cfg%xm(i))+cos(2.0_WP*fs%cfg%ym(j)))*(cos(2.0_WP*fs%cfg%zm(k))+2.0_WP)/16.0_WP
+                  fs%E  (i,j,k)=1.0_WP/((Gamma-1.0_WP)*Gamma*Mach**2)
+                  fs%RHO(i,j,k)=fs%P(i,j,k)/(fs%E(i,j,k)*(Gamma-1.0_WP))
+                  fs%U  (i,j,k)=+sin(fs%cfg%x (i))*cos(fs%cfg%ym(j))*cos(fs%cfg%zm(k))
+                  fs%V  (i,j,k)=-cos(fs%cfg%xm(i))*sin(fs%cfg%y (j))*cos(fs%cfg%zm(k))
+                  fs%W  (i,j,k)=0.0_WP
+                  ! Uniform flow
+                  !fs%U(i,j,k)=1.0_WP+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
+                  !fs%V(i,j,k)=0.0_WP+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
+                  !fs%W(i,j,k)=0.0_WP+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
+                  !fs%P  (i,j,k)=1.0_WP/(Gamma*Mach**2)
+                  !fs%RHO(i,j,k)=1000.0_WP
+                  !fs%E  (i,j,k)=fs%P(i,j,k)/(fs%RHO(i,j,k)*(Gamma-1.0_WP))
                end do
             end do
          end do
          ! Initialize conserved variables
-         fs%Q(:,:,:,1)=        fs%VF *fs%RHOL
-         fs%Q(:,:,:,2)=(1.0_WP-fs%VF)*fs%RHOG
-         fs%Q(:,:,:,3)= fs%Q(:,:,:,1)*fs%EL
-         fs%Q(:,:,:,4)= fs%Q(:,:,:,2)*fs%EG
-         call fs%get_momentum()
-         ! Rebuild primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
-         ! Interpolate velocity
+         call fs%get_momentum(); fs%RHOE=fs%RHO*fs%E; fs%T=fs%E/fs%Cv
+         ! Interpolate velcoity, compute speed of sound and local Mach number
          call fs%interp_vel(Ui,Vi,Wi)
-         ! Compute speed of sound and local Mach number
-         C=sqrt(GammaG*(GammaG-1.0_WP)*fs%E)
+         C=sqrt(Gamma*(Gamma-1.0_WP)*fs%E)
          Ma=sqrt((Ui**2+Vi**2+Wi**2))/C
       end block initial_conditions
       
@@ -248,19 +193,11 @@ contains
          ens_evt=event(time=time,name='Ensight output')
          call param_read('Ensight output period',ens_evt%tper)
          ! Add variables to output
+         call ens_out%add_scalar('density' ,fs%RHO)
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
-         call ens_out%add_scalar('VOF' ,fs%VF)
-         call ens_out%add_scalar('RHOl',fs%RHOL)
-         call ens_out%add_scalar('RHOg',fs%RHOG)
-         call ens_out%add_scalar('El',fs%EL)
-         call ens_out%add_scalar('Eg',fs%EG)
-         call ens_out%add_scalar('Pl',fs%PL)
-         call ens_out%add_scalar('Pg',fs%PG)
+         call ens_out%add_scalar('energy'  ,fs%E)
+         call ens_out%add_scalar('pressure',fs%P)
          call ens_out%add_scalar('Mach',Ma)
-         ! Create surface mesh for PLIC
-         smesh=surfmesh(nvar=0,name='plic')
-         call fs%update_surfmesh(smesh)
-         call ens_out%add_surface('plic',smesh)
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
@@ -280,24 +217,12 @@ contains
          call mfile%add_column(fs%Umax,'Umax')
          call mfile%add_column(fs%Vmax,'Vmax')
          call mfile%add_column(fs%Wmax,'Wmax')
-         call mfile%add_column(fs%RHOLmax,'max(RHOL)')
-         call mfile%add_column(fs%RHOLmin,'min(RHOL)')
-         call mfile%add_column(fs%ELmax  ,'max(EL)'  )
-         call mfile%add_column(fs%ELmin  ,'min(EL)'  )
-         call mfile%add_column(fs%PLmax  ,'max(PL)'  )
-         call mfile%add_column(fs%PLmin  ,'min(PL)'  )
-         call mfile%add_column(fs%TLmax  ,'max(TL)'  )
-         call mfile%add_column(fs%TLmin  ,'min(TL)'  )
-         call mfile%add_column(fs%RHOGmax,'max(RHOG)')
-         call mfile%add_column(fs%RHOGmin,'min(RHOG)')
-         call mfile%add_column(fs%EGmax  ,'max(EG)'  )
-         call mfile%add_column(fs%EGmin  ,'min(EG)'  )
-         call mfile%add_column(fs%PGmax  ,'max(PG)'  )
-         call mfile%add_column(fs%PGmin  ,'min(PG)'  )
-         call mfile%add_column(fs%TGmax  ,'max(TG)'  )
-         call mfile%add_column(fs%TGmin  ,'min(TG)'  )
-         call mfile%add_column(fs%VFmax  ,'VFmax'    )
-         call mfile%add_column(fs%VFmin  ,'VFmin'    )
+         call mfile%add_column(fs%Pmax,'Pmax')
+         call mfile%add_column(fs%Pmin,'Pmin')
+         call mfile%add_column(fs%Emax,'Emax')
+         call mfile%add_column(fs%Emin,'Emin')
+         call mfile%add_column(fs%RHOmax,'RHOmax')
+         call mfile%add_column(fs%RHOmin,'RHOmin')
          call mfile%write()
          ! Create CFL monitor
          cflfile=monitor(fs%cfg%amRoot,'cfl')
@@ -317,30 +242,19 @@ contains
          consfile=monitor(fs%cfg%amRoot,'conservation')
          call consfile%add_column(time%n,'Timestep number')
          call consfile%add_column(time%t,'Time')
-         call consfile%add_column(fs%VFint  ,'Volume')
-         call consfile%add_column(fs%Qint(1),'Liquid mass')
-         call consfile%add_column(fs%Qint(2),'Gas mass')
-         call consfile%add_column(fs%Qint(3),'Liquid energy')
-         call consfile%add_column(fs%Qint(4),'Gas energy')
-         call consfile%add_column(fs%Qint(5),'U Momentum')
-         call consfile%add_column(fs%Qint(6),'V Momentum')
-         call consfile%add_column(fs%Qint(7),'W Momentum')
-         call consfile%add_column(RHOKint,'Kinetic energy')
-         !call consfile%add_column(   RHOSint,'Entropy')
-         !call consfile%add_column(DilDiss,'Dilatation dissipation')
-         !call consfile%add_column(SolDiss,'Solenoidal dissipation')
+         call consfile%add_column(cfg%vol_total,'Volume')
+         call consfile%add_column(fs%RHOint ,'Mass')
+         call consfile%add_column(fs%RHOUint,'U Momentum')
+         call consfile%add_column(fs%RHOVint,'V Momentum')
+         call consfile%add_column(fs%RHOWint,'W Momentum')
+         call consfile%add_column(fs%RHOEint,'Internal energy')
+         call consfile%add_column(   RHOKint,'Kinetic energy')
+         call consfile%add_column(   RHOSint,'Entropy')
+         call consfile%add_column(DilDiss,'Dilatation dissipation')
+         call consfile%add_column(SolDiss,'Solenoidal dissipation')
          call consfile%write()
       end block create_monitor
       
-   contains
-      !> Function that defines a level set function for a drop problem
-      function levelset_drop(xyz,t) result(G)
-         implicit none
-         real(WP), dimension(3),intent(in) :: xyz
-         real(WP), intent(in) :: t
-         real(WP) :: G
-         G=radius-sqrt(sum((xyz-center)**2))
-      end function levelset_drop
    end subroutine simulation_init
    
    
@@ -356,81 +270,72 @@ contains
          call time%adjust_dt()
          call time%increment()
          
-         ! Remember conserved variables, volume moments, and interface
-         fs%Qold =fs%Q
-         
-         ! Remember phasic quantities
-         fs%RHOLold=fs%RHOL; fs%ELold=fs%EL
-         fs%RHOGold=fs%RHOG; fs%EGold=fs%EG
-         
-         ! Remember volume moments and interface
-         fs%VFold=fs%VF
-         fs%BLold=fs%BL
-         fs%BGold=fs%BG
-         copy_plic_to_old: block
-            use irl_fortran_interface, only: copy
-            integer :: i,j,k
-            do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-               call copy(fs%PLICold(i,j,k),fs%PLIC(i,j,k))
-            end do; end do; end do
-         end block copy_plic_to_old
-         
-         ! Tag cells for semi-Lagrangian transport
-         call fs%SLtag()
-         
-         ! Perform first semi-Lagrangian transport step =====================================================
-         call fs%SLstep(dt=0.5_WP*time%dt,U=fs%U,V=fs%V,W=fs%W)
-         !call fs%build_interface()
+         ! Remember conserved variables
+         fs%RHOold =fs%RHO
+         fs%RHOUold=fs%RHOU
+         fs%RHOVold=fs%RHOV
+         fs%RHOWold=fs%RHOW
+         fs%RHOEold=fs%RHOE
+
+         ! Recalculate viscosity and heat diffusivity
+         call get_visc()
+         fs%diff=fs%Cv*Gamma*fs%visc/Prandtl
          
          ! First RK step ====================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,1)); fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,1)
-         ! Increment Q with SL terms
-         call fs%SLincrement()
+         ! Get RHS (primitive variables have been computed before)
+         call fs%get_RHS(dRHOdt(:,:,:,1),dRHOUdt(:,:,:,1),dRHOVdt(:,:,:,1),dRHOWdt(:,:,:,1),dRHOEdt(:,:,:,1))
+         ! Increment conserved variables
+         fs%RHO =fs%RHOold +0.5_WP*time%dt*dRHOdt (:,:,:,1)
+         fs%RHOU=fs%RHOUold+0.5_WP*time%dt*dRHOUdt(:,:,:,1)
+         fs%RHOV=fs%RHOVold+0.5_WP*time%dt*dRHOVdt(:,:,:,1)
+         fs%RHOW=fs%RHOWold+0.5_WP*time%dt*dRHOWdt(:,:,:,1)
+         fs%RHOE=fs%RHOEold+0.5_WP*time%dt*dRHOEdt(:,:,:,1)
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
          
          ! Second RK step ===================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,2)); fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,2)
-         ! Increment Q with SL terms
-         call fs%SLincrement()
+         ! Get RHS
+         call fs%get_RHS(dRHOdt(:,:,:,2),dRHOUdt(:,:,:,2),dRHOVdt(:,:,:,2),dRHOWdt(:,:,:,2),dRHOEdt(:,:,:,2))
+         ! Increment conserved variables
+         fs%RHO =fs%RHOold +0.5_WP*time%dt*dRHOdt (:,:,:,2)
+         fs%RHOU=fs%RHOUold+0.5_WP*time%dt*dRHOUdt(:,:,:,2)
+         fs%RHOV=fs%RHOVold+0.5_WP*time%dt*dRHOVdt(:,:,:,2)
+         fs%RHOW=fs%RHOWold+0.5_WP*time%dt*dRHOWdt(:,:,:,2)
+         fs%RHOE=fs%RHOEold+0.5_WP*time%dt*dRHOEdt(:,:,:,2)
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
-         
-         ! Perform second semi-Lagrangian transport step ====================================================
-         call fs%SLstep(dt=1.0_WP*time%dt,U=fs%U,V=fs%V,W=fs%W)
-         call fs%build_interface()
+         call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
          
          ! Third RK step ====================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,3)); fs%Q=fs%Qold+1.0_WP*time%dt*dQdt(:,:,:,:,3)
-         ! Increment Q with SL terms
-         call fs%SLincrement()
+         ! Get RHS
+         call fs%get_RHS(dRHOdt(:,:,:,3),dRHOUdt(:,:,:,3),dRHOVdt(:,:,:,3),dRHOWdt(:,:,:,3),dRHOEdt(:,:,:,3))
+         ! Increment conserved variables
+         fs%RHO =fs%RHOold +1.0_WP*time%dt*dRHOdt (:,:,:,3)
+         fs%RHOU=fs%RHOUold+1.0_WP*time%dt*dRHOUdt(:,:,:,3)
+         fs%RHOV=fs%RHOVold+1.0_WP*time%dt*dRHOVdt(:,:,:,3)
+         fs%RHOW=fs%RHOWold+1.0_WP*time%dt*dRHOWdt(:,:,:,3)
+         fs%RHOE=fs%RHOEold+1.0_WP*time%dt*dRHOEdt(:,:,:,3)
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
          
          ! Fourth RK step ===================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,4))
-         fs%Q=fs%Qold+time%dt/6.0_WP*(dQdt(:,:,:,:,1)+2.0_WP*dQdt(:,:,:,:,2)+2.0_WP*dQdt(:,:,:,:,3)+dQdt(:,:,:,:,4))
-         ! Increment Q with SL terms
-         call fs%SLincrement()
+         ! Get RHS
+         call fs%get_RHS(dRHOdt(:,:,:,4),dRHOUdt(:,:,:,4),dRHOVdt(:,:,:,4),dRHOWdt(:,:,:,4),dRHOEdt(:,:,:,4))
+         ! Increment conserved variables
+         fs%RHO =fs%RHOold +time%dt/6.0_WP*(dRHOdt (:,:,:,1)+2.0_WP*dRHOdt (:,:,:,2)+2.0_WP*dRHOdt (:,:,:,3)+dRHOdt (:,:,:,4))
+         fs%RHOU=fs%RHOUold+time%dt/6.0_WP*(dRHOUdt(:,:,:,1)+2.0_WP*dRHOUdt(:,:,:,2)+2.0_WP*dRHOUdt(:,:,:,3)+dRHOUdt(:,:,:,4))
+         fs%RHOV=fs%RHOVold+time%dt/6.0_WP*(dRHOVdt(:,:,:,1)+2.0_WP*dRHOVdt(:,:,:,2)+2.0_WP*dRHOVdt(:,:,:,3)+dRHOVdt(:,:,:,4))
+         fs%RHOW=fs%RHOWold+time%dt/6.0_WP*(dRHOWdt(:,:,:,1)+2.0_WP*dRHOWdt(:,:,:,2)+2.0_WP*dRHOWdt(:,:,:,3)+dRHOWdt(:,:,:,4))
+         fs%RHOE=fs%RHOEold+time%dt/6.0_WP*(dRHOEdt(:,:,:,1)+2.0_WP*dRHOEdt(:,:,:,2)+2.0_WP*dRHOEdt(:,:,:,3)+dRHOEdt(:,:,:,4))
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_velocity(); fs%E=fs%RHOE/fs%RHO; fs%P=fs%RHOE*(Gamma-1.0_WP); fs%T=fs%E/fs%Cv
          
-         ! Interpolate velocity
+         ! Interpolate velcoity, compute speed of sound and local Mach number
          call fs%interp_vel(Ui,Vi,Wi)
-
-         ! Compute speed of sound and local Mach number
-         C=sqrt(GammaG*(GammaG-1.0_WP)*fs%E)
+         C=sqrt(Gamma*(Gamma-1.0_WP)*fs%E)
          Ma=sqrt((Ui**2+Vi**2+Wi**2))/C
-
+         
          ! Output to ensight
-         if (ens_evt%occurs()) then
-            call fs%update_surfmesh(smesh)
-            call ens_out%write_data(time%t)
-         end if
+         if (ens_evt%occurs()) call ens_out%write_data(time%t)
          
          ! Perform and output monitoring
          call fs%get_info()
@@ -448,7 +353,7 @@ contains
    subroutine simulation_final
       implicit none
       ! Deallocate work arrays
-      deallocate(dQdt,Ui,Vi,Wi,C,Ma)
+      deallocate(dRHOdt,dRHOUdt,dRHOVdt,dRHOWdt,dRHOEdt,Ui,Vi,Wi,C,Ma)
    end subroutine simulation_final
    
    
