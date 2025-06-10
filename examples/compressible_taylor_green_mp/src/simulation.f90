@@ -205,8 +205,8 @@ contains
                   &                              levelset=levelset_drop,time=0.0_WP,level=4,VFlo=VFlo,&
                   &                              VF=fs%VF(i,j,k),BL=fs%BL(:,i,j,k),BG=fs%BG(:,i,j,k))
                   ! Mixture velocity
-                  fs%U(i,j,k)=0.5_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
-                  fs%V(i,j,k)=0.5_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
+                  fs%U(i,j,k)=1.0_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
+                  fs%V(i,j,k)=0.0_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
                   fs%W(i,j,k)=0.0_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
                   ! Liquid variables
                   if (fs%VF(i,j,k).gt.0.0_WP) then
