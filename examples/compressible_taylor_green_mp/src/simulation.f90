@@ -29,11 +29,11 @@ module simulation
    
    !> Private work arrays
    real(WP), dimension(:,:,:,:,:), allocatable :: dQdt
-   real(WP), dimension(:,:,:)    , allocatable :: Ui,Vi,Wi,C,Ma
+   real(WP), dimension(:,:,:)    , allocatable :: Ui,Vi,Wi,Ma
    
    !> Equation of state and flow conditions
-   real(WP) :: Mach,Reynolds,Prandtl
-   real(WP) :: GammaL,PLinf,CvL,GammaG,PGinf,CvG
+   real(WP) :: Mach
+   real(WP) :: GammaL,PinfL,CvL,RHOL,GammaG,PinfG,CvG,RHOG
    
    !> Drop radius and center
    real(WP) :: radius=1.0_WP
@@ -53,42 +53,42 @@ contains
    
    
    !> P=EOS(RHO,E) for liquid
-   real(WP) function get_PL(RHO,E)
+   pure real(WP) function get_PL(RHO,E)
       implicit none
       real(WP), intent(in) :: RHO,E
-      get_PL=RHO*E*(GammaL-1.0_WP)-GammaL*PLinf
+      get_PL=RHO*E*(GammaL-1.0_WP)-GammaL*PinfL
    end function get_PL
-   !> T=f(E) for liquid
-   real(WP) function get_TL(E)
+   !> T=f(RHO,P) for liquid
+   pure real(WP) function get_TL(RHO,P)
       implicit none
-      real(WP), intent(in) :: E
-      get_TL=E/CvL
+      real(WP), intent(in) :: RHO,P
+      get_TL=(P+PinfL)/(CvL*RHO*(GammaL-1.0_WP))
    end function get_TL
-   !> C=f(P,RHO) for liquid
-   real(WP) function get_CL(P,RHO)
+   !> C=f(RHO,P) for liquid
+   pure real(WP) function get_CL(RHO,P)
       implicit none
-      real(WP), intent(in) :: P,RHO
-      get_CL=sqrt(GammaL*(P+PLinf)/RHO)
+      real(WP), intent(in) :: RHO,P
+      get_CL=sqrt(GammaL*(P+PinfL)/RHO)
    end function get_CL
    
    
    !> P=EOS(RHO,E) for gas
-   real(WP) function get_PG(RHO,E)
+   pure real(WP) function get_PG(RHO,E)
       implicit none
       real(WP), intent(in) :: RHO,E
-      get_PG=RHO*E*(GammaG-1.0_WP)-GammaG*PGinf
+      get_PG=RHO*E*(GammaG-1.0_WP)-GammaG*PinfG
    end function get_PG
-   !> T=f(E) for gas
-   real(WP) function get_TG(E)
+   !> T=f(RHO,P) for gas
+   pure real(WP) function get_TG(RHO,P)
       implicit none
-      real(WP), intent(in) :: E
-      get_TG=E/CvG
+      real(WP), intent(in) :: RHO,P
+      get_TG=(P+PinfG)/(CvG*RHO*(GammaG-1.0_WP))
    end function get_TG
-   !> C=f(P,RHO) for gas
-   real(WP) function get_CG(P,RHO)
+   !> C=f(RHO,P) for gas
+   pure real(WP) function get_CG(RHO,P)
       implicit none
-      real(WP), intent(in) :: P,RHO
-      get_CG=sqrt(GammaG*(P+PGinf)/RHO)
+      real(WP), intent(in) :: RHO,P
+      get_CG=sqrt(GammaG*(P+PinfG)/RHO)
    end function get_CG
    
    
@@ -110,7 +110,7 @@ contains
       ! Compute liquid entropy
       do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
          if (fs%VF(i,j,k).gt.0.0_WP) then
-            tmp(i,j,k)=fs%VF(i,j,k)*fs%RHOL(i,j,k)*CvL*log((fs%PL(i,j,k)+PLinf)/fs%RHOL(i,j,k)**GammaL)
+            tmp(i,j,k)=fs%VF(i,j,k)*fs%RHOL(i,j,k)*CvL*log((fs%PL(i,j,k)+PinfL)/fs%RHOL(i,j,k)**GammaL)
          else
             tmp(i,j,k)=0.0_WP
          end if
@@ -119,7 +119,7 @@ contains
       ! Compute gas entropy
       do k=cfg%kmin_,cfg%kmax_; do j=cfg%jmin_,cfg%jmax_; do i=cfg%imin_,cfg%imax_
          if (fs%VF(i,j,k).lt.1.0_WP) then
-            tmp(i,j,k)=(1.0_WP-fs%VF(i,j,k))*fs%RHOG(i,j,k)*CvG*log((fs%PG(i,j,k)+PGinf)/fs%RHOG(i,j,k)**GammaG)
+            tmp(i,j,k)=(1.0_WP-fs%VF(i,j,k))*fs%RHOG(i,j,k)*CvG*log((fs%PG(i,j,k)+PinfG)/fs%RHOG(i,j,k)**GammaG)
          else
             tmp(i,j,k)=0.0_WP
          end if
@@ -156,11 +156,12 @@ contains
       ! Prepare EoS and flow conditions
       initialize_eos: block
          call param_read('GammaL'  ,GammaL  )
-         call param_read('PLinf'   ,PLinf   )
+         call param_read('PinfL'   ,PinfL   )
+         call param_read('RHOL'    ,RHOL    )
          call param_read('GammaG'  ,GammaG  )
+         call param_read('PinfG'   ,PinfG   )
+         call param_read('RHOG'    ,RHOG    )
          call param_read('Mach'    ,Mach    )
-         call param_read('Reynolds',Reynolds)
-         call param_read('Prandtl' ,Prandtl )
          CvL=1.0_WP/(GammaL*(GammaL-1.0_WP)*Mach**2)
          CvG=1.0_WP/(GammaG*(GammaG-1.0_WP)*Mach**2)
       end block initialize_eos
@@ -176,7 +177,8 @@ contains
       
       ! Create a fast compressible flow solver
       create_velocity_solver: block
-         call fs%initialize(cfg=cfg,name='Compressible NS')
+         call fs%initialize(cfg=cfg,getPL=get_PL,getTL=get_TL,getCL=get_CL,&
+         &                          getPG=get_PG,getTG=get_TG,getCG=get_CG,name='Compressible NS')
       end block create_velocity_solver
       
       ! Allocate work arrays
@@ -185,7 +187,6 @@ contains
          allocate(Ui(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Vi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Wi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(C (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Ma(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       end block allocate_work_arrays
       
@@ -200,25 +201,23 @@ contains
             do j=cfg%jmino_,cfg%jmaxo_
                do i=cfg%imino_,cfg%imaxo_
                   ! Volume moments for a droplet
-                  call initialize_volume_moments(lo=[cfg%x(i  ),cfg%y(j  ),cfg%z(k  )],&
-                  &                              hi=[cfg%x(i+1),cfg%y(j+1),cfg%z(k+1)],&
-                  &                              levelset=levelset_drop,time=0.0_WP,level=4,VFlo=VFlo,&
-                  &                              VF=fs%VF(i,j,k),BL=fs%BL(:,i,j,k),BG=fs%BG(:,i,j,k))
+                  call initialize_volume_moments(lo=[cfg%x(i  ),cfg%y(j  ),cfg%z(k  )],hi=[cfg%x(i+1),cfg%y(j+1),cfg%z(k+1)],&
+                  levelset=levelset_slab,time=0.0_WP,level=4,VFlo=VFlo,VF=fs%VF(i,j,k),BL=fs%BL(:,i,j,k),BG=fs%BG(:,i,j,k))
                   ! Mixture velocity
-                  fs%U(i,j,k)=1.0_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
-                  fs%V(i,j,k)=0.0_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
-                  fs%W(i,j,k)=0.0_WP!+random_uniform(lo=-1.0e-14_WP,hi=+1.0e-14_WP)
+                  fs%U(i,j,k)=+Mach*sin(cfg%x (i))*cos(cfg%ym(j))*cos(cfg%zm(k))
+                  fs%V(i,j,k)=-Mach*cos(cfg%xm(i))*sin(cfg%y (j))*cos(cfg%zm(k))
+                  fs%W(i,j,k)=0.0_WP
                   ! Liquid variables
                   if (fs%VF(i,j,k).gt.0.0_WP) then
-                     fs%PL  (i,j,k)=1.0_WP/(GammaG*Mach**2)
-                     fs%RHOL(i,j,k)=1000.0_WP
-                     fs%EL  (i,j,k)=(fs%PL(i,j,k)+GammaL*PLinf)/(fs%RHOL(i,j,k)*(GammaL-1.0_WP))
+                     fs%RHOL(i,j,k)=RHOL
+                     fs%PL  (i,j,k)=1.0_WP/GammaL+fs%RHOL(i,j,k)*Mach**2/16.0_WP*(cos(2.0_WP*cfg%xm(i))+cos(2.0_WP*cfg%ym(j)))*(cos(2.0_WP*cfg%zm(k))+2.0_WP)
+                     fs%EL  (i,j,k)=(fs%PL(i,j,k)+GammaL*PinfL)/(fs%RHOL(i,j,k)*(GammaL-1.0_WP))
                   end if
                   ! Gas variables
                   if (fs%VF(i,j,k).lt.1.0_WP) then
-                     fs%PG  (i,j,k)=1.0_WP/(GammaG*Mach**2)
-                     fs%RHOG(i,j,k)=1.0_WP
-                     fs%EG  (i,j,k)=(fs%PG(i,j,k)+GammaG*PGinf)/(fs%RHOG(i,j,k)*(GammaG-1.0_WP))
+                     fs%RHOG(i,j,k)=RHOG
+                     fs%PG  (i,j,k)=1.0_WP/GammaG+fs%RHOG(i,j,k)*Mach**2/16.0_WP*(cos(2.0_WP*cfg%xm(i))+cos(2.0_WP*cfg%ym(j)))*(cos(2.0_WP*cfg%zm(k))+2.0_WP)
+                     fs%EG  (i,j,k)=(fs%PG(i,j,k)+GammaG*PinfG)/(fs%RHOG(i,j,k)*(GammaG-1.0_WP))
                   end if
                end do
             end do
@@ -232,18 +231,11 @@ contains
          fs%Q(:,:,:,4)= fs%Q(:,:,:,2)*fs%EG
          call fs%get_momentum()
          ! Rebuild primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_primitive()
          ! Interpolate velocity
          call fs%interp_vel(Ui,Vi,Wi)
-         ! Compute speed of sound and local Mach number
-         do k=cfg%kmino_,cfg%kmaxo_; do j=cfg%jmino_,cfg%jmaxo_; do i=cfg%imino_,cfg%imaxo_
-            if (fs%VF(i,j,k).gt.0.5_WP) then
-               C(i,j,k)=get_CL(fs%PL(i,j,k),fs%RHOL(i,j,k))
-            else
-               C(i,j,k)=get_CG(fs%PG(i,j,k),fs%RHOG(i,j,k))
-            end if
-            Ma(i,j,k)=sqrt(Ui(i,j,k)**2+Vi(i,j,k)**2+Wi(i,j,k)**2)/C(i,j,k)
-         end do; end do; end do
+         ! Compute local Mach number
+         Ma=sqrt(Ui**2+Vi**2+Wi**2)/fs%C
       end block initial_conditions
       
       ! Add Ensight output
@@ -255,13 +247,10 @@ contains
          call param_read('Ensight output period',ens_evt%tper)
          ! Add variables to output
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
-         call ens_out%add_scalar('VOF' ,fs%VF)
-         call ens_out%add_scalar('RHOl',fs%RHOL)
-         call ens_out%add_scalar('RHOg',fs%RHOG)
-         call ens_out%add_scalar('El',fs%EL)
-         call ens_out%add_scalar('Eg',fs%EG)
-         call ens_out%add_scalar('Pl',fs%PL)
-         call ens_out%add_scalar('Pg',fs%PG)
+         call ens_out%add_scalar('VOF',fs%VF)
+         call ens_out%add_scalar('RHO',fs%RHO)
+         call ens_out%add_scalar('E',fs%E)
+         call ens_out%add_scalar('P',fs%P)
          call ens_out%add_scalar('Mach',Ma)
          ! Create surface mesh for PLIC
          smesh=surfmesh(nvar=0,name='plic')
@@ -274,7 +263,7 @@ contains
       ! Create a monitor file
       create_monitor: block
          ! Prepare some info about fields
-         call fs%get_cfl(dt=time%dt,C=C,cfl=time%cfl)
+         call fs%get_cfl(dt=time%dt,cfl=time%cfl)
          call fs%get_info()
          call analyze_conservation()
          ! Create simulation monitor
@@ -348,6 +337,15 @@ contains
          real(WP) :: G
          G=radius-sqrt(sum((xyz-center)**2))
       end function levelset_drop
+      !> Function that defines a level set function for a slab
+      function levelset_slab(xyz,t) result(G)
+         use mathtools, only: Pi
+         implicit none
+         real(WP), dimension(3),intent(in) :: xyz
+         real(WP), intent(in) :: t
+         real(WP) :: G
+         G=1.0_WP-abs(xyz(1)-Pi)
+      end function levelset_slab
    end subroutine simulation_init
    
    
@@ -359,7 +357,7 @@ contains
       do while (.not.time%done())
          
          ! Increment time
-         call fs%get_cfl(dt=time%dt,C=C,cfl=time%cfl)
+         call fs%get_cfl(dt=time%dt,cfl=time%cfl)
          call time%adjust_dt()
          call time%increment()
          
@@ -396,7 +394,7 @@ contains
          ! Increment Q with SL terms
          call fs%SLincrement()
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_primitive()
          
          ! Second RK step ===================================================================================
          ! Get non-SL RHS and increment
@@ -405,7 +403,7 @@ contains
          ! Increment Q with SL terms
          call fs%SLincrement()
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_primitive()
          
          ! Perform second semi-Lagrangian transport step ====================================================
          call fs%SLstep(dt=1.0_WP*time%dt,U=fs%U,V=fs%V,W=fs%W)
@@ -418,7 +416,7 @@ contains
          ! Increment Q with SL terms
          call fs%SLincrement()
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_primitive()
          
          ! Fourth RK step ===================================================================================
          ! Get non-SL RHS and increment
@@ -427,23 +425,13 @@ contains
          ! Increment Q with SL terms
          call fs%SLincrement()
          ! Recompute primitive variables
-         call fs%get_primitive(get_PL,get_TL,get_PG,get_TG)
+         call fs%get_primitive()
          
          ! Interpolate velocity
          call fs%interp_vel(Ui,Vi,Wi)
          
-         ! Compute speed of sound and local Mach number
-         get_soundspeed: block
-            integer :: i,j,k
-            do k=cfg%kmino_,cfg%kmaxo_; do j=cfg%jmino_,cfg%jmaxo_; do i=cfg%imino_,cfg%imaxo_
-               if (fs%VF(i,j,k).gt.0.5_WP) then
-                  C(i,j,k)=get_CL(fs%PL(i,j,k),fs%RHOL(i,j,k))
-               else
-                  C(i,j,k)=get_CG(fs%PG(i,j,k),fs%RHOG(i,j,k))
-               end if
-               Ma(i,j,k)=sqrt(Ui(i,j,k)**2+Vi(i,j,k)**2+Wi(i,j,k)**2)/C(i,j,k)
-            end do; end do; end do
-         end block get_soundspeed
+         ! Compute local Mach number
+         Ma=sqrt(Ui**2+Vi**2+Wi**2)/fs%C
          
          ! Output to ensight
          if (ens_evt%occurs()) then
@@ -467,7 +455,7 @@ contains
    subroutine simulation_final
       implicit none
       ! Deallocate work arrays
-      deallocate(dQdt,Ui,Vi,Wi,C,Ma)
+      deallocate(dQdt,Ui,Vi,Wi,Ma)
    end subroutine simulation_final
    
    

@@ -29,6 +29,14 @@ module mpcomp_class
       ! Solver name
       character(len=str_medium) :: name='UNNAMED_MPCOMP'
       
+      ! Pointers to functions to evaluate P(RHO,E), T(RHO,P), and C(RHO,P)
+      procedure(Pfunc_type), pointer, nopass :: getPL=>NULL()
+      procedure(Tfunc_type), pointer, nopass :: getTL=>NULL()
+      procedure(Cfunc_type), pointer, nopass :: getCL=>NULL()
+      procedure(Pfunc_type), pointer, nopass :: getPG=>NULL()
+      procedure(Tfunc_type), pointer, nopass :: getTG=>NULL()
+      procedure(Cfunc_type), pointer, nopass :: getCG=>NULL()
+      
       ! Volume moments, interface, and semi-Lagrangian fluxes
       real(WP), dimension(:,:,:)  , allocatable :: VF,VFold
       real(WP), dimension(:,:,:,:), allocatable :: BL,BLold
@@ -57,8 +65,8 @@ module mpcomp_class
       ! Phasic temperatures
       real(WP), dimension(:,:,:), allocatable :: TL,TG
       
-      ! Mixture density, energy, pressure, and temperature
-      real(WP), dimension(:,:,:), allocatable :: RHO,E,P,T
+      ! Mixture density, energy, pressure, temperature, and speed of sound
+      real(WP), dimension(:,:,:), allocatable :: RHO,E,P,T,C
       
       ! Viscosities and heat diffusivity
       real(WP), dimension(:,:,:), allocatable :: visc,beta,diff
@@ -130,30 +138,41 @@ module mpcomp_class
    
    !> Interfaces for user-defined function
    abstract interface
-      !> P=EOS(RHO,E)
-      real(WP) function Pfunc_type(RHO,E)
+      !> P=P(RHO,E)
+      pure real(WP) function Pfunc_type(RHO,E)
          import :: WP
          implicit none
          real(WP), intent(in) :: RHO
          real(WP), intent(in) :: E
       end function Pfunc_type
-      !> T=FUNC(E)
-      real(WP) function Tfunc_type(E)
+      !> T=T(RHO,P)
+      pure real(WP) function Tfunc_type(RHO,P)
          import :: WP
          implicit none
-         real(WP), intent(in) :: E
+         real(WP), intent(in) :: RHO
+         real(WP), intent(in) :: P
       end function Tfunc_type
+      !> C=C(RHO,P)
+      pure real(WP) function Cfunc_type(RHO,P)
+         import :: WP
+         implicit none
+         real(WP), intent(in) :: RHO
+         real(WP), intent(in) :: P
+      end function Cfunc_type
    end interface
    
 contains
    
    
    !> Initialization for compressible flow solver
-   subroutine initialize(this,cfg,name)
+   subroutine initialize(this,cfg,getPL,getTL,getCL,getPG,getTG,getCG,name)
       use messager, only: die
       implicit none
       class(mpcomp) :: this
       class(config), target, intent(in) :: cfg
+      procedure(Pfunc_type) :: getPL,getPG
+      procedure(Tfunc_type) :: getTL,getTG
+      procedure(Cfunc_type) :: getCL,getCG
       character(len=*), optional :: name
       integer :: i,j,k
       
@@ -162,6 +181,14 @@ contains
       
       ! Point to config object
       this%cfg=>cfg
+      
+      ! Point to thermodynamic functions
+      this%getPL=>getPL
+      this%getTL=>getTL
+      this%getCL=>getCL
+      this%getPG=>getPG
+      this%getTG=>getTG
+      this%getCG=>getCG
       
       ! Check that config is uniform with at least 3 cells of overlap
       if (this%cfg%no.lt.3) call die('[mpcomp initialize] mpcomp solver requires at least 3 cells of overlap')
@@ -186,9 +213,9 @@ contains
       allocate(this%BGold(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%BGold=0.0_WP
       
       ! Allocate semi-Lagrangian fluxes
-      allocate(this%SLFx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:this%nQ)); this%SLFx=0.0_WP
-      allocate(this%SLFy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:this%nQ)); this%SLFy=0.0_WP
-      allocate(this%SLFz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:this%nQ)); this%SLFz=0.0_WP
+      allocate(this%SLFx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:4)); this%SLFx=0.0_WP
+      allocate(this%SLFy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:4)); this%SLFy=0.0_WP
+      allocate(this%SLFz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:4)); this%SLFz=0.0_WP
       
       ! Initialize Interface Reconstruction Library and its data
       call this%initialize_irl()
@@ -224,11 +251,12 @@ contains
       allocate(this%TL(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%TL=0.0_WP
       allocate(this%TG(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%TG=0.0_WP
       
-      ! Mixture density, energy, pressure, and temperature
+      ! Mixture density, energy, pressure, temperature, and speed of sound
       allocate(this%RHO(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%RHO=0.0_WP
       allocate(this%E  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%E  =0.0_WP
       allocate(this%P  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%P  =0.0_WP
       allocate(this%T  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%T  =0.0_WP
+      allocate(this%C  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%C  =0.0_WP
       
       ! Fluid viscosities and heat diffusivity
       allocate(this%visc(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%visc=0.0_WP
@@ -387,7 +415,6 @@ contains
    
    !> Perform an unsplit semi-Lagrangian transport step by dt in all cells tagged by this%SLtag>0
    !> Volume moments are updated and advection fluxes for phasic equations are computed
-   !> Corresponding momentum fluxes are also computed here.
    !> Uses VFold, BLold, BGold, PLICold, RHOLold, RHOGold, ELold, EGold
    !> Vertex transport is done with RK2 using passed (U,V,W)
    subroutine SLstep(this,dt,U,V,W)
@@ -589,31 +616,6 @@ contains
       if (this%cfg%ny.eq.1) then; do j=this%cfg%jmino_,this%cfg%jmaxo_; this%BL(2,:,j,:)=this%cfg%ym(j); this%BG(2,:,j,:)=this%cfg%ym(j); end do; end if
       if (this%cfg%nz.eq.1) then; do k=this%cfg%kmino_,this%cfg%kmaxo_; this%BL(3,:,:,k)=this%cfg%zm(k); this%BG(3,:,:,k)=this%cfg%zm(k); end do; end if
       
-      ! Calculate cell-centered momentum fluxes
-      do k=this%cfg%kmin_-1,this%cfg%kmax_
-         do j=this%cfg%jmin_-1,this%cfg%jmax_
-            do i=this%cfg%imin_-1,this%cfg%imax_
-               this%SLFx(i,j,k,5)=0.25_WP*(sum(this%SLFx(i:i+1,j,k,1)+this%SLFx(i:i+1,j,k,2)))*sum(U(i:i+1,j,k))
-               this%SLFy(i,j,k,6)=0.25_WP*(sum(this%SLFy(i,j:j+1,k,1)+this%SLFy(i,j:j+1,k,2)))*sum(V(i,j:j+1,k))
-               this%SLFz(i,j,k,7)=0.25_WP*(sum(this%SLFz(i,j,k:k+1,1)+this%SLFz(i,j,k:k+1,2)))*sum(W(i,j,k:k+1))
-            end do
-         end do
-      end do
-      
-      ! Calculate edge-centered momentum fluxes
-      do k=this%cfg%kmin_,this%cfg%kmax_+1
-         do j=this%cfg%jmin_,this%cfg%jmax_+1
-            do i=this%cfg%imin_,this%cfg%imax_+1
-               this%SLFy(i,j,k,5)=0.25_WP*(sum(this%SLFy(i-1:i,j,k,1)+this%SLFy(i-1:i,j,k,2)))*sum(U(i,j-1:j,k))
-               this%SLFz(i,j,k,5)=0.25_WP*(sum(this%SLFz(i-1:i,j,k,1)+this%SLFz(i-1:i,j,k,2)))*sum(U(i,j,k-1:k))
-               this%SLFx(i,j,k,6)=0.25_WP*(sum(this%SLFx(i,j-1:j,k,1)+this%SLFx(i,j-1:j,k,2)))*sum(V(i-1:i,j,k))
-               this%SLFz(i,j,k,6)=0.25_WP*(sum(this%SLFz(i,j-1:j,k,1)+this%SLFz(i,j-1:j,k,2)))*sum(V(i,j,k-1:k))
-               this%SLFx(i,j,k,7)=0.25_WP*(sum(this%SLFx(i,j,k-1:k,1)+this%SLFx(i,j,k-1:k,2)))*sum(W(i-1:i,j,k))
-               this%SLFy(i,j,k,7)=0.25_WP*(sum(this%SLFy(i,j,k-1:k,1)+this%SLFy(i,j,k-1:k,2)))*sum(W(i,j-1:j,k))
-            end do
-         end do
-      end do
-      
       ! Stop semi-Lagrangian timer
       call this%tsl%stop()
       
@@ -636,22 +638,84 @@ contains
       implicit none
       class(mpcomp), intent(inout) :: this
       integer :: i,j,k,n
-      ! Start semi-Lagrangian timer
-      call this%tsl%start()
+      real(WP), dimension(:,:,:), allocatable :: FRX,FRY,FRZ
+      real(WP), dimension(:,:,:), allocatable :: FUX,FUY,FUZ
+      real(WP), dimension(:,:,:), allocatable :: FVX,FVY,FVZ
+      real(WP), dimension(:,:,:), allocatable :: FWX,FWY,FWZ
+      
+      ! Start rhs timer
+      call this%trhs%start()
+      
       ! Assemble time derivative for mass, internal energy, and momentum advection with semi-Lagrangian fluxes
-      do k=this%cfg%kmin_,this%cfg%kmax_; do j=this%cfg%jmin_,this%cfg%jmax_; do i=this%cfg%imin_,this%cfg%imax_
-         this%Q(i,j,k,1)=this%Q(i,j,k,1)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,1)-this%SLFx(i  ,j,k,1))+this%dyi*(this%SLFy(i,j+1,k,1)-this%SLFy(i,j  ,k,1))+this%dzi*(this%SLFz(i,j,k+1,1)-this%SLFz(i,j,k  ,1)))
-         this%Q(i,j,k,2)=this%Q(i,j,k,2)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,2)-this%SLFx(i  ,j,k,2))+this%dyi*(this%SLFy(i,j+1,k,2)-this%SLFy(i,j  ,k,2))+this%dzi*(this%SLFz(i,j,k+1,2)-this%SLFz(i,j,k  ,2)))
-         this%Q(i,j,k,3)=this%Q(i,j,k,3)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,3)-this%SLFx(i  ,j,k,3))+this%dyi*(this%SLFy(i,j+1,k,3)-this%SLFy(i,j  ,k,3))+this%dzi*(this%SLFz(i,j,k+1,3)-this%SLFz(i,j,k  ,3)))
-         this%Q(i,j,k,4)=this%Q(i,j,k,4)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,4)-this%SLFx(i  ,j,k,4))+this%dyi*(this%SLFy(i,j+1,k,4)-this%SLFy(i,j  ,k,4))+this%dzi*(this%SLFz(i,j,k+1,4)-this%SLFz(i,j,k  ,4)))
-         this%Q(i,j,k,5)=this%Q(i,j,k,5)+this%SLdt*(this%dxi*(this%SLFx(i  ,j,k,5)-this%SLFx(i-1,j,k,5))+this%dyi*(this%SLFy(i,j+1,k,5)-this%SLFy(i,j  ,k,5))+this%dzi*(this%SLFz(i,j,k+1,5)-this%SLFz(i,j,k  ,5)))
-         this%Q(i,j,k,6)=this%Q(i,j,k,6)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,6)-this%SLFx(i  ,j,k,6))+this%dyi*(this%SLFy(i,j  ,k,6)-this%SLFy(i,j-1,k,6))+this%dzi*(this%SLFz(i,j,k+1,6)-this%SLFz(i,j,k  ,6)))
-         this%Q(i,j,k,7)=this%Q(i,j,k,7)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,7)-this%SLFx(i  ,j,k,7))+this%dyi*(this%SLFy(i,j+1,k,7)-this%SLFy(i,j  ,k,7))+this%dzi*(this%SLFz(i,j,k  ,7)-this%SLFz(i,j,k-1,7)))
-      end do; end do; end do
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               this%Q(i,j,k,1)=this%Q(i,j,k,1)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,1)-this%SLFx(i  ,j,k,1))+this%dyi*(this%SLFy(i,j+1,k,1)-this%SLFy(i,j  ,k,1))+this%dzi*(this%SLFz(i,j,k+1,1)-this%SLFz(i,j,k  ,1)))
+               this%Q(i,j,k,2)=this%Q(i,j,k,2)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,2)-this%SLFx(i  ,j,k,2))+this%dyi*(this%SLFy(i,j+1,k,2)-this%SLFy(i,j  ,k,2))+this%dzi*(this%SLFz(i,j,k+1,2)-this%SLFz(i,j,k  ,2)))
+               this%Q(i,j,k,3)=this%Q(i,j,k,3)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,3)-this%SLFx(i  ,j,k,3))+this%dyi*(this%SLFy(i,j+1,k,3)-this%SLFy(i,j  ,k,3))+this%dzi*(this%SLFz(i,j,k+1,3)-this%SLFz(i,j,k  ,3)))
+               this%Q(i,j,k,4)=this%Q(i,j,k,4)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,4)-this%SLFx(i  ,j,k,4))+this%dyi*(this%SLFy(i,j+1,k,4)-this%SLFy(i,j  ,k,4))+this%dzi*(this%SLFz(i,j,k+1,4)-this%SLFz(i,j,k  ,4)))
+            end do
+         end do
+      end do
+      
+      ! Allocate multiphase mass flux arrays and populate
+      allocate(FRX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRX=this%SLFx(:,:,:,1)+this%SLFx(:,:,:,2)
+      allocate(FRY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRY=this%SLFy(:,:,:,1)+this%SLFy(:,:,:,2)
+      allocate(FRZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRZ=this%SLFz(:,:,:,1)+this%SLFz(:,:,:,2)
+      
+      ! Allocate momentum fluxes
+      allocate(FUX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FUY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FUZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FVX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FVY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FVZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FWX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FWY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FWZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      
+      ! Calculate cell-centered momentum fluxes
+      do k=this%cfg%kmin_-1,this%cfg%kmax_
+         do j=this%cfg%jmin_-1,this%cfg%jmax_
+            do i=this%cfg%imin_-1,this%cfg%imax_
+               FUX(i,j,k)=0.25_WP*sum(FRX(i:i+1,j,k))*sum(this%U(i:i+1,j,k))
+               FVY(i,j,k)=0.25_WP*sum(FRY(i,j:j+1,k))*sum(this%V(i,j:j+1,k))
+               FWZ(i,j,k)=0.25_WP*sum(FRZ(i,j,k:k+1))*sum(this%W(i,j,k:k+1))
+            end do
+         end do
+      end do
+      
+      ! Calculate edge-centered momentum fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               FUY(i,j,k)=0.25_WP*sum(FRY(i-1:i,j,k))*sum(this%U(i,j-1:j,k))
+               FUZ(i,j,k)=0.25_WP*sum(FRZ(i-1:i,j,k))*sum(this%U(i,j,k-1:k))
+               FVX(i,j,k)=0.25_WP*sum(FRX(i,j-1:j,k))*sum(this%V(i-1:i,j,k))
+               FVZ(i,j,k)=0.25_WP*sum(FRZ(i,j-1:j,k))*sum(this%V(i,j,k-1:k))
+               FWX(i,j,k)=0.25_WP*sum(FRX(i,j,k-1:k))*sum(this%W(i-1:i,j,k))
+               FWY(i,j,k)=0.25_WP*sum(FRY(i,j,k-1:k))*sum(this%W(i,j-1:j,k))
+            end do
+         end do
+      end do
+      
+      ! Assemble time derivative for momentum advection using semi-Lagrangian fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               this%Q(i,j,k,5)=this%Q(i,j,k,5)+this%SLdt*(this%dxi*(FUX(i  ,j,k)-FUX(i-1,j,k))+this%dyi*(FUY(i,j+1,k)-FUY(i,j  ,k))+this%dzi*(FUZ(i,j,k+1)-FUZ(i,j,k  )))
+               this%Q(i,j,k,6)=this%Q(i,j,k,6)+this%SLdt*(this%dxi*(FVX(i+1,j,k)-FVX(i  ,j,k))+this%dyi*(FVY(i,j  ,k)-FVY(i,j-1,k))+this%dzi*(FVZ(i,j,k+1)-FVZ(i,j,k  )))
+               this%Q(i,j,k,7)=this%Q(i,j,k,7)+this%SLdt*(this%dxi*(FWX(i+1,j,k)-FWX(i  ,j,k))+this%dyi*(FWY(i,j+1,k)-FWY(i,j  ,k))+this%dzi*(FWZ(i,j,k  )-FWZ(i,j,k-1)))
+            end do
+         end do
+      end do
+      
       ! Synchronize all dQdt fields
       do n=1,this%nQ; call this%cfg%sync(this%Q(:,:,:,n)); end do
-      ! Stop semi-Lagrangian timer
-      call this%tsl%stop()
+      
+      ! Stop rhs timer
+      call this%trhs%stop()
+      
    end subroutine SLincrement
    
    
@@ -798,8 +862,8 @@ contains
                dQdt(i,j,k,4)=this%dxi*(Fx(i+1,j,k,4)-Fx(i,j,k,4))+this%dyi*(Fy(i,j+1,k,4)-Fy(i,j,k,4))+this%dzi*(Fz(i,j,k+1,4)-Fz(i,j,k,4))
                ! Pressure dilatation term
                div=this%dxi*(this%U(i+1,j,k)-this%U(i,j,k))+this%dyi*(this%V(i,j+1,k)-this%V(i,j,k))+this%dzi*(this%W(i,j,k+1)-this%W(i,j,k))
-               dQdt(i,j,k,3)=dQdt(i,j,k,3)+(       this%VF(i,j,k))*this%PL(i,j,k)*div
-               dQdt(i,j,k,4)=dQdt(i,j,k,4)+(1.0_WP-this%VF(i,j,k))*this%PG(i,j,k)*div
+               dQdt(i,j,k,3)=dQdt(i,j,k,3)-(       this%VF(i,j,k))*this%PL(i,j,k)*div
+               dQdt(i,j,k,4)=dQdt(i,j,k,4)-(1.0_WP-this%VF(i,j,k))*this%PG(i,j,k)*div
             end do
          end do
       end do
@@ -1272,11 +1336,10 @@ contains
    
    
    !> Calculate all primitive and mixture variables from updated conserved variables
-   subroutine get_primitive(this,PLfunc,TLfunc,PGfunc,TGfunc)
+   subroutine get_primitive(this)
       implicit none
       class(mpcomp), intent(inout) :: this
-      procedure(Pfunc_type) :: PLfunc,PGfunc
-      procedure(Tfunc_type) :: TLfunc,TGfunc
+      real(WP) :: CL,CG
       integer :: i,j,k
       ! First get mixture velocity
       this%RHO=this%Q(:,:,:,1)+this%Q(:,:,:,2)
@@ -1289,33 +1352,42 @@ contains
          if (this%VF(i,j,k).ge.VFlo) then
             this%RHOL(i,j,k)=this%Q(i,j,k,1)/this%VF(i,j,k)
             this%EL  (i,j,k)=this%Q(i,j,k,3)/this%Q (i,j,k,1)
-            this%PL  (i,j,k)=PLfunc(this%RHOL(i,j,k),this%EL(i,j,k))
-            this%TL  (i,j,k)=TLfunc(this%EL  (i,j,k))
+            this%PL  (i,j,k)=this%getPL(this%RHOL(i,j,k),this%EL(i,j,k))
+            this%TL  (i,j,k)=this%getTL(this%RHOL(i,j,k),this%PL(i,j,k))
+            CL              =this%getCL(this%RHOL(i,j,k),this%PL(i,j,k))
          else
             this%RHOL(i,j,k)=0.0_WP
+            this%RHOG(i,j,k)=this%RHO(i,j,k)
             this%EL  (i,j,k)=0.0_WP
+            this%EG  (i,j,k)=this%E(i,j,k)
             this%PL  (i,j,k)=0.0_WP
             this%TL  (i,j,k)=0.0_WP
+            CL              =0.0_WP
          end if
          ! Gas primitive variables
          if (this%VF(i,j,k).le.VFhi) then
             this%RHOG(i,j,k)=this%Q(i,j,k,2)/(1.0_WP-this%VF(i,j,k))
             this%EG  (i,j,k)=this%Q(i,j,k,4)/        this%Q (i,j,k,2)
-            this%PG  (i,j,k)=PGfunc(this%RHOG(i,j,k),this%EG(i,j,k))
-            this%TG  (i,j,k)=TGfunc(this%EG  (i,j,k))
+            this%PG  (i,j,k)=this%getPG(this%RHOG(i,j,k),this%EG(i,j,k))
+            this%TG  (i,j,k)=this%getTG(this%RHOG(i,j,k),this%PG(i,j,k))
+            CG              =this%getCG(this%RHOG(i,j,k),this%PG(i,j,k))
          else
             this%RHOG(i,j,k)=0.0_WP
+            this%RHOL(i,j,k)=this%RHO(i,j,k)
             this%EG  (i,j,k)=0.0_WP
+            this%EL  (i,j,k)=this%E(i,j,k)
             this%PG  (i,j,k)=0.0_WP
             this%TG  (i,j,k)=0.0_WP
+            CG              =0.0_WP
          end if
          ! Also reset conserved phasic variables for consistency
          this%Q(i,j,k,1)=(       this%VF(i,j,k))*this%RHOL(i,j,k)
          this%Q(i,j,k,2)=(1.0_WP-this%VF(i,j,k))*this%RHOG(i,j,k)
          this%Q(i,j,k,3)=(       this%VF(i,j,k))*this%RHOL(i,j,k)*this%EL(i,j,k)
          this%Q(i,j,k,4)=(1.0_WP-this%VF(i,j,k))*this%RHOG(i,j,k)*this%EG(i,j,k)
+         ! Mixture speed of sound
+         this%C(i,j,k)=sqrt(this%Q(i,j,k,1)*CL/this%RHO(i,j,k)+this%Q(i,j,k,2)*CG/this%RHO(i,j,k))
       end do; end do; end do
-      call this%get_momentum()
       ! Other mixture variables
       this%P=this%VF*this%PL+(1.0_WP-this%VF)*this%PG
       this%T=0.0_WP
@@ -1445,22 +1517,21 @@ contains
    
    
    !> Calculate the CFL
-   subroutine get_cfl(this,dt,C,cfl)
+   subroutine get_cfl(this,dt,cfl)
       use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX,MPI_IN_PLACE
       use parallel, only: MPI_REAL_WP
       implicit none
       class(mpcomp), intent(inout) :: this
       real(WP), intent(in)  :: dt
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: C !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), intent(out) :: cfl
       integer :: ierr
       real(WP) :: maxvisc,maxC
       ! Compute convective+acoustic CFLs
-      this%CFLc_x=maxval(abs(this%U)+abs(C))*dt*this%dxi; call MPI_ALLREDUCE(MPI_IN_PLACE,this%CFLc_x,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
-      this%CFLc_y=maxval(abs(this%V)+abs(C))*dt*this%dyi; call MPI_ALLREDUCE(MPI_IN_PLACE,this%CFLc_y,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
-      this%CFLc_z=maxval(abs(this%W)+abs(C))*dt*this%dzi; call MPI_ALLREDUCE(MPI_IN_PLACE,this%CFLc_z,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+      this%CFLc_x=maxval(abs(this%U)+abs(this%C))*dt*this%dxi; call MPI_ALLREDUCE(MPI_IN_PLACE,this%CFLc_x,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+      this%CFLc_y=maxval(abs(this%V)+abs(this%C))*dt*this%dyi; call MPI_ALLREDUCE(MPI_IN_PLACE,this%CFLc_y,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+      this%CFLc_z=maxval(abs(this%W)+abs(this%C))*dt*this%dzi; call MPI_ALLREDUCE(MPI_IN_PLACE,this%CFLc_z,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       ! Compute acoustic CFLs
-      maxC=maxval(C); call MPI_ALLREDUCE(MPI_IN_PLACE,maxC,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+      maxC=maxval(this%C); call MPI_ALLREDUCE(MPI_IN_PLACE,maxC,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       this%CFLa_x=maxC*dt*this%dxi
       this%CFLa_y=maxC*dt*this%dyi
       this%CFLa_z=maxC*dt*this%dzi
