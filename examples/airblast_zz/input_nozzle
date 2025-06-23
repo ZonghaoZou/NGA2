@@ -1,0 +1,34 @@
+# Parallelization
+Partition : 30 1 12
+I/O partition : 1 1 1
+
+# Mesh definition
+X shift : 0.085
+Lx :  0.085
+Ly :  0.085
+Lz :  0.085
+nx :  300!600
+ny :  300!600
+nz :  300!600
+
+# PLY file
+PLY filename : atomizer_box.ply
+
+# Flow conditions
+Axial flow rate (SLPM) : 85.7
+Swirl flow rate (SLPM) : 64.3
+
+# Fluid properties
+Density :           1.226
+Dynamic viscosity : 1.780e-5
+
+# Time integration
+Max timestep size : 1.0e-6
+Max cfl number :    0.9
+
+# Data output
+Ensight output period : 2.5e-4
+Restart output period : 0.5e-2
+
+# Data restart
+Restart from : 1.50000E-02!2.00000E-01
