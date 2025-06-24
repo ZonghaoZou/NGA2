@@ -29,15 +29,18 @@ module postproc_class
       !> Data arrays
       real(WP), dimension(:,:,:), allocatable :: VF
       real(WP), dimension(:), allocatable :: Lb
-      ! real(WP), dimension(:,:,:), allocatable :: U
+      real(WP), dimension(:,:), allocatable :: U
       real(WP), dimension(:,:), allocatable :: by,bz
    contains
       procedure :: analyze
       procedure, private :: read_ensight_scalar
+      procedure, private :: read_ensight_vector
       procedure, private :: extract_core
       procedure, private :: analyze_core
       procedure, private :: extract_EPL
       procedure, private :: analyze_EPL
+      procedure, private :: extract_InletVel
+      procedure, private :: analyze_InletVel
    end type postproc
       
 contains
@@ -79,6 +82,47 @@ contains
    end subroutine read_ensight_scalar
    
    
+   subroutine read_ensight_vector(this,filename,U,V,W)
+      use mpi_f08
+      use parallel, only: group,info_mpiio,MPI_REAL_SP
+      use string,   only: str_medium
+      use messager, only: die
+      class(postproc), intent(inout) :: this
+      character(len=str_medium), intent(in) :: filename
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: U
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: V
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: W
+      integer(kind=MPI_OFFSET_KIND) :: disp
+      real(SP), dimension(:,:,:), allocatable :: spbuff
+      type(MPI_Status):: status
+      type(MPI_File) :: ifile
+      integer :: ierr,i
+      ! Zero out SC
+      U=0.0_WP;V=0.0_WP;W=0.0_WP
+      ! Parallel read the file
+      call MPI_FILE_OPEN(this%cfg%comm,trim(filename),MPI_MODE_RDONLY,info_mpiio,ifile,ierr)
+      if (ierr.ne.0) call die('[postproc read_ensight_scalar] Problem encountered while parallel reading data file '//trim(filename))
+      disp=244
+      allocate(spbuff(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_))
+      call MPI_FILE_SET_VIEW(ifile,disp,MPI_REAL_SP,this%cfg%SPview,'native',info_mpiio,ierr)
+      call MPI_FILE_READ_ALL(ifile,spbuff,this%cfg%nx_*this%cfg%ny_*this%cfg%nz_,MPI_REAL_SP,status,ierr)
+      U(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_)=real(spbuff(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_),WP)
+      disp=disp+int(this%cfg%nx,MPI_OFFSET_KIND)*int(this%cfg%ny,MPI_OFFSET_KIND)*int(this%cfg%nz,MPI_OFFSET_KIND)*int(SP,MPI_OFFSET_KIND)
+      call MPI_FILE_SET_VIEW(ifile,disp,MPI_REAL_SP,this%cfg%SPview,'native',info_mpiio,ierr)
+      call MPI_FILE_READ_ALL(ifile,spbuff,this%cfg%nx_*this%cfg%ny_*this%cfg%nz_,MPI_REAL_SP,status,ierr)
+      V(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_)=real(spbuff(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_),WP)
+      disp=disp+int(this%cfg%nx,MPI_OFFSET_KIND)*int(this%cfg%ny,MPI_OFFSET_KIND)*int(this%cfg%nz,MPI_OFFSET_KIND)*int(SP,MPI_OFFSET_KIND)
+      call MPI_FILE_SET_VIEW(ifile,disp,MPI_REAL_SP,this%cfg%SPview,'native',info_mpiio,ierr)
+      call MPI_FILE_READ_ALL(ifile,spbuff,this%cfg%nx_*this%cfg%ny_*this%cfg%nz_,MPI_REAL_SP,status,ierr)
+      W(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_)=real(spbuff(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_),WP)
+      call MPI_FILE_CLOSE(ifile,ierr)
+      deallocate(spbuff)
+      ! Update ghost cells
+      call this%cfg%sync(U)
+      call this%cfg%sync(V)
+      call this%cfg%sync(W)
+   end subroutine read_ensight_vector
+
    !> Extract a pmesh skeleton of the liquid core from CCL data
    subroutine extract_core(this,VFtmp,nfile)
       use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE,MPI_MAX
@@ -156,7 +200,6 @@ contains
       end function same_label
    end subroutine extract_core
    
-
    subroutine analyze_core(this,fstart,fend)
       use string,   only: str_medium
       implicit none
@@ -174,7 +217,6 @@ contains
          close(unit=10)
       end if
    end subroutine analyze_core
-
 
    !> Extract a liquid droplets from CCL data
    subroutine extract_EPL(this,VF,nfile)
@@ -196,7 +238,6 @@ contains
       end do
 
    end subroutine extract_EPL
-   
 
    !> Extract a liquid droplets from CCL data
    subroutine analyze_EPL(this,dir,xconst,yconst)
@@ -267,6 +308,74 @@ contains
          end select
    end subroutine analyze_EPL
 
+   !> Extract a pmesh skeleton of the liquid core from CCL data
+   subroutine extract_InletVel(this,U,nfile)
+      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+      use parallel,  only: MPI_REAL_WP
+      implicit none
+      class(postproc), intent(inout) :: this
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: U
+      real(WP), dimension(:), allocatable :: Utmp
+      integer, intent(in) :: nfile
+      integer:: i,j,k,ierr
+      
+      allocate(Utmp(this%cfg%jmin:this%cfg%jmax));Utmp=0.0_WP
+      ! Loop through x domain and get x location
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do i=this%cfg%imin_,this%cfg%imax_
+            if (this%cfg%zm(k).ge.0.0_WP .and. this%cfg%zm(k-1).lt.0.0_WP ) then
+               if (this%cfg%xm(i).ge.0.0_WP .and. this%cfg%xm(i-1).lt.0.0_WP ) then
+                  do j = this%cfg%jmin_,this%cfg%jmax_
+                     Utmp(j) = U(i,j,k)
+                  end do
+               end if
+            end if
+         end do
+      end do
+      call MPI_ALLREDUCE(MPI_IN_PLACE,Utmp,size(Utmp),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+      this%U(:,nfile) = Utmp
+   end subroutine extract_InletVel
+
+
+   !> Extract a pmesh skeleton of the liquid core from CCL data
+   subroutine analyze_InletVel(this)
+      use mathtools, only: Pi
+      use string,   only: str_medium
+      implicit none
+      class(postproc), intent(inout) :: this
+      character(len=str_medium) :: filename
+      real(WP), dimension(:), allocatable :: Uinlet_avg,Uinlet_std
+      integer :: j
+      real(WP), parameter :: SLPM2SI=1.66667E-5_WP
+      real(WP), parameter :: Daxial=+0.01600000_WP
+      real(WP) :: dg,Qaxial,Uaxial,Aaxial,dl
+      dg=0.01_WP
+      dl=0.003_WP
+      ! call this%input%read('Total flow rate (SLPM)',Qaxial)
+      Qaxial=150.0_WP*SLPM2SI
+      Aaxial=0.25_WP*Pi*(dg**2-dl**2)
+      Uaxial=Qaxial/Aaxial 
+      ! print *, dg,Qaxial,Aaxial,Uaxial+
+      allocate(Uinlet_avg(this%cfg%jmin:this%cfg%jmax));Uinlet_avg=0.0_WP
+      allocate(Uinlet_std(this%cfg%jmin:this%cfg%jmax));Uinlet_std=0.0_WP
+      do j=this%cfg%jmin,this%cfg%jmax
+         Uinlet_avg(j)=sum(this%U(j,:))/size(this%U(j,:))
+         Uinlet_std(j)=sqrt(sum((this%U(j,:)-Uinlet_avg(j))**2)/size(this%U(j,:)))
+      end do
+      if (this%cfg%amRoot) then
+         filename="Uinlet.csv"
+         ! Open file dynamically with append mode
+         open(unit=10, file=filename, status="replace", action="write")
+         do j=this%cfg%jmin,this%cfg%jmax
+            write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%ym(j)/dg,Uinlet_avg(j)/Uaxial,Uinlet_std(j)/Uaxial
+         end do
+         close(unit=10)
+      end if
+
+   end subroutine analyze_InletVel
+
+
+
    !> Analysis of atom simulation
    subroutine analyze(this)
       use parallel, only: amRoot
@@ -274,7 +383,7 @@ contains
       use messager, only: log
       implicit none
       class(postproc), intent(inout) :: this
-      real(WP), dimension(:,:,:), allocatable :: VFtmp
+      real(WP), dimension(:,:,:), allocatable :: VFtmp,U,V,W
       character(len=str_medium) :: filename
       integer :: nfile,fstart,fend
       
@@ -321,10 +430,14 @@ contains
          allocate(this%Lb(fstart:fend));this%Lb=0.0_WP
          allocate(this%by(this%cfg%imin:this%cfg%imax,fstart:fend)); this%by=0.0_WP
          allocate(this%bz(this%cfg%imin:this%cfg%imax,fstart:fend)); this%bz=0.0_WP
+         allocate(this%U (this%cfg%jmin:this%cfg%jmax,fstart:fend)); this%U =0.0_WP
          ! allocate(this%U (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%U=0.0_WP
          ! allocate(this%Lb(fstart:fend)); this%Lb=0.0_WP
          ! allocate(this%bv(this%cfg%imino:this%cfg%imaxo)); this%bv=0.0_WP
          allocate(VFtmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); VFtmp=0.0_WP
+         allocate(U(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); U=0.0_WP
+         allocate(V(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); V=0.0_WP
+         allocate(W(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); W=0.0_WP
       end block allocate_data
       
 
@@ -334,15 +447,21 @@ contains
          filename='ensight/atom/VOF/VOF.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
          call log('Postprocessing file '//trim(filename)//'...')
          call this%read_ensight_scalar(filename,VFtmp)
-         call log('|----> File read successfully')
+         call log('|----> VOF read successfully')
+         filename='ensight/atom/velocity/velocity.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
+         call this%read_ensight_vector(filename,U,V,W)
+         call log('|----> Vel read successfully')
          call this%extract_EPL(VF=VFtmp,nfile=nfile)
          call log('|----> EPL calculation done')
          call this%extract_core(VFtmp=VFtmp,nfile=nfile)
          call log('|----> liquid core extracted')
+         call this%extract_InletVel(U=U,nfile=nfile)
+         call log('|----> Inlet Vel extracted')
       end do
       
       call this%analyze_EPL(dir=2,xconst=0.0_WP,yconst=0.0_WP)
       call this%analyze_core(fstart,fend)
+      call this%analyze_InletVel()
    end subroutine analyze
    
 
