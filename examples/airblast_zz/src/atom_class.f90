@@ -88,6 +88,7 @@ module atom_class
       real(WP) :: frp
       real(WP) :: fmin
       real(WP) :: fd0
+      real(WP) :: fbvol2dvol
       real(WP) :: fnumcell
       real(WP) :: vof_tf_film       
       integer  :: np_film
@@ -126,12 +127,13 @@ module atom_class
 
    
    !> Hardcode inlet positions used in locator functions at x=-0.01
-   real(WP), parameter, public :: dl=0.0025_WP   ! Liquid pipe diameter ~(inner+outer)/2
+   ! real(WP), parameter, public :: dl=0.0025_WP   ! Liquid pipe diameter ~(inner+outer)/2
+   real(WP), parameter, public :: dl=0.003_WP   ! Liquid outer pipe diameter 
    real(WP), parameter, public :: dg=0.0100_WP   ! Gas pipe diameter ~(inner+outer)/2
    ! 0.0206 doesn't seem right, it seems to be over estimating
    ! real(WP), parameter, public :: dg=0.0206_WP   ! Gas pipe diameter ~(inner+outer)/2
    real(WP), parameter, public :: rl=0.0010_WP   ! Liquid pipe inner radius
-   real(WP), parameter, public :: rlo=0.0030_WP   ! Liquid pipe outer radius
+   real(WP), parameter, public :: rlo=0.0015_WP   ! Liquid pipe outer radius
    
 contains
    
@@ -459,6 +461,13 @@ contains
       end if
       ! output to confirm
       if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", fthc(n), "and this is id:", n ,"vol is:", fvol(n)
+      ! Assume fd0 across the processor based on the total volume of the film
+      if (.not.frem_active) then
+         this%fd0 =(6.0_WP*Pi*fvol(n)/this%fbvol2dvol)**(1.0_WP/3.0_WP)
+      else
+         this%fd0 =dl
+      end if
+
       ! sort cell index based on local film thickness
       if (this%ccl_film%struct(n)%n_.ge.1) then
          allocate(sort_id(1:this%ccl_film%struct(n)%n_)) 
@@ -1482,6 +1491,7 @@ contains
             call this%ccl_film%initialize(pg=this%cfg%pgrid,name='ccl_film')
             this%frp=0.0_WP
             this%fd0 =dl     ! Take the baseline diamter as the liquid core diameter 
+            this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             this%fmin=2.2e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%fnumcell=50.0_WP
             ! Zero out monitoring variables
