@@ -50,15 +50,18 @@ module mpcomp_class
       integer :: nQ
       real(WP), dimension(:,:,:,:), allocatable :: Q,Qold
       
-      ! Flow variables
-      real(WP), dimension(:,:,:), allocatable :: U,V,W
+      ! Flow velocity and kinetic energy per unit mass
+      real(WP), dimension(:,:,:), allocatable :: U,V,W,K
       
       ! Phasic densities
       real(WP), dimension(:,:,:), allocatable :: RHOL,RHOG,RHOLold,RHOGold
       
       ! Phasic internal energies
-      real(WP), dimension(:,:,:), allocatable :: EL,EG,ELold,EGold
+      real(WP), dimension(:,:,:), allocatable :: IL,IG,ILold,IGold
       
+      ! Phasic total energies
+      real(WP), dimension(:,:,:), allocatable :: EL,EG
+
       ! Phasic pressures
       real(WP), dimension(:,:,:), allocatable :: PL,PG
       
@@ -89,13 +92,15 @@ module mpcomp_class
       ! Monitoring quantities for primitive variables
       real(WP) :: Umax,Vmax,Wmax                          !< Velocity stats
       real(WP) :: RHOLmin,RHOLmax                         !< Liquid density stats
-      real(WP) :: RHOGmin,RHOGmax                         !< Gas density stats
-      real(WP) :: ELmin,ELmax                             !< Liquid energy stats
-      real(WP) :: EGmin,EGmax                             !< Gas energy stats
+      real(WP) :: RHOGmin,RHOGmax                         !< Gas    density stats
+      real(WP) :: ILmin,ILmax                             !< Liquid internal energy stats
+      real(WP) :: IGmin,IGmax                             !< Gas    internal energy stats
+      real(WP) :: ELmin,ELmax                             !< Liquid total energy stats
+      real(WP) :: EGmin,EGmax                             !< Gas    total energy stats
       real(WP) :: PLmin,PLmax                             !< Liquid pressure stats
-      real(WP) :: PGmin,PGmax                             !< Gas pressure stats
+      real(WP) :: PGmin,PGmax                             !< Gas    pressure stats
       real(WP) :: TLmin,TLmax                             !< Liquid temperature stats
-      real(WP) :: TGmin,TGmax                             !< Gas temperature stats
+      real(WP) :: TGmin,TGmax                             !< Gas    temperature stats
       
       ! Timers
       type(timer) :: trhs                                 !< Timer for RHS calculation (excluding tagged cells)
@@ -129,6 +134,7 @@ module mpcomp_class
       procedure :: build_interface                        !< Build interface from volume moments
       procedure :: get_primitive                          !< Calculate phasic and mixture primitive variables from conserved variables
       procedure :: get_velocity                           !< Calculate velocity from momentum
+      procedure :: get_ke                                 !< Calculate kinetic energy per unit mass from velocity
       procedure :: get_momentum                           !< Calculate momentum from velocity
       procedure :: interp_vel                             !< Calculate interpolated velocity
       procedure :: get_cfl                                !< Calculate maximum CFL
@@ -138,12 +144,12 @@ module mpcomp_class
    
    !> Interfaces for user-defined function
    abstract interface
-      !> P=P(RHO,E)
-      pure real(WP) function Pfunc_type(RHO,E)
+      !> P=P(RHO,I)
+      pure real(WP) function Pfunc_type(RHO,I)
          import :: WP
          implicit none
          real(WP), intent(in) :: RHO
-         real(WP), intent(in) :: E
+         real(WP), intent(in) :: I
       end function Pfunc_type
       !> T=T(RHO,P)
       pure real(WP) function Tfunc_type(RHO,P)
@@ -230,6 +236,7 @@ contains
       allocate(this%U(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%U=0.0_WP
       allocate(this%V(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%V=0.0_WP
       allocate(this%W(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%W=0.0_WP
+      allocate(this%K(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%K=0.0_WP
       
       ! Phasic densities
       allocate(this%RHOL   (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%RHOL   =0.0_WP
@@ -238,20 +245,24 @@ contains
       allocate(this%RHOGold(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%RHOGold=0.0_WP
       
       ! Phasic internal energies
-      allocate(this%EL   (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%EL   =0.0_WP
-      allocate(this%EG   (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%EG   =0.0_WP
-      allocate(this%ELold(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%ELold=0.0_WP
-      allocate(this%EGold(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%EGold=0.0_WP
+      allocate(this%IL   (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%IL   =0.0_WP
+      allocate(this%IG   (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%IG   =0.0_WP
+      allocate(this%ILold(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%ILold=0.0_WP
+      allocate(this%IGold(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%IGold=0.0_WP
       
-      ! Phasic pressures
-      allocate(this%PL(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%PL=0.0_WP
-      allocate(this%PG(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%PG=0.0_WP
+      ! Phasic total energies
+      allocate(this%EL(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%EL=0.0_WP
+      allocate(this%EG(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%EG=0.0_WP
       
       ! Phasic temperatures
       allocate(this%TL(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%TL=0.0_WP
       allocate(this%TG(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%TG=0.0_WP
       
-      ! Mixture density, energy, pressure, temperature, and speed of sound
+      ! Phasic pressures
+      allocate(this%PL(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%PL=0.0_WP
+      allocate(this%PG(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%PG=0.0_WP
+      
+      ! Mixture density, total energy, pressure, temperature, and speed of sound
       allocate(this%RHO(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%RHO=0.0_WP
       allocate(this%E  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%E  =0.0_WP
       allocate(this%P  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%P  =0.0_WP
@@ -430,7 +441,7 @@ contains
       type(TagAccVM_SepVM_type) :: detailed_face_flux
       real(WP), dimension(3) :: lbar,gbar
       integer , dimension(3) :: ind
-      real(WP) :: lvol,gvol,lrho,grho,lrhoe,grhoe
+      real(WP) :: lvol,gvol,lrho,grho,lrhoi,grhoi
       real(WP) :: Lvolold,Gvolold,Lvolinc,Gvolinc,Lvolnew,Gvolnew
       integer :: i,j,k,n
       
@@ -447,10 +458,10 @@ contains
       ! Zero out semi-Lagrangian fluxes
       this%SLFx=0.0_WP; this%SLFy=0.0_WP; this%SLFz=0.0_WP
       
-      ! Loop through all cell faces - extra cell on the left because mass flux will be needed by momentum later
-      do k=this%cfg%kmin_-1,this%cfg%kmax_+1       !
-         do j=this%cfg%jmin_-1,this%cfg%jmax_+1    ! Extra cell on the left will be used by momentum flux later
-            do i=this%cfg%imin_-1,this%cfg%imax_+1 !
+      ! Loop through all cell faces and get volume moment, mass, and internal energy fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
                
                ! X flux
                if (maxval(this%iSL(i-1:i,j,k)).gt.0) then
@@ -467,15 +478,15 @@ contains
                   ! Build detailed geometric flux
                   call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),detailed_face_flux)
                   ! Build finite volume fluxes from detailed flux
-                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lrho=0.0_WP; grho=0.0_WP; lrhoe=0.0_WP; grhoe=0.0_WP
+                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lrho=0.0_WP; grho=0.0_WP; lrhoi=0.0_WP; grhoi=0.0_WP
                   do n=0,getSize(detailed_face_flux)-1
                      ind=this%cfg%get_ijk_from_lexico(getTagForIndex(detailed_face_flux,n))
                      call getSepVMAtIndex(detailed_face_flux,n,my_SepVM)
-                     lvol=lvol+getVolume(my_SepVM,0); lbar=lbar+getCentroid(my_SepVM,0); lrho=lrho+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3)); lrhoe=lrhoe+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3))*this%ELold(ind(1),ind(2),ind(3))
-                     gvol=gvol+getVolume(my_SepVM,1); gbar=gbar+getCentroid(my_SepVM,1); grho=grho+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3)); grhoe=grhoe+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3))*this%EGold(ind(1),ind(2),ind(3))
+                     lvol=lvol+getVolume(my_SepVM,0); lbar=lbar+getCentroid(my_SepVM,0); lrho=lrho+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3)); lrhoi=lrhoi+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3))*this%ILold(ind(1),ind(2),ind(3))
+                     gvol=gvol+getVolume(my_SepVM,1); gbar=gbar+getCentroid(my_SepVM,1); grho=grho+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3)); grhoi=grhoi+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3))*this%IGold(ind(1),ind(2),ind(3))
                   end do
                   call construct(this%FVx(i,j,k),[lvol,lbar,gvol,gbar])
-                  this%SLFx(i,j,k,1:4)=-[lrho,grho,lrhoe,grhoe]/(dt*this%dy*this%dz)
+                  this%SLFx(i,j,k,1:4)=-[lrho,grho,lrhoi,grhoi]/(dt*this%dy*this%dz)
                   ! Clear detailed flux
                   call clear(detailed_face_flux)
                end if
@@ -495,15 +506,15 @@ contains
                   ! Build detailed geometric flux
                   call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),detailed_face_flux)
                   ! Build finite volume fluxes from detailed flux
-                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lrho=0.0_WP; grho=0.0_WP; lrhoe=0.0_WP; grhoe=0.0_WP
+                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lrho=0.0_WP; grho=0.0_WP; lrhoi=0.0_WP; grhoi=0.0_WP
                   do n=0,getSize(detailed_face_flux)-1
                      ind=this%cfg%get_ijk_from_lexico(getTagForIndex(detailed_face_flux,n))
                      call getSepVMAtIndex(detailed_face_flux,n,my_SepVM)
-                     lvol=lvol+getVolume(my_SepVM,0); lbar=lbar+getCentroid(my_SepVM,0); lrho=lrho+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3)); lrhoe=lrhoe+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3))*this%ELold(ind(1),ind(2),ind(3))
-                     gvol=gvol+getVolume(my_SepVM,1); gbar=gbar+getCentroid(my_SepVM,1); grho=grho+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3)); grhoe=grhoe+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3))*this%EGold(ind(1),ind(2),ind(3))
+                     lvol=lvol+getVolume(my_SepVM,0); lbar=lbar+getCentroid(my_SepVM,0); lrho=lrho+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3)); lrhoi=lrhoi+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3))*this%ILold(ind(1),ind(2),ind(3))
+                     gvol=gvol+getVolume(my_SepVM,1); gbar=gbar+getCentroid(my_SepVM,1); grho=grho+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3)); grhoi=grhoi+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3))*this%IGold(ind(1),ind(2),ind(3))
                   end do
                   call construct(this%FVy(i,j,k),[lvol,lbar,gvol,gbar])
-                  this%SLFy(i,j,k,1:4)=-[lrho,grho,lrhoe,grhoe]/(dt*this%dx*this%dz)
+                  this%SLFy(i,j,k,1:4)=-[lrho,grho,lrhoi,grhoi]/(dt*this%dx*this%dz)
                   ! Clear detailed flux
                   call clear(detailed_face_flux)
                end if
@@ -523,15 +534,15 @@ contains
                   ! Build detailed geometric flux
                   call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),detailed_face_flux)
                   ! Build finite volume fluxes from detailed flux
-                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lrho=0.0_WP; grho=0.0_WP; lrhoe=0.0_WP; grhoe=0.0_WP
+                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lrho=0.0_WP; grho=0.0_WP; lrhoi=0.0_WP; grhoi=0.0_WP
                   do n=0,getSize(detailed_face_flux)-1
                      ind=this%cfg%get_ijk_from_lexico(getTagForIndex(detailed_face_flux,n))
                      call getSepVMAtIndex(detailed_face_flux,n,my_SepVM)
-                     lvol=lvol+getVolume(my_SepVM,0); lbar=lbar+getCentroid(my_SepVM,0); lrho=lrho+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3)); lrhoe=lrhoe+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3))*this%ELold(ind(1),ind(2),ind(3))
-                     gvol=gvol+getVolume(my_SepVM,1); gbar=gbar+getCentroid(my_SepVM,1); grho=grho+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3)); grhoe=grhoe+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3))*this%EGold(ind(1),ind(2),ind(3))
+                     lvol=lvol+getVolume(my_SepVM,0); lbar=lbar+getCentroid(my_SepVM,0); lrho=lrho+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3)); lrhoi=lrhoi+getVolume(my_SepVM,0)*this%RHOLold(ind(1),ind(2),ind(3))*this%ILold(ind(1),ind(2),ind(3))
+                     gvol=gvol+getVolume(my_SepVM,1); gbar=gbar+getCentroid(my_SepVM,1); grho=grho+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3)); grhoi=grhoi+getVolume(my_SepVM,1)*this%RHOGold(ind(1),ind(2),ind(3))*this%IGold(ind(1),ind(2),ind(3))
                   end do
                   call construct(this%FVz(i,j,k),[lvol,lbar,gvol,gbar])
-                  this%SLFz(i,j,k,1:4)=-[lrho,grho,lrhoe,grhoe]/(dt*this%dx*this%dy)
+                  this%SLFz(i,j,k,1:4)=-[lrho,grho,lrhoi,grhoi]/(dt*this%dx*this%dy)
                   ! Clear detailed flux
                   call clear(detailed_face_flux)
                end if
@@ -646,24 +657,32 @@ contains
       ! Start rhs timer
       call this%trhs%start()
       
-      ! Assemble time derivative for mass, internal energy, and momentum advection with semi-Lagrangian fluxes
+      ! Increment phasic mass         time derivative with phasic mass            advection term built from semi-Lagrangian fluxes
+      ! Increment phasic total energy time derivative with phasic internal energy advection term built from semi-Lagrangian fluxes
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               this%Q(i,j,k,1)=this%Q(i,j,k,1)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,1)-this%SLFx(i  ,j,k,1))+this%dyi*(this%SLFy(i,j+1,k,1)-this%SLFy(i,j  ,k,1))+this%dzi*(this%SLFz(i,j,k+1,1)-this%SLFz(i,j,k  ,1)))
-               this%Q(i,j,k,2)=this%Q(i,j,k,2)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,2)-this%SLFx(i  ,j,k,2))+this%dyi*(this%SLFy(i,j+1,k,2)-this%SLFy(i,j  ,k,2))+this%dzi*(this%SLFz(i,j,k+1,2)-this%SLFz(i,j,k  ,2)))
-               this%Q(i,j,k,3)=this%Q(i,j,k,3)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,3)-this%SLFx(i  ,j,k,3))+this%dyi*(this%SLFy(i,j+1,k,3)-this%SLFy(i,j  ,k,3))+this%dzi*(this%SLFz(i,j,k+1,3)-this%SLFz(i,j,k  ,3)))
-               this%Q(i,j,k,4)=this%Q(i,j,k,4)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,4)-this%SLFx(i  ,j,k,4))+this%dyi*(this%SLFy(i,j+1,k,4)-this%SLFy(i,j  ,k,4))+this%dzi*(this%SLFz(i,j,k+1,4)-this%SLFz(i,j,k  ,4)))
+               ! Phasic mass advection
+               this%Q(i,j,k,1)=this%Q(i,j,k,1)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,1)-this%SLFx(i,j,k,1))+this%dyi*(this%SLFy(i,j+1,k,1)-this%SLFy(i,j,k,1))+this%dzi*(this%SLFz(i,j,k+1,1)-this%SLFz(i,j,k,1)))
+               this%Q(i,j,k,2)=this%Q(i,j,k,2)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,2)-this%SLFx(i,j,k,2))+this%dyi*(this%SLFy(i,j+1,k,2)-this%SLFy(i,j,k,2))+this%dzi*(this%SLFz(i,j,k+1,2)-this%SLFz(i,j,k,2)))
+               ! Phasic internal energy advection
+               this%Q(i,j,k,3)=this%Q(i,j,k,3)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,3)-this%SLFx(i,j,k,3))+this%dyi*(this%SLFy(i,j+1,k,3)-this%SLFy(i,j,k,3))+this%dzi*(this%SLFz(i,j,k+1,3)-this%SLFz(i,j,k,3)))
+               this%Q(i,j,k,4)=this%Q(i,j,k,4)+this%SLdt*(this%dxi*(this%SLFx(i+1,j,k,4)-this%SLFx(i,j,k,4))+this%dyi*(this%SLFy(i,j+1,k,4)-this%SLFy(i,j,k,4))+this%dzi*(this%SLFz(i,j,k+1,4)-this%SLFz(i,j,k,4)))
             end do
          end do
       end do
       
-      ! Allocate multiphase mass flux arrays and populate
+      ! Mass fluxes are used to build momentum and kinetic energy fluxes, they need to be communicated and extended because of staggering
+      call this%cfg%sync(this%SLFx(:,:,:,1)); call this%cfg%sync(this%SLFx(:,:,:,2)); if (this%cfg%xper.and.this%cfg%iproc.eq.1) this%SLFx(this%cfg%imin-1,:,:,1:2)=this%SLFx(this%cfg%imin,:,:,1:2); if (this%cfg%xper.and.this%cfg%iproc.eq.this%cfg%npx) this%SLFx(this%cfg%imax+2,:,:,1:2)=this%SLFx(this%cfg%imax+1,:,:,1:2)
+      call this%cfg%sync(this%SLFy(:,:,:,1)); call this%cfg%sync(this%SLFy(:,:,:,2)); if (this%cfg%yper.and.this%cfg%jproc.eq.1) this%SLFy(:,this%cfg%jmin-1,:,1:2)=this%SLFy(:,this%cfg%jmin,:,1:2); if (this%cfg%yper.and.this%cfg%jproc.eq.this%cfg%npy) this%SLFy(:,this%cfg%jmax+2,:,1:2)=this%SLFy(:,this%cfg%jmax+1,:,1:2)
+      call this%cfg%sync(this%SLFz(:,:,:,1)); call this%cfg%sync(this%SLFz(:,:,:,2)); if (this%cfg%zper.and.this%cfg%kproc.eq.1) this%SLFz(:,:,this%cfg%kmin-1,1:2)=this%SLFz(:,:,this%cfg%kmin,1:2); if (this%cfg%zper.and.this%cfg%kproc.eq.this%cfg%npz) this%SLFz(:,:,this%cfg%kmax+2,1:2)=this%SLFz(:,:,this%cfg%kmax+1,1:2)
+      
+      ! Allocate mixture mass fluxes and populate from phasic fluxes
       allocate(FRX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRX=this%SLFx(:,:,:,1)+this%SLFx(:,:,:,2)
       allocate(FRY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRY=this%SLFy(:,:,:,1)+this%SLFy(:,:,:,2)
       allocate(FRZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRZ=this%SLFz(:,:,:,1)+this%SLFz(:,:,:,2)
       
-      ! Allocate momentum fluxes
+      ! Allocate mixture momentum and phasic kinetic energy fluxes
       allocate(FUX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FUY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FUZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
@@ -674,7 +693,7 @@ contains
       allocate(FWY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FWZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       
-      ! Calculate cell-centered momentum fluxes
+      ! Calculate cell-centered mixture momentum fluxes (this uses communicated mass flux at imin_-1)
       do k=this%cfg%kmin_-1,this%cfg%kmax_
          do j=this%cfg%jmin_-1,this%cfg%jmax_
             do i=this%cfg%imin_-1,this%cfg%imax_
@@ -685,7 +704,7 @@ contains
          end do
       end do
       
-      ! Calculate edge-centered momentum fluxes
+      ! Calculate edge-centered mixture momentum fluxes
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
@@ -699,13 +718,93 @@ contains
          end do
       end do
       
-      ! Assemble time derivative for momentum advection using semi-Lagrangian fluxes
+      ! Increment mixture momentum time derivative with momentum advection term built from semi-Lagrangian mass fluxes
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
                this%Q(i,j,k,5)=this%Q(i,j,k,5)+this%SLdt*(this%dxi*(FUX(i  ,j,k)-FUX(i-1,j,k))+this%dyi*(FUY(i,j+1,k)-FUY(i,j  ,k))+this%dzi*(FUZ(i,j,k+1)-FUZ(i,j,k  )))
                this%Q(i,j,k,6)=this%Q(i,j,k,6)+this%SLdt*(this%dxi*(FVX(i+1,j,k)-FVX(i  ,j,k))+this%dyi*(FVY(i,j  ,k)-FVY(i,j-1,k))+this%dzi*(FVZ(i,j,k+1)-FVZ(i,j,k  )))
                this%Q(i,j,k,7)=this%Q(i,j,k,7)+this%SLdt*(this%dxi*(FWX(i+1,j,k)-FWX(i  ,j,k))+this%dyi*(FWY(i,j+1,k)-FWY(i,j  ,k))+this%dzi*(FWZ(i,j,k  )-FWZ(i,j,k-1)))
+            end do
+         end do
+      end do
+      
+      ! Calculate cell-centered liquid kinetic energy fluxes (notice the extended loop: this uses mass flux/velocity at imin_-1 and imax_+2)
+      do k=this%cfg%kmin_-1,this%cfg%kmax_+1
+         do j=this%cfg%jmin_-1,this%cfg%jmax_+1
+            do i=this%cfg%imin_-1,this%cfg%imax_+1
+               FUX(i,j,k)=0.25_WP*sum(this%SLFx(i:i+1,j,k,1))*product(this%U(i:i+1,j,k))
+               FVY(i,j,k)=0.25_WP*sum(this%SLFy(i,j:j+1,k,1))*product(this%V(i,j:j+1,k))
+               FWZ(i,j,k)=0.25_WP*sum(this%SLFz(i,j,k:k+1,1))*product(this%W(i,j,k:k+1))
+            end do
+         end do
+      end do
+      
+      ! Calculate edge-centered liquid kinetic energy fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               FUY(i,j,k)=0.25_WP*sum(this%SLFy(i-1:i,j,k,1))*product(this%U(i,j-1:j,k))
+               FUZ(i,j,k)=0.25_WP*sum(this%SLFz(i-1:i,j,k,1))*product(this%U(i,j,k-1:k))
+               FVX(i,j,k)=0.25_WP*sum(this%SLFx(i,j-1:j,k,1))*product(this%V(i-1:i,j,k))
+               FVZ(i,j,k)=0.25_WP*sum(this%SLFz(i,j-1:j,k,1))*product(this%V(i,j,k-1:k))
+               FWX(i,j,k)=0.25_WP*sum(this%SLFx(i,j,k-1:k,1))*product(this%W(i-1:i,j,k))
+               FWY(i,j,k)=0.25_WP*sum(this%SLFy(i,j,k-1:k,1))*product(this%W(i,j-1:j,k))
+            end do
+         end do
+      end do
+      
+      ! Increment liquid total energy time derivative with liquid kinetic energy advection term built from semi-Lagrangian mass fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               this%Q(i,j,k,3)=this%Q(i,j,k,3)+this%SLdt*0.5_WP*&
+               &            (this%dxi*(FUX(i    ,j,k)-FUX(i-1  ,j,k))+this%dyi*(FUY(i  ,j+1,k)-FUY(i  ,j  ,k))+this%dzi*(FUZ(i  ,j,k+1)-FUZ(i  ,j,k  ))&
+               &            +this%dxi*(FUX(i+1  ,j,k)-FUX(i    ,j,k))+this%dyi*(FUY(i+1,j+1,k)-FUY(i+1,j  ,k))+this%dzi*(FUZ(i+1,j,k+1)-FUZ(i+1,j,k  ))&
+               &            +this%dxi*(FVX(i+1,j  ,k)-FVX(i  ,j  ,k))+this%dyi*(FVY(i,j    ,k)-FVY(i,j-1  ,k))+this%dzi*(FVZ(i,j  ,k+1)-FVZ(i,j  ,k  ))&
+               &            +this%dxi*(FVX(i+1,j+1,k)-FVX(i  ,j+1,k))+this%dyi*(FVY(i,j+1  ,k)-FVY(i,j    ,k))+this%dzi*(FVZ(i,j+1,k+1)-FVZ(i,j+1,k  ))&
+               &            +this%dxi*(FWX(i+1,j,k  )-FWX(i  ,j,k  ))+this%dyi*(FWY(i,j+1,k  )-FWY(i,j  ,k  ))+this%dzi*(FWZ(i,j,k    )-FWZ(i,j,k-1  ))&
+               &            +this%dxi*(FWX(i+1,j,k+1)-FWX(i  ,j,k+1))+this%dyi*(FWY(i,j+1,k+1)-FWY(i,j  ,k+1))+this%dzi*(FWZ(i,j,k+1  )-FWZ(i,j,k    )))
+            end do
+         end do
+      end do
+      
+      ! Calculate cell-centered gas kinetic energy fluxes (notice the extended loop: this uses mass flux/velocity at imin_-1 and imax_+2)
+      do k=this%cfg%kmin_-1,this%cfg%kmax_+1
+         do j=this%cfg%jmin_-1,this%cfg%jmax_+1
+            do i=this%cfg%imin_-1,this%cfg%imax_+1
+               FUX(i,j,k)=0.25_WP*sum(this%SLFx(i:i+1,j,k,2))*product(this%U(i:i+1,j,k))
+               FVY(i,j,k)=0.25_WP*sum(this%SLFy(i,j:j+1,k,2))*product(this%V(i,j:j+1,k))
+               FWZ(i,j,k)=0.25_WP*sum(this%SLFz(i,j,k:k+1,2))*product(this%W(i,j,k:k+1))
+            end do
+         end do
+      end do
+      
+      ! Calculate edge-centered gas kinetic energy fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               FUY(i,j,k)=0.25_WP*sum(this%SLFy(i-1:i,j,k,2))*product(this%U(i,j-1:j,k))
+               FUZ(i,j,k)=0.25_WP*sum(this%SLFz(i-1:i,j,k,2))*product(this%U(i,j,k-1:k))
+               FVX(i,j,k)=0.25_WP*sum(this%SLFx(i,j-1:j,k,2))*product(this%V(i-1:i,j,k))
+               FVZ(i,j,k)=0.25_WP*sum(this%SLFz(i,j-1:j,k,2))*product(this%V(i,j,k-1:k))
+               FWX(i,j,k)=0.25_WP*sum(this%SLFx(i,j,k-1:k,2))*product(this%W(i-1:i,j,k))
+               FWY(i,j,k)=0.25_WP*sum(this%SLFy(i,j,k-1:k,2))*product(this%W(i,j-1:j,k))
+            end do
+         end do
+      end do
+      
+      ! Increment gas total energy time derivative with gas kinetic energy advection term built from semi-Lagrangian mass fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               this%Q(i,j,k,4)=this%Q(i,j,k,4)+this%SLdt*0.5_WP*&
+               &            (this%dxi*(FUX(i    ,j,k)-FUX(i-1  ,j,k))+this%dyi*(FUY(i  ,j+1,k)-FUY(i  ,j  ,k))+this%dzi*(FUZ(i  ,j,k+1)-FUZ(i  ,j,k  ))&
+               &            +this%dxi*(FUX(i+1  ,j,k)-FUX(i    ,j,k))+this%dyi*(FUY(i+1,j+1,k)-FUY(i+1,j  ,k))+this%dzi*(FUZ(i+1,j,k+1)-FUZ(i+1,j,k  ))&
+               &            +this%dxi*(FVX(i+1,j  ,k)-FVX(i  ,j  ,k))+this%dyi*(FVY(i,j    ,k)-FVY(i,j-1  ,k))+this%dzi*(FVZ(i,j  ,k+1)-FVZ(i,j  ,k  ))&
+               &            +this%dxi*(FVX(i+1,j+1,k)-FVX(i  ,j+1,k))+this%dyi*(FVY(i,j+1  ,k)-FVY(i,j    ,k))+this%dzi*(FVZ(i,j+1,k+1)-FVZ(i,j+1,k  ))&
+               &            +this%dxi*(FWX(i+1,j,k  )-FWX(i  ,j,k  ))+this%dyi*(FWY(i,j+1,k  )-FWY(i,j  ,k  ))+this%dzi*(FWZ(i,j,k    )-FWZ(i,j,k-1  ))&
+               &            +this%dxi*(FWX(i+1,j,k+1)-FWX(i  ,j,k+1))+this%dyi*(FWY(i,j+1,k+1)-FWY(i,j  ,k+1))+this%dzi*(FWZ(i,j,k+1  )-FWZ(i,j,k    )))
             end do
          end do
       end do
@@ -745,16 +844,16 @@ contains
       ! ======================== INVISID FLUXES ======================== !
       ! ================================================================ !
       
-      ! Allocate phasic mass and energy fluxes
+      ! Allocate phasic mass and internal energy+pressure-diffusion fluxes
       allocate(Fx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:4)); Fx=0.0_WP
       allocate(Fy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:4)); Fy=0.0_WP
       allocate(Fz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:4)); Fz=0.0_WP
       
-      ! Calculate face-centered mass fluxes and internal energy fluxes on untagged faces
-      do k=this%cfg%kmin_-1,this%cfg%kmax_+1       !
-         do j=this%cfg%jmin_-1,this%cfg%jmax_+1    ! Extra cell on the left will be used by momentum flux later
-            do i=this%cfg%imin_-1,this%cfg%imax_+1 !
-               ! X face
+      ! Calculate face-centered mass fluxes and internal energy fluxes on untagged faces, pressure-diffusion fluxes everywhere
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               ! X face ========================================================================================
                if (maxval(this%iSL(i-1:i,j,k)).eq.0) then
                   ! WENO-based mass flux in liquid
                   !w=weno_weight((abs(this%RHOL(i-1,j,k)-this%RHOL(i-2,j,k))+eps)/(abs(this%RHOL(i,j,k)-this%RHOL(i-1,j,k))+eps)); wenop=0.5_WP*[      -w,1.0_WP+2.0_WP*w,1.0_WP-w]
@@ -770,20 +869,10 @@ contains
                   !&           -0.5_WP*(this%U(i,j,k)-abs(this%U(i,j,k)))*sum(wenom*this%RHOG(i-1:i+1,j,k))
                   ! Centered mass flux in gas
                   Fx(i,j,k,2)=-0.5_WP*this%U(i,j,k)*sum(this%RHOG(i-1:i,j,k))
-                  ! Centered energy flux in liquid
-                  Fx(i,j,k,3)=0.5_WP*Fx(i,j,k,1)*sum(this%EL(i-1:i,j,k))
-                  ! Centered energy flux in gas
-                  Fx(i,j,k,4)=0.5_WP*Fx(i,j,k,2)*sum(this%EG(i-1:i,j,k))
-                  ! Zero out liquid fluxes in pure gas
-                  if (maxval(this%VF(i-1:i,j,k)).lt.VFlo) then
-                     Fx(i,j,k,1)=0.0_WP
-                     Fx(i,j,k,3)=0.0_WP
-                  end if
-                  ! Zero out liquid fluxes in pure gas
-                  if (minval(this%VF(i-1:i,j,k)).gt.VFhi) then
-                     Fx(i,j,k,2)=0.0_WP
-                     Fx(i,j,k,4)=0.0_WP
-                  end if
+                  ! Centered internal energy flux in liquid
+                  Fx(i,j,k,3)=0.5_WP*Fx(i,j,k,1)*sum(this%IL(i-1:i,j,k))
+                  ! Centered internal energy flux in gas
+                  Fx(i,j,k,4)=0.5_WP*Fx(i,j,k,2)*sum(this%IG(i-1:i,j,k))
                end if
                ! Y face
                if (maxval(this%iSL(i,j-1:j,k)).eq.0) then
@@ -801,20 +890,10 @@ contains
                   !&           -0.5_WP*(this%V(i,j,k)-abs(this%V(i,j,k)))*sum(wenom*this%RHOG(i,j-1:j+1,k))
                   ! Centered mass flux in gas
                   Fy(i,j,k,2)=-0.5_WP*this%V(i,j,k)*sum(this%RHOG(i,j-1:j,k))
-                  ! Centered energy flux in liquid
-                  Fy(i,j,k,3)=0.5_WP*Fy(i,j,k,1)*sum(this%EL(i,j-1:j,k))
-                  ! Centered energy flux in gas
-                  Fy(i,j,k,4)=0.5_WP*Fy(i,j,k,2)*sum(this%EG(i,j-1:j,k))
-                  ! Zero out liquid fluxes in pure gas
-                  if (maxval(this%VF(i,j-1:j,k)).lt.VFlo) then
-                     Fy(i,j,k,1)=0.0_WP
-                     Fy(i,j,k,3)=0.0_WP
-                  end if
-                  ! Zero out liquid fluxes in pure gas
-                  if (minval(this%VF(i,j-1:j,k)).gt.VFhi) then
-                     Fy(i,j,k,2)=0.0_WP
-                     Fy(i,j,k,4)=0.0_WP
-                  end if
+                  ! Centered internal energy flux in liquid
+                  Fy(i,j,k,3)=0.5_WP*Fy(i,j,k,1)*sum(this%IL(i,j-1:j,k))
+                  ! Centered internal energy flux in gas
+                  Fy(i,j,k,4)=0.5_WP*Fy(i,j,k,2)*sum(this%IG(i,j-1:j,k))
                end if
                ! Z face
                if (maxval(this%iSL(i,j,k-1:k)).eq.0) then
@@ -832,48 +911,55 @@ contains
                   !&           -0.5_WP*(this%W(i,j,k)-abs(this%W(i,j,k)))*sum(wenom*this%RHOG(i,j,k-1:k+1))
                   ! Centered mass flux in gas
                   Fz(i,j,k,2)=-0.5_WP*this%W(i,j,k)*sum(this%RHOG(i,j,k-1:k))
-                  ! Centered energy flux in liquid
-                  Fz(i,j,k,3)=0.5_WP*Fz(i,j,k,1)*sum(this%EL(i,j,k-1:k))
-                  ! Centered energy flux in gas
-                  Fz(i,j,k,4)=0.5_WP*Fz(i,j,k,2)*sum(this%EG(i,j,k-1:k))
-                  ! Zero out liquid fluxes in pure gas
-                  if (maxval(this%VF(i,j,k-1:k)).lt.VFlo) then
-                     Fz(i,j,k,1)=0.0_WP
-                     Fz(i,j,k,3)=0.0_WP
-                  end if
-                  ! Zero out liquid fluxes in pure gas
-                  if (minval(this%VF(i,j,k-1:k)).gt.VFhi) then
-                     Fz(i,j,k,2)=0.0_WP
-                     Fz(i,j,k,4)=0.0_WP
-                  end if
+                  ! Centered internal energy flux in liquid
+                  Fz(i,j,k,3)=0.5_WP*Fz(i,j,k,1)*sum(this%IL(i,j,k-1:k))
+                  ! Centered internal energy flux in gas
+                  Fz(i,j,k,4)=0.5_WP*Fz(i,j,k,2)*sum(this%IG(i,j,k-1:k))
                end if
+               ! Add phasic pressure-diffusion flux to internal energy flux
+               Fx(i,j,k,3)=Fx(i,j,k,3)-0.5_WP*this%U(i,j,k)*sum((       this%VF(i-1:i,j,k))*this%PL(i-1:i,j,k))
+               Fx(i,j,k,4)=Fx(i,j,k,4)-0.5_WP*this%U(i,j,k)*sum((1.0_WP-this%VF(i-1:i,j,k))*this%PG(i-1:i,j,k))
+               Fy(i,j,k,3)=Fy(i,j,k,3)-0.5_WP*this%V(i,j,k)*sum((       this%VF(i,j-1:j,k))*this%PL(i,j-1:j,k))
+               Fy(i,j,k,4)=Fy(i,j,k,4)-0.5_WP*this%V(i,j,k)*sum((1.0_WP-this%VF(i,j-1:j,k))*this%PG(i,j-1:j,k))
+               Fz(i,j,k,3)=Fz(i,j,k,3)-0.5_WP*this%W(i,j,k)*sum((       this%VF(i,j,k-1:k))*this%PL(i,j,k-1:k))
+               Fz(i,j,k,4)=Fz(i,j,k,4)-0.5_WP*this%W(i,j,k)*sum((1.0_WP-this%VF(i,j,k-1:k))*this%PG(i,j,k-1:k))
+               ! Finally, ensure zero flux in absence of the phase
+               if (maxval(this%VF(i-1:i,j,k)).lt.VFlo) then; Fx(i,j,k,1)=0.0_WP; Fx(i,j,k,3)=0.0_WP; end if
+               if (minval(this%VF(i-1:i,j,k)).gt.VFhi) then; Fx(i,j,k,2)=0.0_WP; Fx(i,j,k,4)=0.0_WP; end if
+               if (maxval(this%VF(i,j-1:j,k)).lt.VFlo) then; Fy(i,j,k,1)=0.0_WP; Fy(i,j,k,3)=0.0_WP; end if
+               if (minval(this%VF(i,j-1:j,k)).gt.VFhi) then; Fy(i,j,k,2)=0.0_WP; Fy(i,j,k,4)=0.0_WP; end if
+               if (maxval(this%VF(i,j,k-1:k)).lt.VFlo) then; Fz(i,j,k,1)=0.0_WP; Fz(i,j,k,3)=0.0_WP; end if
+               if (minval(this%VF(i,j,k-1:k)).gt.VFhi) then; Fz(i,j,k,2)=0.0_WP; Fz(i,j,k,4)=0.0_WP; end if
             end do
          end do
       end do
       
-      ! Assemble time derivative for mass and internal energy advection with standard fluxes and pressure dilatation
+      ! Begin assembling phasic mass         time derivative using standard phasic mass            advection fluxes
+      ! Begin assembling phasic total energy time derivative using standard phasic internal energy advection and pressure diffusion fluxes
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               ! Mass and internal energy advection
+               ! Phasic mass advection
                dQdt(i,j,k,1)=this%dxi*(Fx(i+1,j,k,1)-Fx(i,j,k,1))+this%dyi*(Fy(i,j+1,k,1)-Fy(i,j,k,1))+this%dzi*(Fz(i,j,k+1,1)-Fz(i,j,k,1))
                dQdt(i,j,k,2)=this%dxi*(Fx(i+1,j,k,2)-Fx(i,j,k,2))+this%dyi*(Fy(i,j+1,k,2)-Fy(i,j,k,2))+this%dzi*(Fz(i,j,k+1,2)-Fz(i,j,k,2))
+               ! Phasic internal energy advection and pressure diffusion
                dQdt(i,j,k,3)=this%dxi*(Fx(i+1,j,k,3)-Fx(i,j,k,3))+this%dyi*(Fy(i,j+1,k,3)-Fy(i,j,k,3))+this%dzi*(Fz(i,j,k+1,3)-Fz(i,j,k,3))
                dQdt(i,j,k,4)=this%dxi*(Fx(i+1,j,k,4)-Fx(i,j,k,4))+this%dyi*(Fy(i,j+1,k,4)-Fy(i,j,k,4))+this%dzi*(Fz(i,j,k+1,4)-Fz(i,j,k,4))
-               ! Pressure dilatation term
-               div=this%dxi*(this%U(i+1,j,k)-this%U(i,j,k))+this%dyi*(this%V(i,j+1,k)-this%V(i,j,k))+this%dzi*(this%W(i,j,k+1)-this%W(i,j,k))
-               dQdt(i,j,k,3)=dQdt(i,j,k,3)-(       this%VF(i,j,k))*this%PL(i,j,k)*div
-               dQdt(i,j,k,4)=dQdt(i,j,k,4)-(1.0_WP-this%VF(i,j,k))*this%PG(i,j,k)*div
             end do
          end do
       end do
       
-      ! Allocate multiphase mass flux arrays and populate, free up phasic fluxes
-      allocate(FRX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRX=Fx(:,:,:,1)+Fx(:,:,:,2); deallocate(Fx)
-      allocate(FRY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRY=Fy(:,:,:,1)+Fy(:,:,:,2); deallocate(Fy)
-      allocate(FRZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRZ=Fz(:,:,:,1)+Fz(:,:,:,2); deallocate(Fz)
+      ! Mass fluxes are used to build momentum and kinetic energy fluxes, they need to be communicated and extended because of staggering
+      call this%cfg%sync(Fx(:,:,:,1)); call this%cfg%sync(Fx(:,:,:,2)); if (this%cfg%xper.and.this%cfg%iproc.eq.1) Fx(this%cfg%imin-1,:,:,1:2)=Fx(this%cfg%imin,:,:,1:2); if (this%cfg%xper.and.this%cfg%iproc.eq.this%cfg%npx) Fx(this%cfg%imax+2,:,:,1:2)=Fx(this%cfg%imax+1,:,:,1:2)
+      call this%cfg%sync(Fy(:,:,:,1)); call this%cfg%sync(Fy(:,:,:,2)); if (this%cfg%yper.and.this%cfg%jproc.eq.1) Fy(:,this%cfg%jmin-1,:,1:2)=Fy(:,this%cfg%jmin,:,1:2); if (this%cfg%yper.and.this%cfg%jproc.eq.this%cfg%npy) Fy(:,this%cfg%jmax+2,:,1:2)=Fy(:,this%cfg%jmax+1,:,1:2)
+      call this%cfg%sync(Fz(:,:,:,1)); call this%cfg%sync(Fz(:,:,:,2)); if (this%cfg%zper.and.this%cfg%kproc.eq.1) Fz(:,:,this%cfg%kmin-1,1:2)=Fz(:,:,this%cfg%kmin,1:2); if (this%cfg%zper.and.this%cfg%kproc.eq.this%cfg%npz) Fz(:,:,this%cfg%kmax+2,1:2)=Fz(:,:,this%cfg%kmax+1,1:2)
       
-      ! Allocate momentum fluxes
+      ! Allocate mixture mass fluxes and populate from phasic fluxes
+      allocate(FRX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRX=Fx(:,:,:,1)+Fx(:,:,:,2)
+      allocate(FRY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRY=Fy(:,:,:,1)+Fy(:,:,:,2)
+      allocate(FRZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); FRZ=Fz(:,:,:,1)+Fz(:,:,:,2)
+      
+      ! Allocate mixture momentum and phasic kinetic energy fluxes
       allocate(FUX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FUY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FUZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
@@ -884,7 +970,7 @@ contains
       allocate(FWY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FWZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       
-      ! Calculate cell-centered momentum fluxes
+      ! Calculate cell-centered mixture momentum fluxes (this uses communicated mass flux at imin_-1)
       do k=this%cfg%kmin_-1,this%cfg%kmax_
          do j=this%cfg%jmin_-1,this%cfg%jmax_
             do i=this%cfg%imin_-1,this%cfg%imax_
@@ -895,7 +981,7 @@ contains
          end do
       end do
       
-      ! Calculate edge-centered momentum fluxes
+      ! Calculate edge-centered mixture momentum fluxes
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
@@ -909,7 +995,7 @@ contains
          end do
       end do
       
-      ! Assemble time derivative for momentum
+      ! Begin assembling time derivative for mixture momentum using advection and pressure fluxes
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
@@ -920,8 +1006,88 @@ contains
          end do
       end do
       
-      ! Deallocate flux arrays
-      deallocate(FRX,FRY,FRZ,FUX,FUY,FUZ,FVX,FVY,FVZ,FWX,FWY,FWZ)
+      ! Calculate cell-centered liquid kinetic energy fluxes (notice the extended loop: this uses mass flux/velocity at imin_-1 and imax_+2)
+      do k=this%cfg%kmin_-1,this%cfg%kmax_+1
+         do j=this%cfg%jmin_-1,this%cfg%jmax_+1
+            do i=this%cfg%imin_-1,this%cfg%imax_+1
+               FUX(i,j,k)=0.25_WP*sum(Fx(i:i+1,j,k,1))*product(this%U(i:i+1,j,k))
+               FVY(i,j,k)=0.25_WP*sum(Fy(i,j:j+1,k,1))*product(this%V(i,j:j+1,k))
+               FWZ(i,j,k)=0.25_WP*sum(Fz(i,j,k:k+1,1))*product(this%W(i,j,k:k+1))
+            end do
+         end do
+      end do
+      
+      ! Calculate edge-centered liquid kinetic energy fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               FUY(i,j,k)=0.25_WP*sum(Fy(i-1:i,j,k,1))*product(this%U(i,j-1:j,k))
+               FUZ(i,j,k)=0.25_WP*sum(Fz(i-1:i,j,k,1))*product(this%U(i,j,k-1:k))
+               FVX(i,j,k)=0.25_WP*sum(Fx(i,j-1:j,k,1))*product(this%V(i-1:i,j,k))
+               FVZ(i,j,k)=0.25_WP*sum(Fz(i,j-1:j,k,1))*product(this%V(i,j,k-1:k))
+               FWX(i,j,k)=0.25_WP*sum(Fx(i,j,k-1:k,1))*product(this%W(i-1:i,j,k))
+               FWY(i,j,k)=0.25_WP*sum(Fy(i,j,k-1:k,1))*product(this%W(i,j-1:j,k))
+            end do
+         end do
+      end do
+      
+      ! Increment liquid total energy time derivative with liquid kinetic energy advection term built from standard mass fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               dQdt(i,j,k,3)=dQdt(i,j,k,3)+0.5_WP*&
+               &            (this%dxi*(FUX(i    ,j,k)-FUX(i-1  ,j,k))+this%dyi*(FUY(i  ,j+1,k)-FUY(i  ,j  ,k))+this%dzi*(FUZ(i  ,j,k+1)-FUZ(i  ,j,k  ))&
+               &            +this%dxi*(FUX(i+1  ,j,k)-FUX(i    ,j,k))+this%dyi*(FUY(i+1,j+1,k)-FUY(i+1,j  ,k))+this%dzi*(FUZ(i+1,j,k+1)-FUZ(i+1,j,k  ))&
+               &            +this%dxi*(FVX(i+1,j  ,k)-FVX(i  ,j  ,k))+this%dyi*(FVY(i,j    ,k)-FVY(i,j-1  ,k))+this%dzi*(FVZ(i,j  ,k+1)-FVZ(i,j  ,k  ))&
+               &            +this%dxi*(FVX(i+1,j+1,k)-FVX(i  ,j+1,k))+this%dyi*(FVY(i,j+1  ,k)-FVY(i,j    ,k))+this%dzi*(FVZ(i,j+1,k+1)-FVZ(i,j+1,k  ))&
+               &            +this%dxi*(FWX(i+1,j,k  )-FWX(i  ,j,k  ))+this%dyi*(FWY(i,j+1,k  )-FWY(i,j  ,k  ))+this%dzi*(FWZ(i,j,k    )-FWZ(i,j,k-1  ))&
+               &            +this%dxi*(FWX(i+1,j,k+1)-FWX(i  ,j,k+1))+this%dyi*(FWY(i,j+1,k+1)-FWY(i,j  ,k+1))+this%dzi*(FWZ(i,j,k+1  )-FWZ(i,j,k    )))
+            end do
+         end do
+      end do
+      
+      ! Calculate cell-centered gas kinetic energy fluxes (notice the extended loop: this uses mass flux/velocity at imin_-1 and imax_+2)
+      do k=this%cfg%kmin_-1,this%cfg%kmax_+1
+         do j=this%cfg%jmin_-1,this%cfg%jmax_+1
+            do i=this%cfg%imin_-1,this%cfg%imax_+1
+               FUX(i,j,k)=0.25_WP*sum(Fx(i:i+1,j,k,2))*product(this%U(i:i+1,j,k))
+               FVY(i,j,k)=0.25_WP*sum(Fy(i,j:j+1,k,2))*product(this%V(i,j:j+1,k))
+               FWZ(i,j,k)=0.25_WP*sum(Fz(i,j,k:k+1,2))*product(this%W(i,j,k:k+1))
+            end do
+         end do
+      end do
+      
+      ! Calculate edge-centered gas kinetic energy fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               FUY(i,j,k)=0.25_WP*sum(Fy(i-1:i,j,k,2))*product(this%U(i,j-1:j,k))
+               FUZ(i,j,k)=0.25_WP*sum(Fz(i-1:i,j,k,2))*product(this%U(i,j,k-1:k))
+               FVX(i,j,k)=0.25_WP*sum(Fx(i,j-1:j,k,2))*product(this%V(i-1:i,j,k))
+               FVZ(i,j,k)=0.25_WP*sum(Fz(i,j-1:j,k,2))*product(this%V(i,j,k-1:k))
+               FWX(i,j,k)=0.25_WP*sum(Fx(i,j,k-1:k,2))*product(this%W(i-1:i,j,k))
+               FWY(i,j,k)=0.25_WP*sum(Fy(i,j,k-1:k,2))*product(this%W(i,j-1:j,k))
+            end do
+         end do
+      end do
+      
+      ! Increment gas total energy time derivative with gas kinetic energy advection term built from standard mass fluxes
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               dQdt(i,j,k,4)=dQdt(i,j,k,4)+0.5_WP*&
+               &            (this%dxi*(FUX(i    ,j,k)-FUX(i-1  ,j,k))+this%dyi*(FUY(i  ,j+1,k)-FUY(i  ,j  ,k))+this%dzi*(FUZ(i  ,j,k+1)-FUZ(i  ,j,k  ))&
+               &            +this%dxi*(FUX(i+1  ,j,k)-FUX(i    ,j,k))+this%dyi*(FUY(i+1,j+1,k)-FUY(i+1,j  ,k))+this%dzi*(FUZ(i+1,j,k+1)-FUZ(i+1,j,k  ))&
+               &            +this%dxi*(FVX(i+1,j  ,k)-FVX(i  ,j  ,k))+this%dyi*(FVY(i,j    ,k)-FVY(i,j-1  ,k))+this%dzi*(FVZ(i,j  ,k+1)-FVZ(i,j  ,k  ))&
+               &            +this%dxi*(FVX(i+1,j+1,k)-FVX(i  ,j+1,k))+this%dyi*(FVY(i,j+1  ,k)-FVY(i,j    ,k))+this%dzi*(FVZ(i,j+1,k+1)-FVZ(i,j+1,k  ))&
+               &            +this%dxi*(FWX(i+1,j,k  )-FWX(i  ,j,k  ))+this%dyi*(FWY(i,j+1,k  )-FWY(i,j  ,k  ))+this%dzi*(FWZ(i,j,k    )-FWZ(i,j,k-1  ))&
+               &            +this%dxi*(FWX(i+1,j,k+1)-FWX(i  ,j,k+1))+this%dyi*(FWY(i,j+1,k+1)-FWY(i,j  ,k+1))+this%dzi*(FWZ(i,j,k+1  )-FWZ(i,j,k    )))
+            end do
+         end do
+      end do
+      
+      ! Deallocate all flux arrays
+      deallocate(Fx,Fy,Fz,FRX,FRY,FRZ,FUX,FUY,FUZ,FVX,FVY,FVZ,FWX,FWY,FWZ)
       
       ! Synchronize all dQdt fields
       do n=1,this%nQ; call this%cfg%sync(dQdt(:,:,:,n)); end do
@@ -1341,59 +1507,72 @@ contains
       class(mpcomp), intent(inout) :: this
       real(WP) :: CL,CG
       integer :: i,j,k
-      ! First get mixture velocity
+      
+      ! First get mixture velocity and corresponding kinetic energy
       this%RHO=this%Q(:,:,:,1)+this%Q(:,:,:,2)
       call this%get_velocity()
-      ! Get mixture energy
+      call this%get_ke()
+      
+      ! Get mixture total energy
       this%E=(this%Q(:,:,:,3)+this%Q(:,:,:,4))/this%RHO
-      ! Get properly clipped phasic variables
-      do k=this%cfg%kmino_,this%cfg%kmaxo_; do j=this%cfg%jmino_,this%cfg%jmaxo_; do i=this%cfg%imino_,this%cfg%imaxo_
-         ! Liquid primitive variables
-         if (this%VF(i,j,k).ge.VFlo) then
-            this%RHOL(i,j,k)=this%Q(i,j,k,1)/this%VF(i,j,k)
-            this%EL  (i,j,k)=this%Q(i,j,k,3)/this%Q (i,j,k,1)
-            this%PL  (i,j,k)=this%getPL(this%RHOL(i,j,k),this%EL(i,j,k))
-            this%TL  (i,j,k)=this%getTL(this%RHOL(i,j,k),this%PL(i,j,k))
-            CL              =this%getCL(this%RHOL(i,j,k),this%PL(i,j,k))
-         else
-            this%RHOL(i,j,k)=0.0_WP
-            this%RHOG(i,j,k)=this%RHO(i,j,k)
-            this%EL  (i,j,k)=0.0_WP
-            this%EG  (i,j,k)=this%E(i,j,k)
-            this%PL  (i,j,k)=0.0_WP
-            this%TL  (i,j,k)=0.0_WP
-            CL              =0.0_WP
-         end if
-         ! Gas primitive variables
-         if (this%VF(i,j,k).le.VFhi) then
-            this%RHOG(i,j,k)=this%Q(i,j,k,2)/(1.0_WP-this%VF(i,j,k))
-            this%EG  (i,j,k)=this%Q(i,j,k,4)/        this%Q (i,j,k,2)
-            this%PG  (i,j,k)=this%getPG(this%RHOG(i,j,k),this%EG(i,j,k))
-            this%TG  (i,j,k)=this%getTG(this%RHOG(i,j,k),this%PG(i,j,k))
-            CG              =this%getCG(this%RHOG(i,j,k),this%PG(i,j,k))
-         else
-            this%RHOG(i,j,k)=0.0_WP
-            this%RHOL(i,j,k)=this%RHO(i,j,k)
-            this%EG  (i,j,k)=0.0_WP
-            this%EL  (i,j,k)=this%E(i,j,k)
-            this%PG  (i,j,k)=0.0_WP
-            this%TG  (i,j,k)=0.0_WP
-            CG              =0.0_WP
-         end if
-         ! Also reset conserved phasic variables for consistency
-         this%Q(i,j,k,1)=(       this%VF(i,j,k))*this%RHOL(i,j,k)
-         this%Q(i,j,k,2)=(1.0_WP-this%VF(i,j,k))*this%RHOG(i,j,k)
-         this%Q(i,j,k,3)=(       this%VF(i,j,k))*this%RHOL(i,j,k)*this%EL(i,j,k)
-         this%Q(i,j,k,4)=(1.0_WP-this%VF(i,j,k))*this%RHOG(i,j,k)*this%EG(i,j,k)
-         ! Mixture speed of sound
-         this%C(i,j,k)=sqrt(this%Q(i,j,k,1)*CL/this%RHO(i,j,k)+this%Q(i,j,k,2)*CG/this%RHO(i,j,k))
-      end do; end do; end do
+      
+      ! Get properly clipped phasic density, total energy, and internal energy
+      do k=this%cfg%kmino_,this%cfg%kmaxo_
+         do j=this%cfg%jmino_,this%cfg%jmaxo_
+            do i=this%cfg%imino_,this%cfg%imaxo_
+               ! Liquid primitive variables
+               if (this%VF(i,j,k).ge.VFlo) then
+                  this%RHOL(i,j,k)=this%Q (i,j,k,1)/this%VF(i,j,k)
+                  this%EL  (i,j,k)=this%Q (i,j,k,3)/this%Q (i,j,k,1)
+                  this%IL  (i,j,k)=this%EL(i,j,k)-this%K(i,j,k)
+                  this%PL  (i,j,k)=this%getPL(this%RHOL(i,j,k),this%IL(i,j,k))
+                  this%TL  (i,j,k)=this%getTL(this%RHOL(i,j,k),this%PL(i,j,k))
+                  CL              =this%getCL(this%RHOL(i,j,k),this%PL(i,j,k))
+               else
+                  this%RHOL(i,j,k)=0.0_WP
+                  this%RHOG(i,j,k)=this%RHO(i,j,k)
+                  this%EL  (i,j,k)=0.0_WP
+                  this%IL  (i,j,k)=0.0_WP
+                  this%EG  (i,j,k)=this%E(i,j,k)
+                  this%IG  (i,j,k)=this%E(i,j,k)-this%K(i,j,k)
+                  this%PL  (i,j,k)=0.0_WP
+                  this%TL  (i,j,k)=0.0_WP
+                  CL              =0.0_WP
+               end if
+               ! Gas primitive variables
+               if (this%VF(i,j,k).le.VFhi) then
+                  this%RHOG(i,j,k)=this%Q(i,j,k,2)/(1.0_WP-this%VF(i,j,k))
+                  this%EG  (i,j,k)=this%Q(i,j,k,4)/        this%Q (i,j,k,2)
+                  this%IG  (i,j,k)=this%EG(i,j,k)-this%K(i,j,k)
+                  this%PG  (i,j,k)=this%getPG(this%RHOG(i,j,k),this%IG(i,j,k))
+                  this%TG  (i,j,k)=this%getTG(this%RHOG(i,j,k),this%PG(i,j,k))
+                  CG              =this%getCG(this%RHOG(i,j,k),this%PG(i,j,k))
+               else
+                  this%RHOG(i,j,k)=0.0_WP
+                  this%RHOL(i,j,k)=this%RHO(i,j,k)
+                  this%EG  (i,j,k)=0.0_WP
+                  this%IG  (i,j,k)=0.0_WP
+                  this%EL  (i,j,k)=this%E(i,j,k)
+                  this%IL  (i,j,k)=this%E(i,j,k)-this%K(i,j,k)
+                  this%PG  (i,j,k)=0.0_WP
+                  this%TG  (i,j,k)=0.0_WP
+                  CG              =0.0_WP
+               end if
+               ! Also reset conserved phasic variables for consistency
+               this%Q(i,j,k,1)=(       this%VF(i,j,k))*this%RHOL(i,j,k)
+               this%Q(i,j,k,2)=(1.0_WP-this%VF(i,j,k))*this%RHOG(i,j,k)
+               this%Q(i,j,k,3)=(       this%VF(i,j,k))*this%RHOL(i,j,k)*this%EL(i,j,k)
+               this%Q(i,j,k,4)=(1.0_WP-this%VF(i,j,k))*this%RHOG(i,j,k)*this%EG(i,j,k)
+               ! Mixture speed of sound
+               this%C(i,j,k)=sqrt(this%Q(i,j,k,1)*CL/this%RHO(i,j,k)+this%Q(i,j,k,2)*CG/this%RHO(i,j,k))
+            end do
+         end do
+      end do
+      
       ! Other mixture variables
       this%P=this%VF*this%PL+(1.0_WP-this%VF)*this%PG
       this%T=0.0_WP
-      ! Force pressures to match mixture pressure
-      !this%Pl=this%P
-      !this%PG=this%P
+      
    end subroutine get_primitive
    
    
@@ -1402,7 +1581,7 @@ contains
       implicit none
       class(mpcomp), intent(inout) :: this
       integer :: i,j,k
-      ! Calculate velocity as far as possible
+      ! Calculate mixture velocity as far as possible
       do k=this%cfg%kmino_+1,this%cfg%kmaxo_
          do j=this%cfg%jmino_+1,this%cfg%jmaxo_
             do i=this%cfg%imino_+1,this%cfg%imaxo_
@@ -1433,6 +1612,25 @@ contains
          this%W(:,:,this%cfg%kmino)=this%Q(:,:,this%cfg%kmino,7)/this%RHO(:,:,this%cfg%kmino)
       end if
    end subroutine get_velocity
+   
+   
+   !> Calculate mixture kinetic energy per unit mass from pre-calculated mixture velocity
+   subroutine get_ke(this)
+      implicit none
+      class(mpcomp), intent(inout) :: this
+      integer :: i,j,k
+      do k=this%cfg%kmino_,this%cfg%kmaxo_-1
+         do j=this%cfg%jmino_,this%cfg%jmaxo_-1
+            do i=this%cfg%imino_,this%cfg%imaxo_-1
+               this%K(i,j,k)=0.5_WP*sum(this%U(i:i+1,j,k)**2+this%V(i,j:j+1,k)**2+this%W(i,j,k:k+1)**2)
+            end do
+         end do
+      end do
+      call this%cfg%sync(this%K)
+      if (.not.this%cfg%xper.and.this%cfg%iproc.eq.this%cfg%npx) this%K(this%cfg%imaxo,:,:)=this%K(this%cfg%imaxo-1,:,:)
+      if (.not.this%cfg%yper.and.this%cfg%jproc.eq.this%cfg%npy) this%K(:,this%cfg%jmaxo,:)=this%K(:,this%cfg%jmaxo-1,:)
+      if (.not.this%cfg%zper.and.this%cfg%kproc.eq.this%cfg%npz) this%K(:,:,this%cfg%kmaxo)=this%K(:,:,this%cfg%kmaxo-1)
+   end subroutine get_ke
    
    
    !> Calculate momentum from velocity and mixture density, which is recalculated
@@ -1579,6 +1777,7 @@ contains
       
       ! Calculate extrema of primitive fields
       this%RHOLmin=+huge(1.0_WP); this%RHOLmax=-huge(1.0_WP); this%RHOGmin=+huge(1.0_WP); this%RHOGmax=-huge(1.0_WP)
+      this%ILmin  =+huge(1.0_WP); this%ILmax  =-huge(1.0_WP); this%IGmin  =+huge(1.0_WP); this%IGmax  =-huge(1.0_WP)
       this%ELmin  =+huge(1.0_WP); this%ELmax  =-huge(1.0_WP); this%EGmin  =+huge(1.0_WP); this%EGmax  =-huge(1.0_WP)
       this%PLmin  =+huge(1.0_WP); this%PLmax  =-huge(1.0_WP); this%PGmin  =+huge(1.0_WP); this%PGmax  =-huge(1.0_WP)
       this%TLmin  =+huge(1.0_WP); this%TLmax  =-huge(1.0_WP); this%TGmin  =+huge(1.0_WP); this%TGmax  =-huge(1.0_WP)
@@ -1586,12 +1785,14 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_; do j=this%cfg%jmin_,this%cfg%jmax_; do i=this%cfg%imin_,this%cfg%imax_
          if (this%VF(i,j,k).gt.VFlo) then
             this%RHOLmin=min(this%RHOLmin,this%RHOL(i,j,k)); this%RHOLmax=max(this%RHOLmax,this%RHOL(i,j,k))
+            this%ILmin  =min(this%ILmin  ,this%IL  (i,j,k)); this%ILmax  =max(this%ILmax  ,this%IL  (i,j,k))
             this%ELmin  =min(this%ELmin  ,this%EL  (i,j,k)); this%ELmax  =max(this%ELmax  ,this%EL  (i,j,k))
             this%PLmin  =min(this%PLmin  ,this%PL  (i,j,k)); this%PLmax  =max(this%PLmax  ,this%PL  (i,j,k))
             this%TLmin  =min(this%TLmin  ,this%TL  (i,j,k)); this%TLmax  =max(this%TLmax  ,this%TL  (i,j,k))
          end if
          if (this%VF(i,j,k).lt.VFhi) then
             this%RHOGmin=min(this%RHOGmin,this%RHOG(i,j,k)); this%RHOGmax=max(this%RHOGmax,this%RHOG(i,j,k))
+            this%IGmin  =min(this%IGmin  ,this%IG  (i,j,k)); this%IGmax  =max(this%IGmax  ,this%IG  (i,j,k))
             this%EGmin  =min(this%EGmin  ,this%EG  (i,j,k)); this%EGmax  =max(this%EGmax  ,this%EG  (i,j,k))
             this%PGmin  =min(this%PGmin  ,this%PG  (i,j,k)); this%PGmax  =max(this%PGmax  ,this%PG  (i,j,k))
             this%TGmin  =min(this%TGmin  ,this%TG  (i,j,k)); this%TGmax  =max(this%TGmax  ,this%TG  (i,j,k))
@@ -1604,6 +1805,10 @@ contains
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%RHOLmax,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%RHOGmin,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%RHOGmax,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%ILmin  ,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%ILmax  ,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%IGmin  ,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%IGmax  ,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%ELmin  ,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%ELmax  ,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%EGmin  ,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr)

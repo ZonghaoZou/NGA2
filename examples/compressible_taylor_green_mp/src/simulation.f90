@@ -211,19 +211,23 @@ contains
                   if (fs%VF(i,j,k).gt.0.0_WP) then
                      fs%RHOL(i,j,k)=RHOL
                      fs%PL  (i,j,k)=1.0_WP/GammaL+fs%RHOL(i,j,k)*Mach**2/16.0_WP*(cos(2.0_WP*cfg%xm(i))+cos(2.0_WP*cfg%ym(j)))*(cos(2.0_WP*cfg%zm(k))+2.0_WP)
-                     fs%EL  (i,j,k)=(fs%PL(i,j,k)+GammaL*PinfL)/(fs%RHOL(i,j,k)*(GammaL-1.0_WP))
+                     fs%IL  (i,j,k)=(fs%PL(i,j,k)+GammaL*PinfL)/(fs%RHOL(i,j,k)*(GammaL-1.0_WP))
                   end if
                   ! Gas variables
                   if (fs%VF(i,j,k).lt.1.0_WP) then
                      fs%RHOG(i,j,k)=RHOG
                      fs%PG  (i,j,k)=1.0_WP/GammaG+fs%RHOG(i,j,k)*Mach**2/16.0_WP*(cos(2.0_WP*cfg%xm(i))+cos(2.0_WP*cfg%ym(j)))*(cos(2.0_WP*cfg%zm(k))+2.0_WP)
-                     fs%EG  (i,j,k)=(fs%PG(i,j,k)+GammaG*PinfG)/(fs%RHOG(i,j,k)*(GammaG-1.0_WP))
+                     fs%IG  (i,j,k)=(fs%PG(i,j,k)+GammaG*PinfG)/(fs%RHOG(i,j,k)*(GammaG-1.0_WP))
                   end if
                end do
             end do
          end do
          ! Build PLIC interface
          call fs%build_interface()
+         ! Build phasic total energies
+         call fs%get_ke()
+         where (fs%VF.gt.0.0_WP) fs%EL=fs%IL+fs%K
+         where (fs%VF.lt.1.0_WP) fs%EG=fs%IG+fs%K
          ! Initialize conserved variables
          fs%Q(:,:,:,1)=        fs%VF *fs%RHOL
          fs%Q(:,:,:,2)=(1.0_WP-fs%VF)*fs%RHOG
@@ -365,8 +369,8 @@ contains
          fs%Qold=fs%Q
          
          ! Remember phasic quantities
-         fs%RHOLold=fs%RHOL; fs%ELold=fs%EL
-         fs%RHOGold=fs%RHOG; fs%EGold=fs%EG
+         fs%RHOLold=fs%RHOL; fs%ILold=fs%IL
+         fs%RHOGold=fs%RHOG; fs%IGold=fs%IG
          
          ! Remember volume moments and interface
          fs%VFold=fs%VF

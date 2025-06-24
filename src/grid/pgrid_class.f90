@@ -1179,7 +1179,7 @@ contains
       call this%pgrid_rsync(A)
 
    end subroutine pgrid_rsyncsum
-
+   
    
    !> Returns the closest local indices "ind" to the provided position "pos" with initial guess "ind_guess"
    function get_ijk_local(this,pos,ind_guess) result(ind)
