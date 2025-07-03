@@ -703,9 +703,9 @@ contains
       allocate(FWX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FWY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       allocate(FWZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      allocate(FEX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:2))
-      allocate(FEY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:2))
-      allocate(FEZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:2))
+      allocate(FEX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:2)); FEX=0.0_WP
+      allocate(FEY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:2)); FEY=0.0_WP
+      allocate(FEZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,1:2)); FEZ=0.0_WP
       
       ! Calculate mixture momentum fluxes and phasic kinetic energy/pressure diffusion fluxes
       do k=this%cfg%kmin_,this%cfg%kmax_+1
@@ -757,7 +757,7 @@ contains
                YG=(1.0_WP-this%VF(i,j,k))*this%RHOG(i,j,k)/this%RHO(i,j,k)
                dE=0.5_WP*this%U(i,j,k)*(YL*this%dxi*((1.0_WP-this%VF(i+1,j,k))*this%PG(i+1,j,k)-(1.0_WP-this%VF(i-1,j,k))*this%PG(i-1,j,k))-YG*this%dxi*(this%VF(i+1,j,k)*this%PL(i+1,j,k)-this%VF(i-1,j,k)*this%PL(i-1,j,k)))&
                & +0.5_WP*this%V(i,j,k)*(YL*this%dyi*((1.0_WP-this%VF(i,j+1,k))*this%PG(i,j+1,k)-(1.0_WP-this%VF(i,j-1,k))*this%PG(i,j-1,k))-YG*this%dyi*(this%VF(i,j+1,k)*this%PL(i,j+1,k)-this%VF(i,j-1,k)*this%PL(i,j-1,k)))&
-               & +0.5_WP*this%W(i,j,k)*(YL*this%dzi*((1.0_WP-this%VF(i,j,k+1))*this%PG(i,j,k+1)-(1.0_WP-this%VF(i,j,k-1))*this%PG(i,j,k-1))-YG*this%dzi*(this%VF(i,j,k+1)*this%PL(i,j,k+1)-this%VF(i,j,k+1)*this%PL(i,j,k+1)))
+               & +0.5_WP*this%W(i,j,k)*(YL*this%dzi*((1.0_WP-this%VF(i,j,k+1))*this%PG(i,j,k+1)-(1.0_WP-this%VF(i,j,k-1))*this%PG(i,j,k-1))-YG*this%dzi*(this%VF(i,j,k+1)*this%PL(i,j,k+1)-this%VF(i,j,k-1)*this%PL(i,j,k-1)))
                this%Q(i,j,k,3)=this%Q(i,j,k,3)-this%SLdt*dE
                this%Q(i,j,k,4)=this%Q(i,j,k,4)+this%SLdt*dE
             end do
@@ -879,26 +879,26 @@ contains
                if (maxval(this%iSL(i,j,k-1:k)).eq.0) then
                   vel=0.5_WP*sum(this%W(i,j,k-1:k))
                   if (this%VF(i,j,k).gt.0.5_WP) then
-                     ! WENO mass flux
+                     ! WENO phasic mass flux
                      w=weno_weight((abs(this%RHOL(i,j,k-1)-this%RHOL(i,j,k-2))+eps)/(abs(this%RHOL(i,j,k)-this%RHOL(i,j,k-1))+eps)); wenop=0.5_WP*[      -w,1.0_WP+2.0_WP*w,1.0_WP-w]
                      w=weno_weight((abs(this%RHOL(i,j,k+1)-this%RHOL(i,j,k  ))+eps)/(abs(this%RHOL(i,j,k)-this%RHOL(i,j,k-1))+eps)); wenom=0.5_WP*[1.0_WP-w,1.0_WP+2.0_WP*w,      -w]
                      Fz(i,j,k,1)=-0.5_WP*(vel+abs(vel))*sum(wenop*this%RHOL(i,j,k-2:k  ))-0.5_WP*(vel-abs(vel))*sum(wenom*this%RHOL(i,j,k-1:k+1))
-                     ! Centered mass flux
+                     ! Centered phasic mass flux
                      !Fz(i,j,k,1)=-vel*0.5_WP*sum(this%RHOL(i,j,k-1:k))
-                     ! Centered internal energy flux
+                     ! Centered phasic internal energy flux
                      Fz(i,j,k,3)=Fz(i,j,k,1)*0.5_WP*sum(this%IL(i,j,k-1:k))
                      ! Centered phasic kinetic energy flux
                      Fz(i,j,k,3)=Fz(i,j,k,3)+Fz(i,j,k,1)*0.5_WP*(product(this%U(i,j,k-1:k))+product(this%V(i,j,k-1:k))+product(this%W(i,j,k-1:k)))
                      ! Phasic pressure-diffusion flux
                      Fz(i,j,k,3)=Fz(i,j,k,3)-0.5_WP*(this%W(i,j,k)*(       this%VF(i,j,k-1))*this%PL(i,j,k-1)+this%W(i,j,k-1)*(       this%VF(i,j,k))*this%PL(i,j,k))
                   else
-                     ! WENO mass flux
+                     ! WENO phasic mass flux
                      w=weno_weight((abs(this%RHOG(i,j,k-1)-this%RHOG(i,j,k-2))+eps)/(abs(this%RHOG(i,j,k)-this%RHOG(i,j,k-1))+eps)); wenop=0.5_WP*[      -w,1.0_WP+2.0_WP*w,1.0_WP-w]
                      w=weno_weight((abs(this%RHOG(i,j,k+1)-this%RHOG(i,j,k  ))+eps)/(abs(this%RHOG(i,j,k)-this%RHOG(i,j,k-1))+eps)); wenom=0.5_WP*[1.0_WP-w,1.0_WP+2.0_WP*w,      -w]
                      Fz(i,j,k,2)=-0.5_WP*(vel+abs(vel))*sum(wenop*this%RHOG(i,j,k-2:k  ))-0.5_WP*(vel-abs(vel))*sum(wenom*this%RHOG(i,j,k-1:k+1))
-                     ! Centered mass flux
+                     ! Centered phasic mass flux
                      !Fz(i,j,k,2)=-vel*0.5_WP*sum(this%RHOG(i,j,k-1:k))
-                     ! Centered internal energy flux
+                     ! Centered phasic internal energy flux
                      Fz(i,j,k,4)=Fz(i,j,k,2)*0.5_WP*sum(this%IG(i,j,k-1:k))
                      ! Centered phasic kinetic energy flux
                      Fz(i,j,k,4)=Fz(i,j,k,4)+Fz(i,j,k,2)*0.5_WP*(product(this%U(i,j,k-1:k))+product(this%V(i,j,k-1:k))+product(this%W(i,j,k-1:k)))
@@ -1406,7 +1406,7 @@ contains
          this%Q(i,j,k,6)=this%RHO(i,j,k)*this%V(i,j,k)
          this%Q(i,j,k,7)=this%RHO(i,j,k)*this%W(i,j,k)
          ! Get mixture speed of sound
-         this%C(i,j,k)=this%Q(i,j,k,1)*CL/this%RHO(i,j,k)+this%Q(i,j,k,2)*CG/this%RHO(i,j,k)
+         this%C(i,j,k)=sqrt((this%Q(i,j,k,1)*CL**2+this%Q(i,j,k,2)*CG**2)/this%RHO(i,j,k))
          ! Get mixture pressure
          this%P(i,j,k)=this%VF(i,j,k)*this%PL(i,j,k)+(1.0_WP-this%VF(i,j,k))*this%PG(i,j,k)
       end do; end do; end do
