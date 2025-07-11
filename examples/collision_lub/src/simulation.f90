@@ -39,7 +39,7 @@ module simulation
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    ! real(WP), dimension(:,:,:), allocatable :: Us,Vs,Ws
    ! real(WP), dimension(:,:,:), allocatable :: Usold,Vsold,Wsold
-   real(WP), dimension(:,:,:), allocatable :: Pg
+   real(WP), dimension(:,:,:), allocatable :: Pg,Pd
    real(WP), dimension(:,:,:), allocatable :: radialU,verticalU
    real(WP), dimension(:,:,:), allocatable :: thickness_old,thickness_new
    ! real(WP), dimension(:,:,:), allocatable :: rho
@@ -48,6 +48,8 @@ module simulation
    !> Problem definition
    real(WP), dimension(3) :: center1,center2,vel1,vel2
    real(WP) :: radius1,radius2
+   ! real(WP), parameter :: HamakerC=-19.4318  ! Written in log form!3.7e-20_WP
+   real(WP), parameter :: HamakerC=3.7e-20_WP  ! Written in log form!
    
 contains
    
@@ -87,7 +89,6 @@ contains
       end do
       call MPI_ALLREDUCE(pmin_,pmin,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
       Pg=pmin
-
       lambdaAir= 69e-9_WP
       ! Query optimal work array size
       if (.not.allocated(work)) then
@@ -168,8 +169,10 @@ contains
             ! Get the r magnitude
             xr=dot_product([x,y,z],dmoi(n,:,1)); yr=dot_product([x,y,z],dmoi(n,:,2))
             gpinfo_(m,1)=sqrt(xr**2+yr**2)
-            gpinfo_(m,2)=vf%thickness(i,j,k)
-            Kn = lambdaAir/vf%thickness(i,j,k)
+            gpinfo_(m,2)=thickness_new(i,j,k)
+            Kn = lambdaAir/thickness_new(i,j,k)
+            ! gpinfo_(m,2)=vf%thickness(i,j,k)
+            ! Kn = lambdaAir/vf%thickness(i,j,k)
             gpinfo_(m,3)=1.0_WP+6.88_WP*Kn+6.0_WP*Kn*LOG(1.0_WP+2.76_WP*Kn+0.127_WP*Kn**2)/pi
             ! ! Record pressure as P_0 that has the largest r
             ! if (gpinfo_(m,1).gt.dr0(n)) then
@@ -275,6 +278,8 @@ contains
                   & (gpinfo(l+1,4)/(gpinfo(l+1,2)**2)+rdhdt_int(l+1)/(gpinfo(l+1,1)*gpinfo(l+1,2)**3))/gpinfo(l+1,3))*(gpinfo(l+1,1)-gpinfo(l,1))
                end do
                Pg(i,j,k)=ptmp
+               ! Pd(i,j,k)=-10**(HamakerC-log10(6*pi*thickness_new(i,j,k)**3))
+               Pd(i,j,k)=-HamakerC/(6*pi*thickness_new(i,j,k)**3)
             end do
             deallocate(gpinfo,rdhdt_int)
          end if
@@ -369,221 +374,6 @@ contains
       end do
       call cfg%sync(thickness_in)
    end subroutine get_thickness
-
-
-   !> A subroutine that detects thin gas regions and get an estimated pressure fields
-   ! subroutine getGP
-   !    use irl_fortran_interface
-   !    use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_MAX,MPI_IN_PLACE,MPI_MIN
-   !    use parallel,  only: MPI_REAL_WP
-   !    use mathtools, only: pi
-   !    use messager,  only: die
-   !    implicit none
-   !    real(WP), dimension(:)    , allocatable :: dlvol
-   !    real(WP), dimension(:)    , allocatable :: dgvol
-   !    real(WP), dimension(:,:)  , allocatable :: dgpos
-   !    real(WP), dimension(:,:)  , allocatable :: dlvel
-   !    real(WP), dimension(:,:,:), allocatable :: dmoi
-   !    real(WP), dimension(:)    , allocatable :: dcell
-   !    real(WP), dimension(:)    , allocatable :: dhfilm
-   !    real(WP), dimension(:)    , allocatable :: deltP
-   !    real(WP), dimension(:)    , allocatable :: dr0
-   !    real(WP), dimension(:)    , allocatable :: dP0
-   !    real(WP) :: x,y,z,x0,y0,z0,lambdaAir,Kn,uz,ux,uy,myvol,xr,yr,rmag,signmeasure
-   !    integer :: n,m,i,j,k,skipcell,ni,ierr
-   !    real(WP), dimension(3) :: mybary,myvel
-   !    ! Moment of inertia calculation using lapack
-   !    real(WP), dimension(:), allocatable, save :: work !< Saved!
-   !    integer, save :: lwork                            !< Saved!
-   !    real(WP), dimension(1) :: lwork_query
-   !    real(WP), dimension(3) :: d
-   !    real(WP), dimension(3,3) :: A
-   !    integer :: info
-
-   !    lambdaAir= 69e-9_WP
-   !    Pg=0.0_WP
-   !    ! Query optimal work array size
-   !    if (.not.allocated(work)) then
-   !       call dsyev('V','U',3,A,3,d,lwork_query,-1,info)
-   !       lwork=int(lwork_query(1)); allocate(work(lwork))
-   !    end if
-
-   !    ! Build ccl to get the thin gas region for caculating gas pressure
-   !    call ccl%build(make_label,same_label)
-
-   !    ! Allocate droplet stats arrays
-   !    allocate(dlvol(1:ccl%nstruct        )); dlvol=0.0_WP
-   !    allocate(dlvel(1:ccl%nstruct,1:2    )); dlvel=0.0_WP
-   !    allocate(dgvol(1:ccl%nstruct        )); dgvol=0.0_WP
-   !    allocate(dgpos(1:ccl%nstruct,1:3    )); dgpos=0.0_WP
-   !    allocate(dmoi(1:ccl%nstruct,1:3,1:3)); dmoi=0.0_WP
-   !    allocate(dcell(1:ccl%nstruct        )); dcell=0.0_WP
-   !    allocate(dhfilm(1:ccl%nstruct        )); dhfilm=0.0_WP
-   !    allocate(deltP(1:ccl%nstruct        )); deltP=0.0_WP
-   !    allocate(dr0(1:ccl%nstruct          )); dr0=0.0_WP
-   !    allocate(dP0(1:ccl%nstruct          )); dP0=huge(1.0_WP)
-
-   !    ! First pass to accumulate volume, position, and velocity   
-   !    do n=1,ccl%nstruct
-   !       ! Loop over cells in structure
-   !       do m=1,ccl%struct(n)%n_
-   !          ! Get cell indices
-   !          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !          ! Get cell position, accounting for periodicity
-   !          x=cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL
-   !          y=cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL
-   !          z=cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL
-
-   !          ! Accumulate volume, position, and velocity
-   !          dgvol(n  )=dgvol(n  )+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))
-   !          dgpos(n,:)=dgpos(n,:)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*[x,y,z]
-   !          dcell(n  )=dcell(n  )+1.0_WP
-   !          dhfilm(n  )=dhfilm(n  )+vf%thickness(i,j,k)
-   !          Kn =  lambdaAir/vf%thickness(i,j,k)
-   !          deltP(n  )=deltP(n  )+1.0_WP + 6.88_WP*Kn + 6.0_WP*Kn*LOG(1.0_WP + 2.76_WP*Kn  + 0.127_WP*Kn**2)/pi
-   !      end do 
-   !    end do       
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dgvol,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dgpos,3*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dcell,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dhfilm,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,deltP,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-
-   !    ! Second pass to accumulate moment of inertia
-   !    do n=1,ccl%nstruct
-   !       ! Get the region gas barycenter
-   !       x0=dgpos(n,1)/dgvol(n)
-   !       y0=dgpos(n,2)/dgvol(n)
-   !       z0=dgpos(n,3)/dgvol(n)
-   !       ! Loop over cells in structure
-   !       do m=1,ccl%struct(n)%n_
-   !           ! Get cell indices
-   !           i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !           ! Get cell position relative to drop barycenter, accounting for periodicity
-   !           x=cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL-x0
-   !           y=cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL-y0
-   !           z=cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL-z0
-   !           ! Accumulate moment of inertia
-   !           dmoi(n,2,2)=dmoi(n,2,2)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(z**2+x**2)
-   !           dmoi(n,3,3)=dmoi(n,3,3)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x**2+y**2)
-   !           dmoi(n,1,1)=dmoi(n,1,1)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y**2+z**2)
-   !           dmoi(n,1,2)=dmoi(n,1,2)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*y)
-   !           dmoi(n,1,3)=dmoi(n,1,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*z)
-   !           dmoi(n,2,3)=dmoi(n,2,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y*z)
-   !       end do
-   !    end do
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dmoi,9*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-
-   !    do n=1,ccl%nstruct
-   !       ! Calculate maximum length of the structure
-   !       A=dmoi(n,:,:)
-   !       call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
-   !       dmoi(n,:,:)=A ! dmoi(n,:,2) and dmoi(n,:,3) are the two principle axes marking the tagential plane
-   !       ! Try to get a velocities that are along the boundaries of the interface
-   !       do m=1,ccl%struct(n)%n_
-   !          ! Get cell indices
-   !          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !          ! Get cell position relative to drop barycenter, accounting for periodicity
-   !          x=cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL
-   !          y=cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL
-   !          z=cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL
-   !          ! Get the r magnitude
-   !          xr = dot_product([x,y,z],dmoi(n,:,1)); yr = dot_product([x,y,z],dmoi(n,:,2))
-   !          rmag = sqrt(xr**2+yr**2)
-   !          if (rmag.gt.dr0(n)) then
-   !             dr0(n) = rmag
-   !             dP0(n) = fs%P(i,j,k)
-   !          end if
-   !          ! For each interface
-   !          do ni=1,getNumberOfPlanes(vf%liquid_gas_interface(i,j,k))
-   !             if (getNumberOfVertices(vf%interface_polygon(ni,i,j,k)).ne.0) then
-   !                ! add the surface area of the polygon
-   !                myvol=abs(calculateVolume(vf%interface_polygon(ni,i,j,k)))
-   !                ! Get the barycetner of the polygon
-   !                mybary=calculateCentroid(vf%interface_polygon(ni,i,j,k))
-   !                myvel=cfg%get_velocity(mybary,i,j,k,fs%U,fs%V,fs%W)
-   !                ux=dot_product(myvel,dmoi(n,:,1)); uy=dot_product(myvel,dmoi(n,:,2)); uz=dot_product(myvel,dmoi(n,:,3))
-
-   !                signmeasure = dot_product(mybary-[cfg%xm(i),cfg%ym(j),cfg%zm(k)],myvel)
-   !                ! adding the radial velocities magnitude and abs value of the vertical velocities
-   !                dlvel(n,2)=dlvel(n,2)+myvol*(sqrt(ux**2+uy**2))
-   !                if (signmeasure .gt. 0) then
-   !                   dlvel(n,1)=dlvel(n,1)+myvol*(abs(uz))
-   !                else
-   !                   dlvel(n,1)=dlvel(n,1)-myvol*(abs(uz))
-   !                end if
-   !                ! adding the volume of each polygon
-   !                dlvol(n  )=dlvol(n  )+myvol
-   !             end if
-   !          end do
-   !       end do
-   !    end do
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dlvol,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dlvel,2*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dr0,1*ccl%nstruct,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dP0,1*ccl%nstruct,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
-
-
-   !    do n=1,ccl%nstruct
-   !       ! if (dlvol(n).gt.0.0_WP) 
-   !       if (dcell(n).gt.0.0_WP) then
-   !          dhfilm(n)=dhfilm(n)/dcell(n)
-   !          deltP(n)=deltP(n)/dcell(n)
-   !          dlvel(n,:) = dlvel(n,:)/dlvol(n)
-   !       end if
-   !       dr0(n) = radius1
-   !       ! now I have all the needed constants including, ur and dh/dt, h, and DeltaP, I can estimate the pressure field for each cell
-   !       ! Get the region gas barycenter
-   !       x0=dgpos(n,1)/dgvol(n)
-   !       y0=dgpos(n,2)/dgvol(n)
-   !       z0=dgpos(n,3)/dgvol(n)
-   !       ! Loop over cells in structure
-   !       do m=1,ccl%struct(n)%n_
-   !          ! Get cell indices
-   !          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !          ! Get cell position relative to drop barycenter, accounting for periodicity
-   !          x=cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL
-   !          y=cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL
-   !          z=cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL
-
-   !          ! Get the r magnitude
-   !          xr = dot_product([x,y,z],dmoi(n,:,1)); yr = dot_product([x,y,z],dmoi(n,:,2))
-   !          rmag = sqrt(xr**2+yr**2)
-   !          ! Pg(i,j,k) = 12.0_WP*fs%visc_g*(dlvel(n,2)*(rmag-dr0(n))/(dhfilm(n)**2) -dlvel(n,1)*(rmag**2 -dr0(n)**2)/(4.0_WP*dhfilm(n)**3))/deltP(n) !dP0(n)+
-   !          Pg(i,j,k) = 12.0_WP*fs%visc_g*(dlvel(n,1)*(rmag**2 -dr0(n)**2)/(4.0_WP*dhfilm(n)**3))/deltP(n) !dP0(n)+
-   !       end do
-   !    end do
-   !    ! if (cfg%amRoot) then
-   !    !    print*, "vertical vel", dlvel(1,1), "radial vel", dlvel(1,2), "Delta P", deltP(1), "avg thickness", dhfilm(1), "pressure", dP0(1), "r0", dr0(1)
-   !    !    print *, "Centroid", x0,y0,z0
-   !    !    print*, "directions1",dmoi(1,:,1)
-   !    !    print*, "directions2",dmoi(1,:,2)
-   !    !    print*, "directions3",dmoi(1,:,3)
-   !    ! end if
-   !    call cfg%sync(Pg)
-   ! contains
-      
-   !    !> Function that identifies cells that need a label
-   !    logical function make_label(i,j,k)
-   !    implicit none
-   !    integer, intent(in) :: i,j,k
-   !    ! if (vf%VF(i,j,k).gt.0.0_WP) then
-   !    if (vf%thin_sensor(i,j,k).eq.2.0_WP) then
-   !       make_label=.true.
-   !    else
-   !       make_label=.false.
-   !    end if
-   !    end function make_label
-      
-   !    !> Function that identifies if cell pairs have same label
-   !    logical function same_label(i1,j1,k1,i2,j2,k2)
-   !    implicit none
-   !    integer, intent(in) :: i1,j1,k1,i2,j2,k2
-   !    same_label=.true.
-   !    end function same_label
-      
-   ! end subroutine getGP
-
 
    ! A subroutine that solves the slip velocity field based on current info
    ! subroutine solveUs
@@ -830,6 +620,7 @@ contains
          ! allocate(Wsold(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Wsold=0.0_WP 
          ! allocate(rho  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Pg  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Pg=0.0_WP
+         allocate(Pd  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Pd=0.0_WP
          allocate(radialU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));radialU=0.0_WP
          allocate(verticalU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));verticalU=0.0_WP
 
