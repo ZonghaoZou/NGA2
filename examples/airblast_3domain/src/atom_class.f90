@@ -190,6 +190,9 @@ subroutine transfer_drops(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
       y=this%vf%cfg%ym(j)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
       z=this%vf%cfg%zm(k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
       ! Accumulate volume, position, and velocity
       dvol(n  )=dvol(n  )+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
       dpos(n,:)=dpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
@@ -223,6 +226,9 @@ subroutine transfer_drops(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
       y=this%vf%cfg%ym(j)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
       z=this%vf%cfg%zm(k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
       ! Accumulate moment of inertia
       dmoi(n,1,1)=dmoi(n,1,1)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(y**2+z**2)
       dmoi(n,2,2)=dmoi(n,2,2)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(z**2+x**2)
@@ -535,7 +541,9 @@ subroutine transfer_films(this,lp_spray)
                   ncurv=ncurv+1.0_WP
                end if
             end do
-            call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP*ncurv/curv_sum)
+            ! call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP*ncurv/curv_sum)
+            ! call bag_droplet_gamma(this%fmin,2.0_WP*ncurv/curv_sum)
+            call bag_droplet_gamma(this%fmin,ncurv/curv_sum)
             Vd = pi/6.0_WP*(min(random_gamma(alpha)*beta*this%fd0,2.0_WP*this%frp))**3
             sampled = .true.
          end if
@@ -751,7 +759,8 @@ subroutine transfer_films(this,lp_spray)
       logical function make_label(i,j,k)
       implicit none
       integer, intent(in) :: i,j,k
-      if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).ge.0.925_WP)) then
+      ! if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).ge.0.925_WP)) then
+      if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.this%vf%thin_sensor(i,j,k).eq.1.0_WP)then
          make_label=.true.
       else
          make_label=.false.
@@ -788,7 +797,7 @@ subroutine transfer_ligs(this,lp_spray)
    real(WP), dimension(:)    , allocatable :: lrem
    real(WP), dimension(:)    , allocatable :: lSR
    real(WP), dimension(:)    , allocatable :: xmin,xmax,ymin,ymax,zmin,zmax
-   integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_start,np_old,count,ip,rank
+   integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_old,count,ip,rank!,np_start
    real(WP) :: x,y,z,x0,y0,z0,lmax,lmid,lmin
    character(len=str_medium) :: filename
    integer, dimension(:), allocatable ::  plist,dispels
@@ -856,6 +865,9 @@ subroutine transfer_ligs(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl_lig%struct(n)%per(1)*this%vf%cfg%xL
       y=this%vf%cfg%ym(j)-this%ccl_lig%struct(n)%per(2)*this%vf%cfg%yL
       z=this%vf%cfg%zm(k)-this%ccl_lig%struct(n)%per(3)*this%vf%cfg%zL
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
       ! Accumulate volume and position. Get min thickness and ligament percentage
       lvol(n  )=lvol(n  )+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
       lpos(n,:)=lpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
@@ -909,6 +921,9 @@ subroutine transfer_ligs(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl_lig%struct(n)%per(1)*this%vf%cfg%xL-x0
       y=this%vf%cfg%ym(j)-this%ccl_lig%struct(n)%per(2)*this%vf%cfg%yL-y0
       z=this%vf%cfg%zm(k)-this%ccl_lig%struct(n)%per(3)*this%vf%cfg%zL-z0
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
       ! Accumulate moment of inertia
       lmoi(n,1,1)=lmoi(n,1,1)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(y**2+z**2)
       lmoi(n,2,2)=lmoi(n,2,2)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(z**2+x**2)
@@ -964,105 +979,106 @@ subroutine transfer_ligs(this,lp_spray)
    ! Zero out monitoring variables
    this%vof_tf_lig=0.0_WP
    this%np_lig=0
-   ! Record initial droplets in each processor for future outputing purpose
-   np_start=this%lp%np_
+   !! Record initial droplets in each processor for future outputing purpose
+   ! np_start=this%lp%np_
    ! Perform transfer
    do n=1,this%ccl_lig%nstruct
-   ! Assume a cylinder ligament
-   Lrim=llen(n)
-   Vrim=lvol(n)
-   minor_radius=sqrt(Vrim/pi/Lrim)    
-   ! Drop size method from Kim & Moin (2020)
-   nmain=floor(this%dw*Lrim/(twoPi*minor_radius))
-   ! Calculate breakup time scale based on inviscid RP instability analysis
-   Trp=2.91258_WP*sqrt(this%fs%rho_l*minor_radius**3/this%fs%sigma)
-   ! Calcuate time scale based on maximum local strainrate
-   Tsr=1.0_WP/lSR(n)
-   ! Only breakup if minimum thickness is reached, sufficient volume of the ligament, enough of local ligament-like structures,
-   ! local time scale asscoiated with strain rate is on par or bigger than the RP time scale, and its length is longer than the inviscid most unstable wavelength
-   lrem_active = .false.
-   if ((lthc(n).le.this%lmin*this%cfg%min_meshsize).and.(lvol(n).ge.this%cfg%min_meshsize**3).and.(lper(n).ge.this%lper).and.(Trp.le.Tsr).and.(nmain.ge.1)) then
-   else if(lrem(n).gt.0.0_WP.and.(lvol(n).ge.this%cfg%min_meshsize**3)) then
-      lrem_active=.true.
-   else
-      cycle
-   end if
-   
-   if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),&
-   & "how many cells",lnum(n), "vol:",lvol(n),"nmain", nmain, "Trp:", Trp, "Tsr:", Tsr, "Trp/Tsr", Trp/Tsr,"and id:", n
-   
-   nsat=nmain+1
-   diam=(6.0_WP*Vrim/pi/(real(nmain,WP)+this%size_ratio**3*real(nsat,WP)))**(1.0_WP/3.0_WP)
+      ! Assume a cylinder ligament
+      Lrim=llen(n)
+      Vrim=lvol(n)
+      minor_radius=sqrt(Vrim/pi/Lrim)    
+      ! Drop size method from Kim & Moin (2020)
+      nmain=floor(this%dw*Lrim/(twoPi*minor_radius))
+      ! Calculate breakup time scale based on inviscid RP instability analysis
+      Trp=2.91258_WP*sqrt(this%fs%rho_l*minor_radius**3/this%fs%sigma)
+      ! Calcuate time scale based on maximum local strainrate
+      Tsr=1.0_WP/lSR(n)
+      ! Only breakup if minimum thickness is reached, sufficient volume of the ligament, enough of local ligament-like structures,
+      ! local time scale asscoiated with strain rate is on par or bigger than the RP time scale, and its length is longer than the inviscid most unstable wavelength
+      lrem_active = .false.
+      if ((lthc(n).le.this%lmin*this%cfg%min_meshsize).and.(lvol(n).ge.this%cfg%min_meshsize**3).and.(lper(n).ge.this%lper).and.(Trp.le.Tsr).and.(nmain.ge.1)) then
+      else if(lrem(n).gt.0.0_WP.and.(lvol(n).ge.this%cfg%min_meshsize**3)) then
+         lrem_active=.true.
+      else
+         cycle
+      end if
+      
+      if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),&
+      & "how many cells",lnum(n), "vol:",lvol(n),"nmain", nmain, "Trp:", Trp, "Tsr:", Tsr, "Trp/Tsr", Trp/Tsr,"and id:", n
+      
+      nsat=nmain+1
+      diam=(6.0_WP*Vrim/pi/(real(nmain,WP)+this%size_ratio**3*real(nsat,WP)))**(1.0_WP/3.0_WP)
 
-   ! Only the main processor is in charge of creating droplets
-   if (this%cfg%amRoot) then
-      Lrp = twoPi*minor_radius/this%dw
-      filename='spray-all/droplets'
-      open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
-      if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
-      do l=1,nsat+nmain
-         ! Increment particle counter
-         this%lp%np_=this%lp%np_+1
-         ! Make room for new drop
-         call this%lp%resize(this%lp%np_)
-         ! Add the drop
-         if (lrem_active) then
-            this%lp%p(this%lp%np_)%id  =int(12,8)                                                                               
-         else
-            this%lp%p(this%lp%np_)%id  =int(11,8)                                                                               
-         end if
-         if (mod(l,2).eq.1) then
-            this%lp%p(this%lp%np_)%d=diam*this%size_ratio                                                                                    
-         else
-            this%lp%p(this%lp%np_)%d=diam                                                                                    
-         end if
-         if (llen(n).eq.0.0_WP) then
-            this%lp%p(this%lp%np_)%pos = lpos(n,:)
-         else
-            this%lp%p(this%lp%np_)%pos =lpos(n,:)+0.5_WP*Lrp*(l-(nmain+1))*lmoi(n,:,1)
-         end if
-         this%lp%p(this%lp%np_)%vel =lvel(n,:)
-         this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])     
-         this%lp%p(this%lp%np_)%flag=0                                                                                        
-         this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                  
-         this%lp%p(this%lp%np_)%Acol=0.0_WP                                                                                  
-         this%lp%p(this%lp%np_)%Tcol=0.0_WP
+      ! Only the main processor is in charge of creating droplets
+      if (this%cfg%amRoot) then
+         Lrp = twoPi*minor_radius/this%dw
+         filename='spray-all/droplets'
+         open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
+         if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
+         do l=1,nsat+nmain
+            ! Increment particle counter
+            this%lp%np_=this%lp%np_+1
+            ! Make room for new drop
+            call this%lp%resize(this%lp%np_)
+            ! Add the drop
+            if (lrem_active) then
+               this%lp%p(this%lp%np_)%id  =int(12,8)                                                                               
+            else
+               this%lp%p(this%lp%np_)%id  =int(11,8)                                                                               
+            end if
+            if (mod(l,2).eq.1) then
+               this%lp%p(this%lp%np_)%d=diam*this%size_ratio                                                                                    
+            else
+               this%lp%p(this%lp%np_)%d=diam                                                                                    
+            end if
+            if (llen(n).eq.0.0_WP) then
+               this%lp%p(this%lp%np_)%pos = lpos(n,:)
+            else
+               this%lp%p(this%lp%np_)%pos =lpos(n,:)+0.5_WP*Lrp*(l-(nmain+1))*lmoi(n,:,1)
+            end if
+            this%lp%p(this%lp%np_)%vel =lvel(n,:)
+            this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])     
+            this%lp%p(this%lp%np_)%flag=0                                                                                        
+            this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                  
+            this%lp%p(this%lp%np_)%Acol=0.0_WP                                                                                  
+            this%lp%p(this%lp%np_)%Tcol=0.0_WP
 
 
-         lp_spray%np_=lp_spray%np_+1
-         ! Make room for new drop
-         call lp_spray%resize(lp_spray%np_)
-         ! Add the drop
-         if (lrem_active) then
-            lp_spray%p(lp_spray%np_)%id  =int(12,8)
-         else                                   
-            lp_spray%p(lp_spray%np_)%id  =int(11,8)
-         end if
-         lp_spray%p(lp_spray%np_)%d   =this%lp%p(this%lp%np_)%d
-         lp_spray%p(lp_spray%np_)%pos =this%lp%p(this%lp%np_)%pos
-         lp_spray%p(lp_spray%np_)%vel =this%lp%p(this%lp%np_)%vel
-         lp_spray%p(lp_spray%np_)%ind =lp_spray%cfg%get_ijk_global(lp_spray%p(lp_spray%np_)%pos,[lp_spray%cfg%imin,lp_spray%cfg%jmin,lp_spray%cfg%kmin])    !< Place the drop in the proper cell for the this%lp%cfg
-         lp_spray%p(lp_spray%np_)%flag=0                                          
-         lp_spray%p(lp_spray%np_)%dt  =0.0_WP                                     
-         lp_spray%p(lp_spray%np_)%Acol=0.0_WP                                     
-         lp_spray%p(lp_spray%np_)%Tcol=0.0_WP
+            lp_spray%np_=lp_spray%np_+1
+            ! Make room for new drop
+            call lp_spray%resize(lp_spray%np_)
+            ! Add the drop
+            if (lrem_active) then
+               lp_spray%p(lp_spray%np_)%id  =int(12,8)
+            else                                   
+               lp_spray%p(lp_spray%np_)%id  =int(11,8)
+            end if
+            lp_spray%p(lp_spray%np_)%d   =this%lp%p(this%lp%np_)%d
+            lp_spray%p(lp_spray%np_)%pos =this%lp%p(this%lp%np_)%pos
+            lp_spray%p(lp_spray%np_)%vel =this%lp%p(this%lp%np_)%vel
+            lp_spray%p(lp_spray%np_)%ind =lp_spray%cfg%get_ijk_global(lp_spray%p(lp_spray%np_)%pos,[lp_spray%cfg%imin,lp_spray%cfg%jmin,lp_spray%cfg%kmin])    !< Place the drop in the proper cell for the this%lp%cfg
+            lp_spray%p(lp_spray%np_)%flag=0                                          
+            lp_spray%p(lp_spray%np_)%dt  =0.0_WP                                     
+            lp_spray%p(lp_spray%np_)%Acol=0.0_WP                                     
+            lp_spray%p(lp_spray%np_)%Tcol=0.0_WP
 
-         ! Output diameter, velocity, and position
-         write(iunit,*) this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
-         &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
-         &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
-      end do
-      ! Close the file
-      close(iunit)
-      ! Increment monitoring variables
-      this%lp%np_new=this%lp%np_new+nmain+nsat
-      this%lp%vp_new=this%lp%vp_new+lvol(n)
-      this%np_lig=this%np_lig+nmain+nsat
-      this%vof_tf_lig=this%vof_tf_lig+lvol(n)
+            ! Output diameter, velocity, and position
+            write(iunit,*) this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
+            &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
+            &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
+            print*,"I wrote one particle out of", nsat+nmain
+         end do
+         ! Close the file
+         close(iunit)
+         ! Increment monitoring variables
+         this%lp%np_new=this%lp%np_new+nmain+nsat
+         this%lp%vp_new=this%lp%vp_new+lvol(n)
+         this%np_lig=this%np_lig+nmain+nsat
+         this%vof_tf_lig=this%vof_tf_lig+lvol(n)
 
-      lp_spray%np_new=lp_spray%np_new+nmain+nsat
-      lp_spray%vp_new=lp_spray%vp_new+lvol(n)
-   end if
+         lp_spray%np_new=lp_spray%np_new+nmain+nsat
+         lp_spray%vp_new=lp_spray%vp_new+lvol(n)
+      end if
       ! empty out the VF
       do m=1,this%ccl_lig%struct(n)%n_
          i=this%ccl_lig%struct(n)%map(1,m); j=this%ccl_lig%struct(n)%map(2,m); k=this%ccl_lig%struct(n)%map(3,m)
@@ -1147,7 +1163,7 @@ subroutine transfer_ligs(this,lp_spray)
       end do
       call this%vf%cfg%sync(thickness)
       call this%vf%cfg%sync(struct_type)
-   end subroutine
+   end subroutine get_liginfo
 
    !> Function that identifies cells that need a label
    logical function make_label(i,j,k)
@@ -1573,7 +1589,7 @@ end subroutine transfer_ligs
             ! Set parameters for transfer
             this%ddel=0.2_WP*this%cfg%min_meshsize
             this%dmin=1.5_WP*this%cfg%min_meshsize
-            this%dmax=7.0e-1_WP*dl ! Take the baseline diamter as the liquid core diameter
+            this%dmax=5.0e-4_WP ! Harcode a droplet transfer diameter size of 200 micron!7.0e-1_WP*dl ! Take the baseline diamter as the liquid core diameter
             this%emax=0.75_WP
             ! Zero out monitoring variables
             this%vof_tf_drop=0.0_WP
@@ -1587,7 +1603,7 @@ end subroutine transfer_ligs
             this%fd0 =dl     ! Take the baseline diamter as the liquid core diameter 
             this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             ! this%fmin=2.2e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
-            this%fmin=1.5e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            this%fmin=1.0e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%fnumcell=50.0_WP
             ! Zero out monitoring variables
             this%vof_tf_film=0.0_WP
@@ -1749,7 +1765,8 @@ end subroutine transfer_ligs
          this%smesh%varname(5)='norm_sig'
          this%smesh%varname(6)='ccl_lig'
          this%smesh%varname(7)='thickness_unfilt'
-         this%smesh%varname(8)='struct_type'
+         this%smesh%varname(8)='thin_sensor'
+         ! this%smesh%varname(8)='struct_type'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh(this%smesh)
          ! Calculate thickness
@@ -1770,7 +1787,8 @@ end subroutine transfer_ligs
                         this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
                         this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
                         this%smesh%var(7,np)=this%thickness(i,j,k)
-                        this%smesh%var(8,np)=this%struct_type(i,j,k)
+                        this%smesh%var(8,np)=this%vf%thin_sensor(i,j,k)*1.0_WP
+                        ! this%smesh%var(8,np)=this%struct_type(i,j,k)
                      end if
                   end do
                end do
@@ -2164,7 +2182,8 @@ end subroutine transfer_ligs
                            this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
                            this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
                            this%smesh%var(7,np)=this%thickness(i,j,k)
-                           this%smesh%var(8,np)=this%struct_type(i,j,k)
+                           this%smesh%var(8,np)=this%vf%thin_sensor(i,j,k)*1.0_WP
+                           ! this%smesh%var(8,np)=this%struct_type(i,j,k)
                         end if
                      end do
                   end do
