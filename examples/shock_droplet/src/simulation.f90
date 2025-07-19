@@ -119,6 +119,9 @@ contains
       real(WP), dimension(1:), intent(inout) :: Q
       real(WP) :: PG,PL,ZG,ZL,Pint
       real(WP) :: a,b,d,coeffL,coeffG,Peq,VFeq
+      real(WP), parameter :: RHOGmin=1.0e-3_WP
+      ! ================ Handle gas flotsams ================
+      if (Q(2)/(1.0_WP-VF).lt.RHOGmin) return
       ! ================ First step for mechanical relaxation ================
       ! Get phasic pressures
       PL=get_PL(RHO=Q(1)/(       VF),I=Q(3)/Q(1))
@@ -145,14 +148,14 @@ contains
       d=-(coeffG*VF*PL+coeffL*(1.0_WP-VF)*PG)
       ! Get equilibrium pressure
       Peq=(-b+sqrt(b**2-4.0_WP*a*d))/(2.0_WP*a)
+      ! Check if pressure is sound
+      if (Peq.le.max(-PinfG,-PinfL)) return
       ! Get equilibrium volume fraction
       VFeq=VF*((gammaL-1.0_WP)*Peq+2.0_WP*PL+coeffL)/((1.0_WP+gammaL)*Peq+coeffL)
       ! Adjust conserved quantities
       Q(3)=Q(3)-0.5_WP*(Pint+Peq)*(VFeq-VF)
       Q(4)=Q(4)+0.5_WP*(Pint+Peq)*(VFeq-VF)
       VF=VFeq
-      ! Last debugging check... Probably should never happen...
-      if (Peq.lt.-PinfG) print*,"****************** NEGATIVE PRESSURE! - time",time%t,"VFeq",VFeq,"Peq",Peq
    end subroutine P_relax
    
    
@@ -479,7 +482,7 @@ contains
          real(WP), dimension(3),intent(in) :: xyz
          real(WP), intent(in) :: t
          real(WP) :: G
-         G=1.0_WP-abs(xyz(1))
+         G=0.5_WP-abs(xyz(1))
       end function levelset_slab
    end subroutine simulation_init
    
@@ -520,7 +523,7 @@ contains
          
          ! Prepare SGS viscosity models
          call fs%get_viscartif(dt=time%dt,beta=beta)
-         visc=0.0_WP !call fs%get_vreman(dt=time%dt,visc=visc)
+         call fs%get_vreman   (dt=time%dt,visc=visc)
          mixture_viscosity: block
             integer  :: i,j,k
             real(WP) :: Lvof,Lrho,Gvof,Grho
@@ -533,7 +536,7 @@ contains
                Lrho=sum(       fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,1))/(Lvof+eps)
                Grho=sum(       fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,2))/(Gvof+eps)
                ! Harmonic average of VISC
-               Lvisc=Lrho*viscL; Gvisc=Grho*viscG; fs%VISC(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lvisc,eps)+Gvof/max(Gvisc,eps))
+               Lvisc=Lrho*(viscL+visc(i,j,k)); Gvisc=Grho*(viscG+visc(i,j,k)); fs%VISC(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lvisc,eps)+Gvof/max(Gvisc,eps))
                ! Harmonic average of BETA
                Lbeta=Lrho*beta(i,j,k); Gbeta=Grho*beta(i,j,k); fs%BETA(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lbeta,eps)+Gvof/max(Gbeta,eps))
             end do; end do; end do
@@ -541,14 +544,14 @@ contains
          
          ! Perform first semi-Lagrangian transport step =====================================================
          call fs%SLstep(dt=0.5_WP*time%dt,U=fs%U,V=fs%V,W=fs%W)
-         !call fs%build_interface()
+         call fs%build_interface()
          
          ! First RK step ====================================================================================
          ! Get non-SL RHS and increment
          call fs%rhs(dQdt(:,:,:,:,1))
          fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,1)
          ! Increment Q with SL terms
-         call fs%SLincrement()
+         fs%Q=fs%Q+fs%SLdQ
          ! Recompute primitive variables
          call fs%get_primitive()
          
@@ -557,7 +560,9 @@ contains
          call fs%rhs(dQdt(:,:,:,:,2))
          fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,2)
          ! Increment Q with SL terms
-         call fs%SLincrement()
+         fs%Q=fs%Q+fs%SLdQ
+         ! Apply user-provided relaxation model
+         !call fs%apply_relax()
          ! Recompute primitive variables
          call fs%get_primitive()
          
@@ -570,7 +575,7 @@ contains
          call fs%rhs(dQdt(:,:,:,:,3))
          fs%Q=fs%Qold+1.0_WP*time%dt*dQdt(:,:,:,:,3)
          ! Increment Q with SL terms
-         call fs%SLincrement()
+         fs%Q=fs%Q+fs%SLdQ
          ! Recompute primitive variables
          call fs%get_primitive()
          
@@ -579,7 +584,7 @@ contains
          call fs%rhs(dQdt(:,:,:,:,4))
          fs%Q=fs%Qold+time%dt/6.0_WP*(dQdt(:,:,:,:,1)+2.0_WP*dQdt(:,:,:,:,2)+2.0_WP*dQdt(:,:,:,:,3)+dQdt(:,:,:,:,4))
          ! Increment Q with SL terms
-         call fs%SLincrement()
+         fs%Q=fs%Q+fs%SLdQ
          ! Apply user-provided relaxation model
          call fs%apply_relax()
          ! Recompute primitive variables
