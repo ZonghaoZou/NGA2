@@ -78,7 +78,7 @@ module dispersion_class
 
    !> Hardcode inlet positions used in locator functions at x=-0.01
   ! real(WP), parameter, public :: dl=0.0025_WP   ! Liquid pipe diameter ~(inner+outer)/2
-  real(WP), parameter, public :: dl=0.0025_WP   ! Liquid outer pipe diameter 
+  real(WP), parameter, public :: dl=0.003_WP   ! Liquid outer pipe diameter 
   ! real(WP), parameter, public :: dg=0.0100_WP   ! Gas pipe diameter ~(inner+outer)/2
   ! 0.0206 doesn't seem right, it seems to be over estimating
   real(WP), parameter, public :: dg=0.0206_WP   ! Gas pipe diameter ~(inner+outer)/2
@@ -100,26 +100,34 @@ contains
      character(len=str_medium) :: filename
      real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
      integer, dimension(:), allocatable:: plist,dispels
-     real(WP) :: xloc_30,xloc_60,xloc_90,xloc_120,xloc_150,input_xloc
-     integer:: n,count_30,count_60,count_90,count_120,count_150,totalcount,input_count,i
+   !   real(WP) :: xloc_30,xloc_60,xloc_90,xloc_120,xloc_150,input_xloc
+     real(WP) :: xloc_100,xloc_150,xloc_200,input_xloc
+   !   integer:: n,count_30,count_60,count_90,count_120,count_150,totalcount,input_count,i
+     integer:: n,count_100,count_150,count_200,totalcount,input_count,i
      integer:: rank,count,ierr,iunit
-     xloc_30=30e-3_WP; xloc_60=60e-3_WP; xloc_90=90e-3_WP; xloc_120=120e-3_WP ; xloc_150=150e-3_WP
-     count_30=0; count_60=0; count_90=0; count_120=0; count_150=0
+   !   xloc_30=30e-3_WP; xloc_60=60e-3_WP; xloc_90=90e-3_WP; xloc_120=120e-3_WP ; xloc_150=150e-3_WP
+     xloc_100=100e-3_WP;xloc_150=150e-3_WP;xloc_200=200e-3_WP
+   !   count_30=0; count_60=0; count_90=0; count_120=0; count_150=0
+     count_100=0;count_150=0;count_200=0 
      allocate(plist(0:this%cfg%nproc-1))
      ! For each particle on each processor, count how many have passed the different x locations
      do n =1, this%lp%np_
-       if (this%lp%p(n)%pos(1).lt.xloc_30 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_30) count_30=count_30+1
-       if (this%lp%p(n)%pos(1).lt.xloc_60 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_60) count_60=count_60+1
-       if (this%lp%p(n)%pos(1).lt.xloc_90 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_90) count_90=count_90+1
-       if (this%lp%p(n)%pos(1).lt.xloc_120 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_120) count_120=count_120+1
+      !  if (this%lp%p(n)%pos(1).lt.xloc_30 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_30) count_30=count_30+1
+      !  if (this%lp%p(n)%pos(1).lt.xloc_60 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_60) count_60=count_60+1
+      !  if (this%lp%p(n)%pos(1).lt.xloc_90 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_90) count_90=count_90+1
+      !  if (this%lp%p(n)%pos(1).lt.xloc_120 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_120) count_120=count_120+1
+       if (this%lp%p(n)%pos(1).lt.xloc_100 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_100) count_100=count_100+1
        if (this%lp%p(n)%pos(1).lt.xloc_150 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_150) count_150=count_150+1
+       if (this%lp%p(n)%pos(1).lt.xloc_200 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_200) count_200=count_200+1
      end do
      
-     input_count=count_30; input_xloc=xloc_30; call output()
-     input_count=count_60; input_xloc=xloc_60; call output()
-     input_count=count_90; input_xloc=xloc_90; call output()
-     input_count=count_120; input_xloc=xloc_120; call output()
+   !   input_count=count_30; input_xloc=xloc_30; call output()
+   !   input_count=count_60; input_xloc=xloc_60; call output()
+   !   input_count=count_90; input_xloc=xloc_90; call output()
+   !   input_count=count_120; input_xloc=xloc_120; call output()
+     input_count=count_100; input_xloc=xloc_100; call output()
      input_count=count_150; input_xloc=xloc_150; call output()
+     input_count=count_200; input_xloc=xloc_200; call output()
 
      contains
      
@@ -154,8 +162,8 @@ contains
            end do
            !!! Write to droplet list !!!
            if (this%cfg%amRoot)  then
-              filename='spray-disper/x=30e-3'
-              ! write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+            !   filename='spray-disper/x=30e-3'
+              write(filename, '("spray-disper/x=",ES10.3)') input_xloc
               open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
               if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
               do i = 1,totalcount
@@ -530,31 +538,41 @@ contains
 
         if (this%lp%cfg%amroot) then
            if (.not.isdir('spray-disper')) call makedir('spray-disper')
-           filename='spray-disper/x=30e-3'
-           ! input_xloc = 30e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+         !   filename='spray-disper/x=30e-3'
+         !   input_xloc = 30e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
+         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
+         !   close(iunit)         
+         ! !   filename='spray-disper/x=60e-3'
+         !   input_xloc = 60e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
+         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
+         !   close(iunit)         
+         ! !   filename='spray-disper/x=90e-3'
+         !   input_xloc = 90e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
+         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
+         !   close(iunit)         
+         ! !   filename='spray-disper/x=120e-3'
+         !   input_xloc = 120e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
+         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
+         !   close(iunit)    
+         !   filename='spray-disper/x=150e-3'
+           input_xloc = 100e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-           close(iunit)         
-           filename='spray-disper/x=60e-3'
-           ! input_xloc = 60e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+           close(iunit)
+
+           input_xloc = 150e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-           close(iunit)         
-           filename='spray-disper/x=90e-3'
-           ! input_xloc = 90e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+           close(iunit)     
+           
+           input_xloc = 200e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-           close(iunit)         
-           filename='spray-disper/x=120e-3'
-           ! input_xloc = 120e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-           open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-           if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-           close(iunit)    
-           filename='spray-disper/x=150e-3'
-           ! input_xloc = 150e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-           open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-           if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-           close(iunit)         
+           close(iunit)     
         end if
      end block initialize_lpt
 

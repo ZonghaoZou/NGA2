@@ -128,7 +128,8 @@ module atom_class
    
    !> Hardcode inlet positions used in locator functions at x=-0.01
    ! real(WP), parameter, public :: dl=0.0025_WP   ! Liquid pipe diameter ~(inner+outer)/2
-   real(WP), parameter, public :: dl=0.0025_WP   ! Liquid outer pipe diameter 
+   ! real(WP), parameter, public :: dl=0.0025_WP   ! Liquid outer pipe diameter 
+   real(WP), parameter, public :: dl=0.003_WP   ! Liquid outer pipe diameter 
    ! real(WP), parameter, public :: dg=0.0100_WP   ! Gas pipe diameter ~(inner+outer)/2
    ! 0.0206 doesn't seem right, it seems to be over estimating
    real(WP), parameter, public :: dg=0.0206_WP   ! Gas pipe diameter ~(inner+outer)/2
@@ -355,7 +356,7 @@ subroutine transfer_drops(this,lp_spray)
          open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
          if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
          ! Output diameter, velocity, and position
-         write(iunit,*) this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
+         write(iunit,*) this%time%t,this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
          &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
          &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
          ! Close the file
@@ -711,8 +712,8 @@ subroutine transfer_films(this,lp_spray)
          open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
          if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
          do i = 1,totalnewp
-         write(iunit,'(f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,f24.16,1x,f24.16,1x,f24.16,1x,I2)')pinfo(1,i),pinfo(2,i),pinfo(3,i)&
-         &,pinfo(4,i),pinfo(5,i),pinfo(6,i),pinfo(7,i),pinfo(8,i),INT(pinfo(9,i))
+         ! write(iunit,'(f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,f24.16,1x,f24.16,1x,f24.16,1x,I2)')
+         write(iunit,*) this%time%t,pinfo(1,i),pinfo(2,i),pinfo(3,i),pinfo(4,i),pinfo(5,i),pinfo(6,i),pinfo(7,i),pinfo(8,i),INT(pinfo(9,i))
          end do
          close(iunit)
       end if
@@ -1063,10 +1064,10 @@ subroutine transfer_ligs(this,lp_spray)
             lp_spray%p(lp_spray%np_)%Tcol=0.0_WP
 
             ! Output diameter, velocity, and position
-            write(iunit,*) this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
+            write(iunit,*)this%time%t,this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
             &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
             &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
-            print*,"I wrote one particle out of", nsat+nmain
+            ! print*,"I wrote one particle out of", nsat+nmain
          end do
          ! Close the file
          close(iunit)
@@ -1603,7 +1604,7 @@ end subroutine transfer_ligs
             this%fd0 =dl     ! Take the baseline diamter as the liquid core diameter 
             this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             ! this%fmin=2.2e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
-            this%fmin=1.0e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            this%fmin=0.5e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%fnumcell=50.0_WP
             ! Zero out monitoring variables
             this%vof_tf_film=0.0_WP

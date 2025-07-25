@@ -4,9 +4,9 @@ I/O partition : 1 1 1
 
 # Mesh definition
 X shift : 0.01
-Lx :  0.15
-Ly :  0.1
-Lz :  0.1
+Lx :  0.18
+Ly :  0.12
+Lz :  0.12
 nx :  225!150
 ny :  150!100
 nz :  150!100
