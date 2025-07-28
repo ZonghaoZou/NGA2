@@ -1,35 +1,32 @@
 !> Various definitions and tools for running an NGA2 simulation
 module simulation
    use precision,         only: WP
-   use geometry,          only: cfg
-   use mpcomp_class,      only: mpcomp
    use timetracker_class, only: timetracker
-   use ensight_class,     only: ensight
-   use surfmesh_class,    only: surfmesh
-   use cclabel_class,     only: cclabel
+   use shockdrop_class,   only: shockdrop
+   use ffshock_class,     only: ffshock
+   use coupler_class,     only: coupler
    use event_class,       only: event
-   use monitor_class,     only: monitor
    implicit none
    private; public :: simulation_init,simulation_run,simulation_final
    
-   !> Multiphase compressible flow solver and corresponding time tracker
-   type(mpcomp),      public :: fs
-   type(timetracker), public :: time
+   !> Track time from here
+   type(timetracker) :: time
    
-   !> CCL for postprocessing
-   type(cclabel) :: ccl
+   !> Shock-drop simulation - pointer since we will dynamically remesh
+   type(shockdrop), pointer :: sd=>null()
    
-   !> Ensight postprocessing
-   type(surfmesh) :: smesh
-   type(ensight)  :: ens_out
-   type(event)    :: ens_evt
+   !> Far-field shock simulation - this is static
+   type(ffshock) :: ff
    
-   !> Simulation monitor file
-   type(monitor) :: mfile,cflfile,consfile,dropfile
+   !> Couplers between domains - pointers since we will dynamically remesh
+   type(coupler), pointer :: sd2ff=>null()
+   type(coupler), pointer :: ff2sd=>null()
    
-   !> Private work arrays
-   real(WP), dimension(:,:,:,:,:), allocatable :: dQdt
-   real(WP), dimension(:,:,:)    , allocatable :: Ui,Vi,Wi,Ma,beta,visc
+   !> Ensight output event
+   type(event) :: ens_evt
+   
+   !> Remeshing event
+   type(event) :: remesh_evt
    
    !> Equations of state
    real(WP) :: PinfL,GammaL,CvL
@@ -43,20 +40,7 @@ module simulation
    real(WP) :: rhoL,ML
    real(WP) :: ReG,viscG,viscL,visc_ratio
    
-   !> Drop info
-   real(WP) :: Vcore,Mcore,Xcore,Ycore,Zcore
-   
 contains
-   
-   
-   !> Sutherland's law for viscosity as a function of temperature
-   !subroutine get_visc()
-   !   implicit none
-   !   integer :: i,j,k
-   !   do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-   !      fs%visc(i,j,k)=Reynolds**(-1.0_WP)*(1.4042_WP*fs%T(i,j,k)**1.5_WP)/(fs%T(i,j,k)+0.4042_WP)
-   !   end do; end do; end do
-   !end subroutine get_visc
    
    
    !> Function that returns a smooth Heaviside of thickness delta
@@ -117,50 +101,6 @@ contains
       real(WP), intent(in) :: RHO,P
       get_SG=CvG*log((P+PinfG)/RHO**GammaG)
    end function get_SG
-   
-   
-   !> Various postprocessing
-   subroutine postproc()
-      use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
-      use parallel, only: MPI_REAL_WP
-      implicit none
-      integer :: i,j,k,n,ierr
-      ! Core is id=1, skip if not present
-      if (ccl%nstruct.lt.1) return
-      ! Extract core volume, mass, and barycenter
-      Vcore=0.0_WP; Mcore=0.0_WP; Xcore=0.0_WP; Ycore=0.0_WP; Zcore=0.0_WP
-      do n=1,ccl%struct(1)%n_
-         ! Get cell index
-         i=ccl%struct(1)%map(1,n); j=ccl%struct(1)%map(2,n); k=ccl%struct(1)%map(3,n)
-         ! Increement volume
-         Vcore=Vcore+fs%VF(i,j,k)*fs%cfg%vol(i,j,k)
-         ! Increment mass
-         Mcore=Mcore+fs%Q(i,j,k,1)*fs%cfg%vol(i,j,k)
-         ! Increment barycenter
-         Xcore=Xcore+fs%Q(i,j,k,1)*fs%BL(1,i,j,k)*fs%cfg%vol(i,j,k)
-         Ycore=Ycore+fs%Q(i,j,k,1)*fs%BL(2,i,j,k)*fs%cfg%vol(i,j,k)
-         Zcore=Zcore+fs%Q(i,j,k,1)*fs%BL(3,i,j,k)*fs%cfg%vol(i,j,k)
-      end do
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Vcore,1,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Mcore,1,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Xcore,1,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr); Xcore=Xcore/Mcore ! Shouldn't ever
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Ycore,1,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr); Ycore=Ycore/Mcore ! be dividing by
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Zcore,1,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr); Zcore=Zcore/Mcore ! zero here...
-   end subroutine postproc
-   
-   
-   !> Function that identifies cells that need a label
-   logical function make_label(i,j,k)
-      implicit none
-      integer, intent(in) :: i,j,k
-      if (fs%VF(i,j,k).gt.0.0_WP) then; make_label=.true.; else; make_label=.false.; end if
-   end function make_label
-   !> Function that identifies if cell pairs have same label
-   logical function same_label(i1,j1,k1,i2,j2,k2)
-      implicit none
-      integer, intent(in) :: i1,j1,k1,i2,j2,k2
-      same_label=.true.
-   end function same_label
    
    
    !> Mechanical relaxation model
@@ -256,6 +196,8 @@ contains
       d=(Q(1)*CvL*GammaL+Q(2)*CvG*GammaG)*PinfL*PinfG-sum(Q(3:4))*(Q(1)*CvL*(GammaL-1.0_WP)*PinfG+Q(2)*CvG*(GammaG-1.0_WP)*PinfL)
       ! Get equilibrium pressure
       Peq=(-b+sqrt(b**2-4.0_WP*a*d))/(2.0_WP*a)
+      ! Check if pressure is sound
+      if (Peq.le.max(-PinfG,-PinfL)) return
       ! Get equilibrium volume fraction
       VFeq=Q(1)*CvL*(GammaL-1.0_WP)*(Peq+PinfG)/(Q(1)*CvL*(GammaL-1.0_WP)*(Peq+PinfG)+Q(2)*CvG*(GammaG-1.0_WP)*(Peq+PinfL))
       ! Clean up solution
@@ -265,20 +207,19 @@ contains
       Q(3)=(       VFeq)*(Peq+GammaL*PinfL)/(GammaL-1.0_WP)
       Q(4)=(1.0_WP-VFeq)*(Peq+GammaG*PinfG)/(GammaG-1.0_WP)
       VF=VFeq
-      ! Last debugging check... Probably should never happen...
-      if (Peq.lt.-PinfG) print*,"****************** NEGATIVE PRESSURE! - time",time%t,"VFeq",VFeq,"Peq",Peq
    end subroutine PT_relax
    
    
-   !> Initialization of problem solver
+   !> Solver initialization
    subroutine simulation_init
-      use param, only: param_read
       implicit none
       
-      ! Initialize eos and flow parameters
+      ! Initialize eos and flow parameters - all cores
       initialize_parameters: block
          use string,   only: str_long
          use messager, only: log
+         use parallel, only: amRoot
+         use param,    only: param_read
          character(str_long) :: message
          ! Set PinfG to zero
          PinfG=0.0_WP
@@ -315,7 +256,7 @@ contains
          call param_read('Gas Reynolds number',ReG); viscG=rho1*1.0_WP*u2/ReG 
          call param_read('Viscosity ratio',visc_ratio); viscL=visc_ratio*viscG
          ! Output case info
-         if (cfg%amRoot) then
+         if (amRoot) then
             write(message,'("[Liquid EOS] => Gamma=",es12.5)') GammaL; call log(message)
             write(message,'("[Liquid EOS] =>  Pinf=",es12.5)')  PinfL; call log(message)
             write(message,'("[Liquid EOS] =>    Cv=",es12.5)')    CvL; call log(message)
@@ -342,204 +283,159 @@ contains
       
       ! Initialize time tracker
       initialize_timetracker: block
-         time=timetracker(amRoot=cfg%amRoot)
+         use parallel, only: amRoot
+         use param,    only: param_read
+         ! Create time tracker object
+         time=timetracker(amRoot=amRoot)
+         ! Set time integration parameters
+         call param_read('Shock-drop dt',time%dtmax); time%dt=time%dtmax
+         call param_read('Shock-drop CFL',time%cflmax)
          call param_read('Max time',time%tmax)
-         call param_read('Max timestep size',time%dtmax)
-         call param_read('Max cfl number',time%cflmax)
-         time%dt=time%dtmax
       end block initialize_timetracker
       
-      ! Create multipgase compressible flow solver
-      create_velocity_solver: block
-         ! Initialize solver with required thermodynamic functions
-         call fs%initialize(cfg=cfg,getPL=get_PL,getCL=get_CL,getPG=get_PG,getCG=get_CG,name='Compressible NS')
-         ! Provide relaxation model
-         fs%relax=>P_relax
-         ! Provide entropy calculation functions
-         fs%getSL=>get_SL; fs%getSG=>get_SG
-         ! Provide temperature calculation functions
-         fs%getTL=>get_TL; fs%getTG=>get_TG
-      end block create_velocity_solver
+      ! Setup shock-drop simulation - all cores
+      setup_sd: block
+         use param,    only: param_read
+         use parallel, only: group
+         integer , dimension(3) :: meshsize,partition
+         real(WP), dimension(3) :: X0
+         real(WP) :: dx
+         ! Read in mesh size and desired partition
+         call param_read('Shock-drop dx',dx)
+         call param_read('Shock-drop nx',meshsize)
+         call param_read('Shock-drop partition',partition)
+         X0=-0.5_WP*real(meshsize,WP)*dx !< This assumes that the domain is centered on (0,0,0)
+         ! Allocate and initialize the shock-drop solver
+         allocate(sd); call sd%initialize(dx=dx,meshsize=meshsize,startloc=X0,group=group,partition=partition,continue_monitor=.false.)
+         ! Provide relaxation and thermodynamic models
+         sd%fs%relax=>P_relax
+         sd%fs%getPL=>get_PL; sd%fs%getCL=>get_CL; sd%fs%getSL=>get_SL; sd%fs%getTL=>get_TL
+         sd%fs%getPG=>get_PG; sd%fs%getCG=>get_CG; sd%fs%getSG=>get_SG; sd%fs%getTG=>get_TG
+         ! We need to transfer our viscosities explicitly...
+         sd%cst_viscL=viscL; sd%cst_viscG=viscG
+      end block setup_sd
       
-      ! Allocate work arrays
-      allocate_work_arrays: block
-         allocate(dQdt(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:fs%nQ,1:4))
-         allocate(beta(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(visc(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Ui(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Vi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Wi(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Ma(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      end block allocate_work_arrays
-      
-      ! Prepare initial conditions
-      initial_conditions: block
+      ! Generate initial conditions for shock-drop problem
+      initialize_sd: block
          use irl_fortran_interface, only: setNumberOfPlanes,setPlane
          use mms_geom,              only: initialize_volume_moments
          use mpcomp_class,          only: VFlo
          integer :: i,j,k
          ! Initialize primary variables
-         do k=cfg%kmino_,cfg%kmaxo_
-            do j=cfg%jmino_,cfg%jmaxo_
-               do i=cfg%imino_,cfg%imaxo_
-                  ! Initialize liquid volume to zero and set corresponding PLIC
-                  fs%VF(i,j,k)=0.0_WP; fs%BL(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]; fs%BG(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                  call setNumberOfPlanes(fs%PLIC(i,j,k),1); call setPlane(fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,0.0_WP],sign(1.0_WP,fs%VF(i,j,k)-0.5_WP))
-                  ! Not set volume moments for a droplet or a slab
-                  call initialize_volume_moments(lo=[cfg%x(i),cfg%y(j),cfg%z(k)],hi=[cfg%x(i+1),cfg%y(j+1),cfg%z(k+1)],&
-                  levelset=levelset_drop,time=0.0_WP,level=4,VFlo=VFlo,VF=fs%VF(i,j,k),BL=fs%BL(:,i,j,k),BG=fs%BG(:,i,j,k))
-                  ! Initialize mixture velocity to normal shock
-                  fs%U(i,j,k)=u2*Hshock(Xs-cfg%x(i),delta=0.5_WP*fs%dx)
-                  fs%V(i,j,k)=0.0_WP
-                  fs%W(i,j,k)=0.0_WP
-                  ! Gas variables
-                  if (fs%VF(i,j,k).lt.1.0_WP) then
-                     fs%RHOG(i,j,k)=rho1+(rho2-rho1)*Hshock(Xs-cfg%xm(i),delta=0.5_WP*fs%dx)
-                     fs%PG  (i,j,k)=p1  +(p2  -p1  )*Hshock(Xs-cfg%xm(i),delta=0.5_WP*fs%dx)
-                     fs%IG  (i,j,k)=(fs%PG(i,j,k)+GammaG*PinfG)/(fs%RHOG(i,j,k)*(GammaG-1.0_WP))
-                  end if
-                  ! Liquid variables
-                  if (fs%VF(i,j,k).gt.0.0_WP) then
-                     fs%RHOL(i,j,k)=rhoL
-                     fs%PL  (i,j,k)=p1
-                     fs%IL  (i,j,k)=(fs%PL(i,j,k)+GammaL*PinfL)/(fs%RHOL(i,j,k)*(GammaL-1.0_WP))
-                  end if
-               end do
-            end do
-         end do
+         do k=sd%cfg%kmino_,sd%cfg%kmaxo_; do j=sd%cfg%jmino_,sd%cfg%jmaxo_; do i=sd%cfg%imino_,sd%cfg%imaxo_
+            ! Initialize liquid volume to zero and set corresponding PIC
+            sd%fs%VF(i,j,k)=0.0_WP; sd%fs%BL(:,i,j,k)=[sd%fs%cfg%xm(i),sd%fs%cfg%ym(j),sd%fs%cfg%zm(k)]; sd%fs%BG(:,i,j,k)=[sd%fs%cfg%xm(i),sd%fs%cfg%ym(j),sd%fs%cfg%zm(k)]
+            call setNumberOfPlanes(sd%fs%PLIC(i,j,k),1); call setPlane(sd%fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,0.0_WP],sign(1.0_WP,sd%fs%VF(i,j,k)-0.5_WP))
+            ! Not set volume moments for a droplet or a slab
+            call initialize_volume_moments(lo=[sd%fs%cfg%x(i),sd%fs%cfg%y(j),sd%fs%cfg%z(k)],hi=[sd%fs%cfg%x(i+1),sd%fs%cfg%y(j+1),sd%fs%cfg%z(k+1)],&
+            levelset=levelset_drop,time=0.0_WP,level=5,VFlo=VFlo,VF=sd%fs%VF(i,j,k),BL=sd%fs%BL(:,i,j,k),BG=sd%fs%BG(:,i,j,k))
+            ! Initialize mixture velocity to normal shock
+            sd%fs%U(i,j,k)=u2*Hshock(Xs-sd%fs%cfg%x(i),delta=0.5_WP*sd%fs%dx)
+            sd%fs%V(i,j,k)=0.0_WP
+            sd%fs%W(i,j,k)=0.0_WP
+            ! Gas variables
+            if (sd%fs%VF(i,j,k).lt.1.0_WP) then
+               sd%fs%RHOG(i,j,k)=rho1+(rho2-rho1)*Hshock(Xs-sd%fs%cfg%xm(i),delta=0.5_WP*sd%fs%dx)
+               sd%fs%PG  (i,j,k)=p1  +(p2  -p1  )*Hshock(Xs-sd%fs%cfg%xm(i),delta=0.5_WP*sd%fs%dx)
+               sd%fs%IG  (i,j,k)=(sd%fs%PG(i,j,k)+GammaG*PinfG)/(sd%fs%RHOG(i,j,k)*(GammaG-1.0_WP))
+            end if
+            ! Liquid variables
+            if (sd%fs%VF(i,j,k).gt.0.0_WP) then
+               sd%fs%RHOL(i,j,k)=rhoL
+               sd%fs%PL  (i,j,k)=p1
+               sd%fs%IL  (i,j,k)=(sd%fs%PL(i,j,k)+GammaL*PinfL)/(sd%fs%RHOL(i,j,k)*(GammaL-1.0_WP))
+            end if
+         end do; end do; end do
          ! Build PLIC interface
-         call fs%build_interface()
+         call sd%fs%build_interface()
          ! Initialize conserved variables
-         fs%Q(:,:,:,1)=        fs%VF *fs%RHOL
-         fs%Q(:,:,:,2)=(1.0_WP-fs%VF)*fs%RHOG
-         fs%Q(:,:,:,3)= fs%Q(:,:,:,1)*fs%IL
-         fs%Q(:,:,:,4)= fs%Q(:,:,:,2)*fs%IG
-         call fs%get_momentum()
+         sd%fs%Q(:,:,:,1)=        sd%fs%VF *sd%fs%RHOL
+         sd%fs%Q(:,:,:,2)=(1.0_WP-sd%fs%VF)*sd%fs%RHOG
+         sd%fs%Q(:,:,:,3)= sd%fs%Q(:,:,:,1)*sd%fs%IL
+         sd%fs%Q(:,:,:,4)= sd%fs%Q(:,:,:,2)*sd%fs%IG
+         call sd%fs%get_momentum()
          ! Communicate conserved variables (not needed in general, but allows 2D runs without changing loop above...)
-         do i=1,fs%nQ; call fs%cfg%sync(fs%Q(:,:,:,i)); end do
+         do i=1,sd%fs%nQ; call sd%fs%cfg%sync(sd%fs%Q(:,:,:,i)); end do
          ! Rebuild primitive variables
-         call fs%get_primitive()
+         call sd%fs%get_primitive()
          ! Interpolate velocity
-         call fs%interp_vel(Ui,Vi,Wi)
+         call sd%fs%interp_vel(sd%Ui,sd%Vi,sd%Wi)
          ! Compute local Mach number
-         Ma=sqrt(Ui**2+Vi**2+Wi**2)/fs%C
-      end block initial_conditions
+         sd%Ma=sqrt(sd%Ui**2+sd%Vi**2+sd%Wi**2)/sd%fs%C
+         ! Perform monitoring
+         call sd%output_monitor()
+      end block initialize_sd
       
-      ! Create CCL
-      create_ccl: block
-         ! Initialize CCL
-         call ccl%initialize(pg=cfg%pgrid,name='ccl')
-         ! Perform CCL
-         call ccl%build(make_label,same_label)
-      end block create_ccl
+      ! Setup far-field shock simulation - all cores
+      setup_ff: block
+         use param,    only: param_read
+         use parallel, only: group
+         integer , dimension(3) :: meshsize,partition
+         real(WP), dimension(3) :: X0
+         real(WP) :: dx
+         ! Read in mesh size and desired partition
+         call param_read('Farfield dx',dx)
+         call param_read('Farfield nx',meshsize)
+         call param_read('Farfield partition',partition)
+         X0=-0.5_WP*real(meshsize,WP)*dx      !< This assumes that the domain is centered on (0,0,0)
+         call param_read('Farfield X0',X0(1)) !< This shifts the domain in x based on user input
+         ! Initialize the farfield solver
+         call ff%initialize(dx=dx,meshsize=meshsize,startloc=X0,group=group,partition=partition)
+         ! Provide thermodynamic model
+         ff%fs%getP=>get_PG; ff%fs%getC=>get_CG; ff%fs%getS=>get_SG; ff%fs%getT=>get_TG
+         ! We need to transfer our viscosity explicitly...
+         ff%cst_visc=viscG
+      end block setup_ff
       
-      ! Add Ensight output
-      create_ensight: block
-         ! Create Ensight output from cfg
-         ens_out=ensight(cfg=cfg,name='ShockDrop')
-         ! Create event for Ensight output
+      ! Generate initial conditions for far-field shock problem
+      initialize_ff: block
+         integer :: i,j,k
+         ! Initialize primary variables to normal shock
+         do k=ff%cfg%kmino_,ff%cfg%kmaxo_; do j=ff%cfg%jmino_,ff%cfg%jmaxo_; do i=ff%cfg%imino_,ff%cfg%imaxo_
+            ff%fs%U(i,j,k)  =u2*Hshock(Xs-ff%fs%cfg%x(i),delta=0.5_WP*ff%fs%dx)
+            ff%fs%V(i,j,k)  =0.0_WP
+            ff%fs%W(i,j,k)  =0.0_WP
+            ff%fs%Q(i,j,k,1)=rho1+(rho2-rho1)*Hshock(Xs-ff%fs%cfg%xm(i),delta=0.5_WP*ff%fs%dx)
+            ff%fs%P(i,j,k)  =p1  +(p2  -p1  )*Hshock(Xs-ff%fs%cfg%xm(i),delta=0.5_WP*ff%fs%dx)
+            ff%fs%I(i,j,k)  =(ff%fs%P(i,j,k)+GammaG*PinfG)/(ff%fs%Q(i,j,k,1)*(GammaG-1.0_WP))
+         end do; end do; end do
+         ! Initialize conserved variables
+         ff%fs%Q(:,:,:,2)=ff%fs%Q(:,:,:,1)*ff%fs%I
+         call ff%fs%get_momentum()
+         ! Rebuild primitive variables
+         call ff%fs%get_primitive()
+         ! Interpolate velocity
+         call ff%fs%interp_vel(ff%Ui,ff%Vi,ff%Wi)
+         ! Compute local Mach number
+         ff%Ma=sqrt(ff%Ui**2+ff%Vi**2+ff%Wi**2)/ff%fs%C
+         ! Perform monitoring
+         call ff%output_monitor()
+      end block initialize_ff
+      
+      ! Create couplers
+      create_couplers: block
+         use parallel, only: group
+         allocate(sd2ff); sd2ff=coupler(src_grp=group,dst_grp=group,name='sd2ff'); call sd2ff%set_src(sd%cfg); call sd2ff%set_dst(ff%cfg); call sd2ff%initialize()
+         allocate(ff2sd); ff2sd=coupler(src_grp=group,dst_grp=group,name='ff2sd'); call ff2sd%set_src(ff%cfg); call ff2sd%set_dst(sd%cfg); call ff2sd%initialize()
+      end block create_couplers
+      
+      ! Initialize Ensight output event and perform initial Ensight output
+      initialize_ensight: block
+         use param, only: param_read
          ens_evt=event(time=time,name='Ensight output')
          call param_read('Ensight output period',ens_evt%tper)
-         ! Add variables to output
-         call ens_out%add_vector('velocity',Ui,Vi,Wi)
-         call ens_out%add_scalar('VOF',fs%VF)
-         call ens_out%add_scalar('RHOL',fs%RHOL)
-         call ens_out%add_scalar('RHOG',fs%RHOG)
-         call ens_out%add_scalar('IL',fs%IL)
-         call ens_out%add_scalar('IG',fs%IG)
-         call ens_out%add_scalar('PL',fs%PL)
-         call ens_out%add_scalar('PG',fs%PG)
-         call ens_out%add_scalar('Mach',Ma)
-         call ens_out%add_scalar('beta',beta)
-         call ens_out%add_scalar('visc',visc)
-         call ens_out%add_scalar('label',ccl%id)
-         ! Create surface mesh for PLIC
-         smesh=surfmesh(nvar=0,name='plic')
-         call fs%update_surfmesh(smesh)
-         call ens_out%add_surface('plic',smesh)
-         ! Output to ensight
-         if (ens_evt%occurs()) call ens_out%write_data(time%t)
-      end block create_ensight
+         if (ens_evt%occurs()) then
+            call sd%output_ensight(t=time%t)
+            call ff%output_ensight(t=time%t)
+         end if
+      end block initialize_ensight
       
-      ! Create monitor files
-      create_monitor: block
-         ! Prepare some info about fields
-         call fs%get_cfl(dt=time%dt,cfl=time%cfl)
-         call fs%get_info()
-         call postproc()
-         ! Create simulation monitor
-         mfile=monitor(fs%cfg%amRoot,'simulation')
-         call mfile%add_column(time%n,'Timestep number')
-         call mfile%add_column(time%t,'Time')
-         call mfile%add_column(time%dt,'Timestep size')
-         call mfile%add_column(time%cfl,'Maximum CFL')
-         call mfile%add_column(fs%Umax,'Umax')
-         call mfile%add_column(fs%Vmax,'Vmax')
-         call mfile%add_column(fs%Wmax,'Wmax')
-         call mfile%add_column(fs%RHOLmax,'max(RHOL)')
-         call mfile%add_column(fs%RHOLmin,'min(RHOL)')
-         call mfile%add_column(fs%ILmax  ,'max(IL)'  )
-         call mfile%add_column(fs%ILmin  ,'min(IL)'  )
-         call mfile%add_column(fs%PLmax  ,'max(PL)'  )
-         call mfile%add_column(fs%PLmin  ,'min(PL)'  )
-         call mfile%add_column(fs%TLmax  ,'max(TL)'  )
-         call mfile%add_column(fs%TLmin  ,'min(TL)'  )
-         call mfile%add_column(fs%RHOGmax,'max(RHOG)')
-         call mfile%add_column(fs%RHOGmin,'min(RHOG)')
-         call mfile%add_column(fs%IGmax  ,'max(IG)'  )
-         call mfile%add_column(fs%IGmin  ,'min(IG)'  )
-         call mfile%add_column(fs%PGmax  ,'max(PG)'  )
-         call mfile%add_column(fs%PGmin  ,'min(PG)'  )
-         call mfile%add_column(fs%TGmax  ,'max(TG)'  )
-         call mfile%add_column(fs%TGmin  ,'min(TG)'  )
-         call mfile%add_column(fs%VFmax  ,'VFmax'    )
-         call mfile%add_column(fs%VFmin  ,'VFmin'    )
-         call mfile%write()
-         ! Create CFL monitor
-         cflfile=monitor(fs%cfg%amRoot,'cfl')
-         call cflfile%add_column(time%n,'Timestep number')
-         call cflfile%add_column(time%t,'Time')
-         call cflfile%add_column(fs%CFLc_x,'Convective xCFL')
-         call cflfile%add_column(fs%CFLc_y,'Convective yCFL')
-         call cflfile%add_column(fs%CFLc_z,'Convective zCFL')
-         call cflfile%add_column(fs%CFLa_x,'Acoustic xCFL')
-         call cflfile%add_column(fs%CFLa_y,'Acoustic yCFL')
-         call cflfile%add_column(fs%CFLa_z,'Acoustic zCFL')
-         call cflfile%add_column(fs%CFLv_x,'Viscous xCFL')
-         call cflfile%add_column(fs%CFLv_y,'Viscous yCFL')
-         call cflfile%add_column(fs%CFLv_z,'Viscous zCFL')
-         call cflfile%write()
-         ! Create conservation monitor
-         consfile=monitor(fs%cfg%amRoot,'conservation')
-         call consfile%add_column(time%n,'Timestep number')
-         call consfile%add_column(time%t,'Time')
-         call consfile%add_column(fs%VFint  ,'Volume')
-         call consfile%add_column(fs%Qint(1),'Liquid mass')
-         call consfile%add_column(fs%Qint(2),'Gas mass')
-         call consfile%add_column(fs%Qint(3),'Liquid energy')
-         call consfile%add_column(fs%Qint(4),'Gas energy')
-         call consfile%add_column(fs%Qint(5),'U Momentum')
-         call consfile%add_column(fs%Qint(6),'V Momentum')
-         call consfile%add_column(fs%Qint(7),'W Momentum')
-         call consfile%add_column(fs%RHOKLint,'Liquid KE')
-         call consfile%add_column(fs%RHOKGint,'Gas KE')
-         call consfile%add_column(fs%RHOSLint,'Liquid entropy')
-         call consfile%add_column(fs%RHOSGint,'Gas entropy')
-         call consfile%write()
-         ! Create drop output
-         dropfile=monitor(fs%cfg%amRoot,'drop')
-         call dropfile%add_column(time%n,'Timestep number')
-         call dropfile%add_column(time%t,'Time')
-         call dropfile%add_column(fs%VFint  ,'Total volume')
-         call dropfile%add_column(fs%Qint(1),'Total mass')
-         call dropfile%add_column(ccl%nstruct,'N drops')
-         call dropfile%add_column(Vcore,'Core volume')
-         call dropfile%add_column(Mcore,'Core mass')
-         call dropfile%add_column(Xcore,'Core X')
-         call dropfile%add_column(Ycore,'Core Y')
-         call dropfile%add_column(Zcore,'Core Z')
-         call dropfile%write()
-      end block create_monitor
+      ! Initialize remeshing event
+      initialize_remeshing: block
+         use param, only: param_read
+         remesh_evt=event(time=time,name='Remeshing')
+         call param_read('Remeshing period',remesh_evt%tper)
+      end block initialize_remeshing
       
    contains
       !> Level set function for a sphere of unity diameter centered at (0,0,0)
@@ -550,14 +446,6 @@ contains
          real(WP) :: G
          G=0.5_WP-sqrt(sum(xyz**2))
       end function levelset_drop
-      !> Level set function for a slab of unity width centered at x=0
-      function levelset_slab(xyz,t) result(G)
-         implicit none
-         real(WP), dimension(3),intent(in) :: xyz
-         real(WP), intent(in) :: t
-         real(WP) :: G
-         G=0.5_WP-abs(xyz(1))
-      end function levelset_slab
    end subroutine simulation_init
    
    
@@ -565,268 +453,443 @@ contains
    subroutine simulation_run
       implicit none
       
-      ! Perform time integration
+      ! Overall time integration
       do while (.not.time%done())
          
-         ! Increment time
-         call fs%get_cfl(dt=time%dt,cfl=time%cfl)
+         ! Adjust time step size using sd CFL info
+         call sd%fs%get_cfl(dt=time%dt,cfl=time%cfl)
          call time%adjust_dt()
          call time%increment()
          
-         ! Remember conserved variables
-         fs%Qold=fs%Q
+         ! Handle coupling
+         call couple_sd2ff()
+         call couple_ff2sd()
          
-         ! Remember phasic quantities
-         fs%RHOLold=fs%RHOL; fs%ILold=fs%IL; fs%PLold=fs%PL
-         fs%RHOGold=fs%RHOG; fs%IGold=fs%IG; fs%PGold=fs%PG
+         ! Advance shock-drop simulation
+         call sd%step(dt=time%dt)
          
-         ! Remember volume moments and interface
-         fs%VFold=fs%VF
-         fs%BLold=fs%BL
-         fs%BGold=fs%BG
-         copy_plic_to_old: block
-            use irl_fortran_interface, only: copy
-            integer :: i,j,k
-            do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-               call copy(fs%PLICold(i,j,k),fs%PLIC(i,j,k))
-            end do; end do; end do
-         end block copy_plic_to_old
+         ! Advance farfield simulation
+         call ff%step(dt=time%dt)
          
-         ! Tag cells for semi-Lagrangian transport
-         call fs%SLtag()
+         ! Perform monitoring
+         call sd%output_monitor()
+         call ff%output_monitor()
          
-         ! Prepare SGS viscosity models
-         call fs%get_viscartif(dt=time%dt,beta=beta)
-         call fs%get_vreman   (dt=time%dt,visc=visc)
-         mixture_viscosity: block
-            integer  :: i,j,k
-            real(WP) :: Lvof,Lrho,Gvof,Grho
-            real(WP) :: Lvisc,Gvisc,Lbeta,Gbeta
-            real(WP), parameter :: eps=1.0e-15_WP
-            do k=fs%cfg%kmino_+1,fs%cfg%kmaxo_-1; do j=fs%cfg%jmino_+1,fs%cfg%jmaxo_-1; do i=fs%cfg%imino_+1,fs%cfg%imaxo_-1
-               ! Create smooth mass info distribution
-               Lvof=sum(       fs%VF(i-1:i+1,j-1:j+1,k-1:k+1)  )
-               Gvof=sum(1.0_WP-fs%VF(i-1:i+1,j-1:j+1,k-1:k+1)  )
-               Lrho=sum(       fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,1))/(Lvof+eps)
-               Grho=sum(       fs%Q (i-1:i+1,j-1:j+1,k-1:k+1,2))/(Gvof+eps)
-               ! Harmonic average of VISC
-               Lvisc=Lrho*(viscL+visc(i,j,k)); Gvisc=Grho*(viscG+visc(i,j,k)); fs%VISC(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lvisc,eps)+Gvof/max(Gvisc,eps))
-               ! Harmonic average of BETA
-               Lbeta=Lrho*beta(i,j,k); Gbeta=Grho*beta(i,j,k); fs%BETA(i,j,k)=(Lvof+Gvof)/(Lvof/max(Lbeta,eps)+Gvof/max(Gbeta,eps))
-            end do; end do; end do
-         end block mixture_viscosity
+         ! Remesh sd
+         if (remesh_evt%occurs()) call remesh()
          
-         ! Perform first semi-Lagrangian transport step =====================================================
-         call fs%SLstep(dt=0.5_WP*time%dt,U=fs%U,V=fs%V,W=fs%W)
-         call fs%build_interface()
-         
-         ! First RK step ====================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,1))
-         fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,1)
-         ! Increment Q with SL terms
-         fs%Q=fs%Q+fs%SLdQ
-         ! Recompute primitive variables
-         call fs%get_primitive()
-         
-         ! Second RK step ===================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,2))
-         fs%Q=fs%Qold+0.5_WP*time%dt*dQdt(:,:,:,:,2)
-         ! Increment Q with SL terms
-         fs%Q=fs%Q+fs%SLdQ
-         ! Apply user-provided relaxation model
-         !call fs%apply_relax()
-         ! Recompute primitive variables
-         call fs%get_primitive()
-         
-         ! Perform second semi-Lagrangian transport step ====================================================
-         call fs%SLstep(dt=1.0_WP*time%dt,U=fs%U,V=fs%V,W=fs%W)
-         call fs%build_interface()
-         
-         ! Third RK step ====================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,3))
-         fs%Q=fs%Qold+1.0_WP*time%dt*dQdt(:,:,:,:,3)
-         ! Increment Q with SL terms
-         fs%Q=fs%Q+fs%SLdQ
-         ! Recompute primitive variables
-         call fs%get_primitive()
-         
-         ! Fourth RK step ===================================================================================
-         ! Get non-SL RHS and increment
-         call fs%rhs(dQdt(:,:,:,:,4))
-         fs%Q=fs%Qold+time%dt/6.0_WP*(dQdt(:,:,:,:,1)+2.0_WP*dQdt(:,:,:,:,2)+2.0_WP*dQdt(:,:,:,:,3)+dQdt(:,:,:,:,4))
-         ! Increment Q with SL terms
-         fs%Q=fs%Q+fs%SLdQ
-         ! Apply user-provided relaxation model
-         call fs%apply_relax()
-         ! Recompute primitive variables
-         call fs%get_primitive()
-         ! Apply Neumann condition at the outflow
-         neumann_outflow: block
-            use irl_fortran_interface, only: setPlane
-            integer :: i,j,k
-            ! Apply clipped Neumann on primitive variables in x+
-            if (.not.fs%cfg%xper.and.fs%cfg%iproc.eq.fs%cfg%npx) then
-               do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_
-                  ! Copy over from imax to imax+1 and above
-                  do i=fs%cfg%imax+1,fs%cfg%imaxo
-                     ! Copy primitive variables
-                     fs%RHOL(i,j,k)=fs%RHOL(fs%cfg%imax,j,k)
-                     fs%PL  (i,j,k)=fs%PL  (fs%cfg%imax,j,k)
-                     fs%IL  (i,j,k)=fs%IL  (fs%cfg%imax,j,k)
-                     fs%RHOG(i,j,k)=fs%RHOG(fs%cfg%imax,j,k)
-                     fs%PG  (i,j,k)=fs%PG  (fs%cfg%imax,j,k)
-                     fs%IG  (i,j,k)=fs%IG  (fs%cfg%imax,j,k)
-                     fs%U  (i,j,k)=max(fs%U(fs%cfg%imax,j,k),0.0_WP)
-                     fs%V   (i,j,k)=fs%V   (fs%cfg%imax,j,k)
-                     fs%W   (i,j,k)=fs%W   (fs%cfg%imax,j,k)
-                     fs%VF  (i,j,k)=fs%VF  (fs%cfg%imax,j,k)
-                     ! Also adjust interface data
-                     call setPlane(fs%PLIC(i,j,k),0,[+1.0_WP,0.0_WP,0.0_WP],fs%cfg%x(i)+fs%dx*fs%VF(i,j,k))
-                     fs%BL(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                     fs%BG(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                  end do
-               end do; end do
-            end if
-            ! Apply clipped Neumann on primitive variables in y+
-            if (.not.fs%cfg%yper.and.fs%cfg%jproc.eq.fs%cfg%npy) then
-               do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-                  ! Copy over from jmax to jmax+1 and above
-                  do j=fs%cfg%jmax+1,fs%cfg%jmaxo
-                     ! Copy primitive variables
-                     fs%RHOL(i,j,k)=fs%RHOL(i,fs%cfg%jmax,k)
-                     fs%PL  (i,j,k)=fs%PL  (i,fs%cfg%jmax,k)
-                     fs%IL  (i,j,k)=fs%IL  (i,fs%cfg%jmax,k)
-                     fs%RHOG(i,j,k)=fs%RHOG(i,fs%cfg%jmax,k)
-                     fs%PG  (i,j,k)=fs%PG  (i,fs%cfg%jmax,k)
-                     fs%IG  (i,j,k)=fs%IG  (i,fs%cfg%jmax,k)
-                     fs%U   (i,j,k)=fs%U   (i,fs%cfg%jmax,k)
-                     fs%V  (i,j,k)=max(fs%V(i,fs%cfg%jmax,k),0.0_WP)
-                     fs%W   (i,j,k)=fs%W   (i,fs%cfg%jmax,k)
-                     fs%VF  (i,j,k)=fs%VF  (i,fs%cfg%jmax,k)
-                     ! Also adjust interface data
-                     call setPlane(fs%PLIC(i,j,k),0,[0.0_WP,+1.0_WP,0.0_WP],fs%cfg%y(j)+fs%dy*fs%VF(i,j,k))
-                     fs%BL(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                     fs%BG(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                  end do
-               end do; end do
-            end if
-            ! Apply clipped Neumann on primitive variables in y-
-            if (.not.fs%cfg%yper.and.fs%cfg%jproc.eq.1) then
-               do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-                  ! First copy over V from jmin+1 to jmin
-                  fs%V(i,fs%cfg%jmin,k)=min(fs%V(i,fs%cfg%jmin+1,k),0.0_WP)
-                  ! Then copy over from jmin to jmin-1 and below
-                  do j=fs%cfg%jmino,fs%cfg%jmin-1
-                     ! Copy primitive variables
-                     fs%RHOL(i,j,k)=fs%RHOL(i,fs%cfg%jmin,k)
-                     fs%PL  (i,j,k)=fs%PL  (i,fs%cfg%jmin,k)
-                     fs%IL  (i,j,k)=fs%IL  (i,fs%cfg%jmin,k)
-                     fs%RHOG(i,j,k)=fs%RHOG(i,fs%cfg%jmin,k)
-                     fs%PG  (i,j,k)=fs%PG  (i,fs%cfg%jmin,k)
-                     fs%IG  (i,j,k)=fs%IG  (i,fs%cfg%jmin,k)
-                     fs%U   (i,j,k)=fs%U   (i,fs%cfg%jmin,k)
-                     fs%V  (i,j,k)=min(fs%V(i,fs%cfg%jmin,k),0.0_WP)
-                     fs%W   (i,j,k)=fs%W   (i,fs%cfg%jmin,k)
-                     fs%VF  (i,j,k)=fs%VF  (i,fs%cfg%jmin,k)
-                     ! Also adjust interface data
-                     call setPlane(fs%PLIC(i,j,k),0,[0.0_WP,-1.0_WP,0.0_WP],fs%cfg%y(j)+fs%dy*fs%VF(i,j,k))
-                     fs%BL(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                     fs%BG(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                  end do
-               end do; end do
-            end if
-            ! Apply clipped Neumann on primitive variables in z+
-            if (.not.fs%cfg%zper.and.fs%cfg%kproc.eq.fs%cfg%npz) then
-               do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-                  ! Copy over from kmax to kmax+1 and above
-                  do k=fs%cfg%kmax+1,fs%cfg%kmaxo
-                     ! Copy primitive variables
-                     fs%RHOL(i,j,k)=fs%RHOL(i,j,fs%cfg%kmax)
-                     fs%PL  (i,j,k)=fs%PL  (i,j,fs%cfg%kmax)
-                     fs%IL  (i,j,k)=fs%IL  (i,j,fs%cfg%kmax)
-                     fs%RHOG(i,j,k)=fs%RHOG(i,j,fs%cfg%kmax)
-                     fs%PG  (i,j,k)=fs%PG  (i,j,fs%cfg%kmax)
-                     fs%IG  (i,j,k)=fs%IG  (i,j,fs%cfg%kmax)
-                     fs%U   (i,j,k)=fs%U   (i,j,fs%cfg%kmax)
-                     fs%V   (i,j,k)=fs%V   (i,j,fs%cfg%kmax)
-                     fs%W  (i,j,k)=max(fs%W(i,j,fs%cfg%kmax),0.0_WP)
-                     fs%VF  (i,j,k)=fs%VF  (i,j,fs%cfg%kmax)
-                     ! Also adjust interface data
-                     call setPlane(fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,+1.0_WP],fs%cfg%z(k)+fs%dz*fs%VF(i,j,k))
-                     fs%BL(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                     fs%BG(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                  end do
-               end do; end do
-            end if
-            ! Apply clipped Neumann on primitive variables in z-
-            if (.not.fs%cfg%zper.and.fs%cfg%kproc.eq.1) then
-               do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-                  ! First copy over W from kmin+1 to kmin
-                  fs%W(i,j,fs%cfg%kmin)=min(fs%W(i,j,fs%cfg%kmin+1),0.0_WP)
-                  ! Then copy over from kmin to kmin-1 and below
-                  do k=fs%cfg%kmino,fs%cfg%kmin-1
-                     ! Copy primitive variables
-                     fs%RHOL(i,j,k)=fs%RHOL(i,j,fs%cfg%kmin)
-                     fs%PL  (i,j,k)=fs%PL  (i,j,fs%cfg%kmin)
-                     fs%IL  (i,j,k)=fs%IL  (i,j,fs%cfg%kmin)
-                     fs%RHOG(i,j,k)=fs%RHOG(i,j,fs%cfg%kmin)
-                     fs%PG  (i,j,k)=fs%PG  (i,j,fs%cfg%kmin)
-                     fs%IG  (i,j,k)=fs%IG  (i,j,fs%cfg%kmin)
-                     fs%U   (i,j,k)=fs%U   (i,j,fs%cfg%kmin)
-                     fs%V   (i,j,k)=fs%V   (i,j,fs%cfg%kmin)
-                     fs%W  (i,j,k)=min(fs%W(i,j,fs%cfg%kmin),0.0_WP)
-                     fs%VF  (i,j,k)=fs%VF  (i,j,fs%cfg%kmin)
-                     ! Also adjust interface data
-                     call setPlane(fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,-1.0_WP],fs%cfg%z(k)+fs%dz*fs%VF(i,j,k))
-                     fs%BL(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                     fs%BG(:,i,j,k)=[fs%cfg%xm(i),fs%cfg%ym(j),fs%cfg%zm(k)]
-                  end do
-               end do; end do
-            end if
-            ! Rebuild conserved quantities
-            fs%Q(:,:,:,1)=        fs%VF *fs%RHOL
-            fs%Q(:,:,:,2)=(1.0_WP-fs%VF)*fs%RHOG
-            fs%Q(:,:,:,3)= fs%Q(:,:,:,1)*fs%IL
-            fs%Q(:,:,:,4)= fs%Q(:,:,:,2)*fs%IG
-            call fs%get_momentum()
-         end block neumann_outflow
-         
-         ! Interpolate velocity
-         call fs%interp_vel(Ui,Vi,Wi)
-         
-         ! Compute local Mach number
-         Ma=sqrt(Ui**2+Vi**2+Wi**2)/fs%C
-         
-         ! Update CCL
-         call ccl%build(make_label,same_label)
-         
-         ! Output to ensight
+         ! Perform Ensight output
          if (ens_evt%occurs()) then
-            call fs%update_surfmesh(smesh)
-            call ens_out%write_data(time%t)
+            call sd%output_ensight(t=time%t)
+            call ff%output_ensight(t=time%t)
          end if
-         
-         ! Perform and output monitoring
-         call postproc()
-         call fs%get_info()
-         call mfile%write()
-         call cflfile%write()
-         call consfile%write()
-         call dropfile%write()
          
       end do
       
    end subroutine simulation_run
    
    
+   !> Remesh sd to follow the drop
+   subroutine remesh()
+      use, intrinsic :: iso_fortran_env, only: output_unit
+      use messager, only: log
+      use parallel, only: amRoot
+      implicit none
+      type(shockdrop), pointer :: sdnew
+      type(coupler)  , pointer :: sdnew2ff
+      type(coupler)  , pointer :: ff2sdnew
+      
+      ! Some messaging
+      if (amRoot) then; call log('Begin remeshing...'); write(output_unit,'("Begin remeshing...")'); end if
+      
+      ! Setup new shock-drop simulation - all cores
+      setup_sdnew: block
+         use parallel, only: group
+         real(WP), dimension(3) :: X0
+         ! Shift domain so that core barycenter remains in the middle of sd's domain
+         X0=[sd%cfg%x(sd%cfg%imin),sd%cfg%y(sd%cfg%jmin),sd%cfg%z(sd%cfg%kmin)] &                       !  Corner point
+         & +sd%fs%dx*real([int(sd%Xcore/sd%fs%dx),int(sd%Ycore/sd%fs%dy),int(sd%Zcore/sd%fs%dz)],WP) &  ! +Core centroid
+         & -0.5_WP*([sd%cfg%x(sd%cfg%imax+1),sd%cfg%y(sd%cfg%jmax+1),sd%cfg%z(sd%cfg%kmax+1)] &         ! -Middle of 
+         &         +[sd%cfg%x(sd%cfg%imin  ),sd%cfg%y(sd%cfg%jmin  ),sd%cfg%z(sd%cfg%kmin  )])          !  domain
+         ! Initialize the shock-drop solver
+         allocate(sdnew); call sdnew%initialize(dx=sd%fs%dx,meshsize=[sd%cfg%nx,sd%cfg%ny,sd%cfg%nz],startloc=X0,group=group,partition=[sd%cfg%npx,sd%cfg%npy,sd%cfg%npz],continue_monitor=.true.)
+         ! Provide relaxation and thermodynamic models
+         sdnew%fs%relax=>sd%fs%relax
+         sdnew%fs%getPL=>sd%fs%getPL; sdnew%fs%getCL=>sd%fs%getCL; sdnew%fs%getSL=>sd%fs%getSL; sdnew%fs%getTL=>sd%fs%getTL
+         sdnew%fs%getPG=>sd%fs%getPG; sdnew%fs%getCG=>sd%fs%getCG; sdnew%fs%getSG=>sd%fs%getSG; sdnew%fs%getTG=>sd%fs%getTG
+         ! We need to transfer our viscosities explicitly...
+         sdnew%cst_viscL=sd%cst_viscL; sdnew%cst_viscG=sd%cst_viscG
+         ! Inform sdnew's timetracker of our current time, but leave n unchanged to make remeshing obvious
+         sdnew%time%t=time%t
+      end block setup_sdnew
+      
+      ! Create new couplers
+      setup_new_couplers: block
+         use parallel, only: group
+         allocate(sdnew2ff); sdnew2ff=coupler(src_grp=group,dst_grp=group,name='sd2ff'); call sdnew2ff%set_src(sdnew%cfg); call sdnew2ff%set_dst(ff%cfg); call sdnew2ff%initialize()
+         allocate(ff2sdnew); ff2sdnew=coupler(src_grp=group,dst_grp=group,name='ff2sd'); call ff2sdnew%set_src(ff%cfg); call ff2sdnew%set_dst(sdnew%cfg); call ff2sdnew%initialize()
+      end block setup_new_couplers
+      
+      ! Initialize all sdnew to gas including in ghost cells
+      initialize_to_gas: block
+         use irl_fortran_interface, only: setNumberOfPlanes,setPlane
+         integer :: i,j,k
+         ! Let us set PLIC explicitly to gas everywhere and provide corresponding volume moments
+         do k=sdnew%cfg%kmino_,sdnew%cfg%kmaxo_; do j=sdnew%cfg%jmino_,sdnew%cfg%jmaxo_; do i=sdnew%cfg%imino_,sdnew%cfg%imaxo_
+            sdnew%fs%VF(i,j,k)=0.0_WP; sdnew%fs%BL(:,i,j,k)=[sdnew%fs%cfg%xm(i),sdnew%fs%cfg%ym(j),sdnew%fs%cfg%zm(k)]; sdnew%fs%BG(:,i,j,k)=[sdnew%fs%cfg%xm(i),sdnew%fs%cfg%ym(j),sdnew%fs%cfg%zm(k)]
+            call setNumberOfPlanes(sdnew%fs%PLIC(i,j,k),1); call setPlane(sdnew%fs%PLIC(i,j,k),0,[0.0_WP,0.0_WP,0.0_WP],sign(1.0_WP,sdnew%fs%VF(i,j,k)-0.5_WP))
+         end do; end do; end do
+      end block initialize_to_gas
+      
+      ! Initialize sdnew using ff
+      initialize_sdnew_from_ff: block
+         integer :: i,j,k,n
+         ! Transfer data
+         call ff2sdnew%push(ff%fs%Q(:,:,:,1)); call ff2sdnew%transfer(); call ff2sdnew%pull(sdnew%fs%Q(:,:,:,2))
+         call ff2sdnew%push(ff%fs%Q(:,:,:,2)); call ff2sdnew%transfer(); call ff2sdnew%pull(sdnew%fs%Q(:,:,:,4))
+         call ff2sdnew%push(ff%Ui);            call ff2sdnew%transfer(); call ff2sdnew%pull(sdnew%Ui)
+         call ff2sdnew%push(ff%Vi);            call ff2sdnew%transfer(); call ff2sdnew%pull(sdnew%Vi)
+         call ff2sdnew%push(ff%Wi);            call ff2sdnew%transfer(); call ff2sdnew%pull(sdnew%Wi)
+         do k=sdnew%cfg%kmino_+1,sdnew%cfg%kmaxo_; do j=sdnew%cfg%jmino_+1,sdnew%cfg%jmaxo_; do i=sdnew%cfg%imino_+1,sdnew%cfg%imaxo_
+            sdnew%fs%Q(i,j,k,5)=0.5_WP*sum(sdnew%fs%Q(i-1:i,j,k,2)*sdnew%Ui(i-1:i,j,k))
+            sdnew%fs%Q(i,j,k,6)=0.5_WP*sum(sdnew%fs%Q(i,j-1:j,k,2)*sdnew%Vi(i,j-1:j,k))
+            sdnew%fs%Q(i,j,k,7)=0.5_WP*sum(sdnew%fs%Q(i,j,k-1:k,2)*sdnew%Wi(i,j,k-1:k))
+         end do; end do; end do
+         ! Communicate conserved variables
+         do n=1,sdnew%fs%nQ; call sdnew%cfg%sync(sdnew%fs%Q(:,:,:,n)); end do
+         ! Rebuild primitive variables
+         call sdnew%fs%get_primitive()
+         ! Interpolate velocity
+         call sdnew%fs%interp_vel(sdnew%Ui,sdnew%Vi,sdnew%Wi)
+      end block initialize_sdnew_from_ff
+      
+      ! Initialize sdnew using sd
+      initialize_sdnew_from_sd: block
+         use parallel, only: group
+         integer :: i,j,k,n
+         type(coupler) :: sd2sdnew
+         real(WP), dimension(:,:,:), allocatable :: tmp,tmp2
+         ! Create new coupler
+         sd2sdnew=coupler(src_grp=group,dst_grp=group,name='sd2sd'); call sd2sdnew%set_src(sd%cfg); call sd2sdnew%set_dst(sdnew%cfg); call sd2sdnew%initialize()
+         ! Allocate tmp/tmp2 array for transfer
+         allocate(tmp(sdnew%fs%cfg%imino_:sdnew%fs%cfg%imaxo_,sdnew%fs%cfg%jmino_:sdnew%fs%cfg%jmaxo_,sdnew%fs%cfg%kmino_:sdnew%fs%cfg%kmaxo_))
+         allocate(tmp2(sd%fs%cfg%imino_:sd%fs%cfg%imaxo_,sd%fs%cfg%jmino_:sd%fs%cfg%jmaxo_,sd%fs%cfg%kmino_:sd%fs%cfg%kmaxo_))
+         ! Transfer Q(1-7) - since the mesh is the same, we can safely ignore staggering here
+         do n=1,7
+            tmp=0.0_WP; call sd2sdnew%push(sd%fs%Q(:,:,:,n)); call sd2sdnew%transfer(); call sd2sdnew%pull(tmp)
+            do k=sdnew%cfg%kmino_,sdnew%cfg%kmaxo_; do j=sdnew%cfg%jmino_,sdnew%cfg%jmaxo_; do i=sdnew%cfg%imino_,sdnew%cfg%imaxo_
+               if (sdnew%fs%cfg%xm(i).gt.sd%fs%cfg%x(sd%fs%cfg%imin).and.sdnew%fs%cfg%xm(i).lt.sd%fs%cfg%x(sd%fs%cfg%imax+1).and.&
+               &   sdnew%fs%cfg%ym(j).gt.sd%fs%cfg%y(sd%fs%cfg%jmin).and.sdnew%fs%cfg%ym(j).lt.sd%fs%cfg%y(sd%fs%cfg%jmax+1).and.&
+               &   sdnew%fs%cfg%zm(k).gt.sd%fs%cfg%z(sd%fs%cfg%kmin).and.sdnew%fs%cfg%zm(k).lt.sd%fs%cfg%z(sd%fs%cfg%kmax+1)) sdnew%fs%Q(i,j,k,n)=tmp(i,j,k)
+            end do; end do; end do
+         end do
+         ! Transfer VOF
+         tmp=0.0_WP; call sd2sdnew%push(sd%fs%VF); call sd2sdnew%transfer(); call sd2sdnew%pull(tmp)
+         do k=sdnew%cfg%kmino_,sdnew%cfg%kmaxo_; do j=sdnew%cfg%jmino_,sdnew%cfg%jmaxo_; do i=sdnew%cfg%imino_,sdnew%cfg%imaxo_
+            if (sdnew%fs%cfg%xm(i).gt.sd%fs%cfg%x(sd%fs%cfg%imin).and.sdnew%fs%cfg%xm(i).lt.sd%fs%cfg%x(sd%fs%cfg%imax+1).and.&
+            &   sdnew%fs%cfg%ym(j).gt.sd%fs%cfg%y(sd%fs%cfg%jmin).and.sdnew%fs%cfg%ym(j).lt.sd%fs%cfg%y(sd%fs%cfg%jmax+1).and.&
+            &   sdnew%fs%cfg%zm(k).gt.sd%fs%cfg%z(sd%fs%cfg%kmin).and.sdnew%fs%cfg%zm(k).lt.sd%fs%cfg%z(sd%fs%cfg%kmax+1)) sdnew%fs%VF(i,j,k)=tmp(i,j,k)
+         end do; end do; end do
+         ! Transfer barycenters
+         do n=1,3
+            tmp=0.0_WP; tmp2=sd%fs%BG(n,:,:,:); call sd2sdnew%push(tmp2); call sd2sdnew%transfer(); call sd2sdnew%pull(tmp)
+            do k=sdnew%cfg%kmino_,sdnew%cfg%kmaxo_; do j=sdnew%cfg%jmino_,sdnew%cfg%jmaxo_; do i=sdnew%cfg%imino_,sdnew%cfg%imaxo_
+               if (sdnew%fs%cfg%xm(i).gt.sd%fs%cfg%x(sd%fs%cfg%imin).and.sdnew%fs%cfg%xm(i).lt.sd%fs%cfg%x(sd%fs%cfg%imax+1).and.&
+               &   sdnew%fs%cfg%ym(j).gt.sd%fs%cfg%y(sd%fs%cfg%jmin).and.sdnew%fs%cfg%ym(j).lt.sd%fs%cfg%y(sd%fs%cfg%jmax+1).and.&
+               &   sdnew%fs%cfg%zm(k).gt.sd%fs%cfg%z(sd%fs%cfg%kmin).and.sdnew%fs%cfg%zm(k).lt.sd%fs%cfg%z(sd%fs%cfg%kmax+1)) sdnew%fs%BG(n,i,j,k)=tmp(i,j,k)
+            end do; end do; end do
+         end do
+         do n=1,3
+            tmp=0.0_WP; call sd2sdnew%push(sd%fs%BL(n,:,:,:)); call sd2sdnew%transfer(); call sd2sdnew%pull(tmp)
+            do k=sdnew%cfg%kmino_,sdnew%cfg%kmaxo_; do j=sdnew%cfg%jmino_,sdnew%cfg%jmaxo_; do i=sdnew%cfg%imino_,sdnew%cfg%imaxo_
+               if (sdnew%fs%cfg%xm(i).gt.sd%fs%cfg%x(sd%fs%cfg%imin).and.sdnew%fs%cfg%xm(i).lt.sd%fs%cfg%x(sd%fs%cfg%imax+1).and.&
+               &   sdnew%fs%cfg%ym(j).gt.sd%fs%cfg%y(sd%fs%cfg%jmin).and.sdnew%fs%cfg%ym(j).lt.sd%fs%cfg%y(sd%fs%cfg%jmax+1).and.&
+               &   sdnew%fs%cfg%zm(k).gt.sd%fs%cfg%z(sd%fs%cfg%kmin).and.sdnew%fs%cfg%zm(k).lt.sd%fs%cfg%z(sd%fs%cfg%kmax+1)) sdnew%fs%BL(n,i,j,k)=tmp(i,j,k)
+            end do; end do; end do
+         end do
+         ! Communicate conserved variables
+         do n=1,sdnew%fs%nQ; call sdnew%fs%cfg%sync(sdnew%fs%Q(:,:,:,n)); end do
+         ! Also sync volume moments
+         call sdnew%fs%sync_volume_moments()
+         ! Build PLIC interface
+         call sdnew%fs%build_interface()
+         ! Rebuild primitive variables
+         call sdnew%fs%get_primitive()
+         ! Interpolate velocity
+         call sdnew%fs%interp_vel(sdnew%Ui,sdnew%Vi,sdnew%Wi)
+         ! Compute local Mach number
+         sdnew%Ma=sqrt(sdnew%Ui**2+sdnew%Vi**2+sdnew%Wi**2)/sdnew%fs%C
+         ! Free memory
+         deallocate(tmp,tmp2); call sd2sdnew%finalize()
+      end block initialize_sdnew_from_sd
+      
+      ! Finally, transfer allocation
+      transfer_allocation: block
+         ! Finalize and free up couplers, point to new ones
+         call sd2ff%finalize(); deallocate(sd2ff); sd2ff=>sdnew2ff
+         call ff2sd%finalize(); deallocate(ff2sd); ff2sd=>ff2sdnew
+         ! Finalize and free up sd, point to new one
+         call sd%finalize(); deallocate(sd); sd=>sdnew
+      end block transfer_allocation
+      
+      ! Some messaging
+      if (amRoot) then; call log('Done remeshing!'); write(output_unit,'("Done remeshing!")'); end if
+      
+   end subroutine remesh
+   
+   
+   !> Coupling from sd to ff
+   subroutine couple_sd2ff()
+      implicit none
+      integer  :: i,j,k,n
+      real(WP) :: coeff,lambda,strength
+      real(WP), dimension(:,:,:,:), allocatable :: Q
+      
+      ! Sponge parameters
+      lambda=2.5_WP*ff%fs%dx
+      strength=0.25_WP
+      
+      ! Allocate storage for transfered variables
+      allocate(Q(ff%fs%cfg%imino_:ff%fs%cfg%imaxo_,ff%fs%cfg%jmino_:ff%fs%cfg%jmaxo_,ff%fs%cfg%kmino_:ff%fs%cfg%kmaxo_,0:sd%fs%nQ)); Q=0.0_WP
+      
+      ! Exchange data using coupler
+      call sd2ff%push(sd%fs%VF); call sd2ff%transfer(); call sd2ff%pull(Q(:,:,:,0))
+      do n=1,4
+         call sd2ff%push(sd%fs%Q(:,:,:,n)); call sd2ff%transfer(); call sd2ff%pull(Q(:,:,:,n))
+      end do
+      call sd2ff%push(sd%Ui); call sd2ff%transfer(); call sd2ff%pull(Q(:,:,:,5))
+      call sd2ff%push(sd%Vi); call sd2ff%transfer(); call sd2ff%pull(Q(:,:,:,6))
+      call sd2ff%push(sd%Wi); call sd2ff%transfer(); call sd2ff%pull(Q(:,:,:,7))
+      
+      ! Compute nudging increment
+      do k=ff%cfg%kmino_,ff%cfg%kmaxo_; do j=ff%cfg%jmino_,ff%cfg%jmaxo_; do i=ff%cfg%imino_,ff%cfg%imaxo_
+         ! Cell-centered nudging coefficient
+         coeff=strength*sponge_forcing(inner=sd%cfg%pgrid,pos=[ff%cfg%xm(i),ff%cfg%ym(j),ff%cfg%zm(k)],delta=lambda)
+         if (Q(i,j,k,0).gt.0.0_WP) coeff=0.0_WP
+         ! Compute cell-centered momentum increment
+         Q(i,j,k,5)=coeff*(Q(i,j,k,2)*Q(i,j,k,5)-ff%fs%Q(i,j,k,1)*ff%Ui(i,j,k))
+         Q(i,j,k,6)=coeff*(Q(i,j,k,2)*Q(i,j,k,6)-ff%fs%Q(i,j,k,1)*ff%Vi(i,j,k))
+         Q(i,j,k,7)=coeff*(Q(i,j,k,2)*Q(i,j,k,7)-ff%fs%Q(i,j,k,1)*ff%Wi(i,j,k))
+         ! Compute RHO increment
+         Q(i,j,k,1)=0.0_WP
+         Q(i,j,k,2)=coeff*(Q(i,j,k,2)-ff%fs%Q(i,j,k,1))
+         ! Compute RHO*I increment
+         Q(i,j,k,3)=0.0_WP
+         Q(i,j,k,4)=coeff*(Q(i,j,k,4)-ff%fs%Q(i,j,k,2))
+      end do; end do; end do
+      
+      ! Second pass to apply forcing
+      do k=ff%cfg%kmino_+1,ff%cfg%kmaxo_; do j=ff%cfg%jmino_+1,ff%cfg%jmaxo_; do i=ff%cfg%imino_+1,ff%cfg%imaxo_
+         ff%fs%Q(i,j,k,1)=ff%fs%Q(i,j,k,1)+Q(i,j,k,2)
+         ff%fs%Q(i,j,k,2)=ff%fs%Q(i,j,k,2)+Q(i,j,k,4)
+         ff%fs%Q(i,j,k,3)=ff%fs%Q(i,j,k,3)+0.5_WP*sum(Q(i-1:i,j,k,5))
+         ff%fs%Q(i,j,k,4)=ff%fs%Q(i,j,k,4)+0.5_WP*sum(Q(i,j-1:j,k,6))
+         ff%fs%Q(i,j,k,5)=ff%fs%Q(i,j,k,5)+0.5_WP*sum(Q(i,j,k-1:k,7))
+      end do; end do; end do
+      
+      ! Communicate conserved variables
+      do n=1,ff%fs%nQ; call ff%cfg%sync(ff%fs%Q(:,:,:,n)); end do
+      
+      ! Recompute primitive variables
+      call ff%fs%get_primitive()
+      
+      ! Free memory
+      deallocate(Q)
+      
+   contains
+      !> Function that calculates the signed distance between to domains
+      real(WP) function sponge_forcing(inner,pos,delta)
+         use pgrid_class, only: pgrid
+         use mathtools,   only: Pi
+         implicit none
+         type(pgrid), intent(in) :: inner
+         real(WP), dimension(3), intent(in) :: pos
+         real(WP), intent(in) :: delta
+         real(WP) :: dx,dy,dz,dx_in,dy_in,dz_in
+         logical :: is_out_x,is_out_y,is_out_z
+         ! X direction
+         if (inner%nx.gt.1) then
+            dx=max(inner%x(inner%imin)-pos(1),0.0_WP,pos(1)-inner%x(inner%imax+1))
+            dx_in=min(inner%x(inner%imax+1)-pos(1),pos(1)-inner%x(inner%imin))
+            is_out_x=(pos(1).lt.inner%x(inner%imin).or.pos(1).gt.inner%x(inner%imax+1))
+         else
+            dx=0.0_WP
+            dx_in=huge(1.0_WP)
+            is_out_x=.false.
+         end if
+         ! Y direction
+         if (inner%ny.gt.1) then
+            dy=max(inner%y(inner%jmin)-pos(2),0.0_WP,pos(2)-inner%y(inner%jmax+1))
+            dy_in=min(inner%y(inner%jmax+1)-pos(2),pos(2)-inner%y(inner%jmin))
+            is_out_y=(pos(2).lt.inner%y(inner%jmin).or.pos(2).gt.inner%y(inner%jmax+1))
+         else
+            dy=0.0_WP
+            dy_in=huge(1.0_WP)
+            is_out_y=.false.
+         end if
+         ! Z direction
+         if (inner%nz.gt.1) then
+            dz=max(inner%z(inner%kmin)-pos(3),0.0_WP,pos(3)-inner%z(inner%kmax+1))
+            dz_in=min(inner%z(inner%kmax+1)-pos(3),pos(3)-inner%z(inner%kmin))
+            is_out_z=(pos(3).lt.inner%z(inner%kmin).or.pos(3).gt.inner%z(inner%kmax+1))
+         else
+            dz=0.0_WP
+            dz_in=huge(1.0_WP)
+            is_out_z=.false.
+         end if
+         ! Signed distance
+         if (is_out_x.or.is_out_y.or.is_out_z) then
+            sponge_forcing=-sqrt(dx**2+dy**2+dz**2)
+         else
+            sponge_forcing=min(dx_in,dy_in,dz_in)
+         end if
+         ! Return a smooth forcing coefficient in [0,1]
+         sponge_forcing=sponge_forcing/delta-1.0_WP
+         if (sponge_forcing.le.0.0_WP) then
+            sponge_forcing=0.0_WP
+         else if (sponge_forcing.ge.1.0_WP) then
+            sponge_forcing=1.0_WP
+         else
+            sponge_forcing=1.0_WP-cos(0.5_WP*Pi*sponge_forcing)**4
+         end if
+      end function sponge_forcing
+   end subroutine couple_sd2ff
+   
+   
+   !> Coupling from ff to sd
+   subroutine couple_ff2sd()
+      implicit none
+      integer  :: i,j,k,n
+      real(WP) :: coeff,lambda,strength
+      real(WP), dimension(:,:,:,:), allocatable :: Q
+      
+      ! Sponge parameters
+      lambda=5.0_WP*sd%fs%dx
+      strength=0.1_WP
+      
+      ! Allocate storage for transfered variables
+      allocate(Q(sd%fs%cfg%imino_:sd%fs%cfg%imaxo_,sd%fs%cfg%jmino_:sd%fs%cfg%jmaxo_,sd%fs%cfg%kmino_:sd%fs%cfg%kmaxo_,1:ff%fs%nQ)); Q=0.0_WP
+      
+      ! Exchange data using coupler
+      do n=1,2
+         call ff2sd%push(ff%fs%Q(:,:,:,n)); call ff2sd%transfer(); call ff2sd%pull(Q(:,:,:,n))
+      end do
+      call ff2sd%push(ff%Ui); call ff2sd%transfer(); call ff2sd%pull(Q(:,:,:,3))
+      call ff2sd%push(ff%Vi); call ff2sd%transfer(); call ff2sd%pull(Q(:,:,:,4))
+      call ff2sd%push(ff%Wi); call ff2sd%transfer(); call ff2sd%pull(Q(:,:,:,5))
+      
+      ! Compute nudging increment
+      do k=sd%cfg%kmino_,sd%cfg%kmaxo_; do j=sd%cfg%jmino_,sd%cfg%jmaxo_; do i=sd%cfg%imino_,sd%cfg%imaxo_
+         ! Cell-centered nudging coefficient
+         coeff=strength*sponge_forcing(inner=sd%cfg%pgrid,pos=[sd%cfg%xm(i),sd%cfg%ym(j),sd%cfg%zm(k)],delta=lambda)
+         ! Compute cell-centered momentum increment
+         Q(i,j,k,3)=coeff*((Q(i,j,k,1)+sd%fs%Q(i,j,k,1))*Q(i,j,k,3)-sum(sd%fs%Q(i,j,k,1:2))*sd%Ui(i,j,k))
+         Q(i,j,k,4)=coeff*((Q(i,j,k,1)+sd%fs%Q(i,j,k,1))*Q(i,j,k,4)-sum(sd%fs%Q(i,j,k,1:2))*sd%Vi(i,j,k))
+         Q(i,j,k,5)=coeff*((Q(i,j,k,1)+sd%fs%Q(i,j,k,1))*Q(i,j,k,5)-sum(sd%fs%Q(i,j,k,1:2))*sd%Wi(i,j,k))
+         ! Compute RHO increment
+         Q(i,j,k,1)=coeff*(Q(i,j,k,1)-sd%fs%Q(i,j,k,2))
+         ! Compute RHO*I increment
+         Q(i,j,k,2)=coeff*(Q(i,j,k,2)-sd%fs%Q(i,j,k,4))
+      end do; end do; end do
+      
+      ! Second pass to apply forcing (+2 in x because remesh is missing imino...)
+      do k=sd%cfg%kmino_+1,sd%cfg%kmaxo_; do j=sd%cfg%jmino_+1,sd%cfg%jmaxo_; do i=sd%cfg%imino_+2,sd%cfg%imaxo_
+         sd%fs%Q(i,j,k,1)=sd%fs%Q(i,j,k,1)
+         sd%fs%Q(i,j,k,2)=sd%fs%Q(i,j,k,2)+Q(i,j,k,1)
+         sd%fs%Q(i,j,k,3)=sd%fs%Q(i,j,k,3)
+         sd%fs%Q(i,j,k,4)=sd%fs%Q(i,j,k,4)+Q(i,j,k,2)
+         sd%fs%Q(i,j,k,5)=sd%fs%Q(i,j,k,5)+0.5_WP*sum(Q(i-1:i,j,k,3))
+         sd%fs%Q(i,j,k,6)=sd%fs%Q(i,j,k,6)+0.5_WP*sum(Q(i,j-1:j,k,4))
+         sd%fs%Q(i,j,k,7)=sd%fs%Q(i,j,k,7)+0.5_WP*sum(Q(i,j,k-1:k,5))
+      end do; end do; end do
+      
+      ! Communicate conserved variables
+      do n=1,sd%fs%nQ; call sd%cfg%sync(sd%fs%Q(:,:,:,n)); end do
+      
+      ! Recompute primitive variables
+      call sd%fs%get_primitive()
+      
+      ! Free memory
+      deallocate(Q)
+      
+   contains
+      !> Function that calculates the signed distance between to domains
+      real(WP) function sponge_forcing(inner,pos,delta)
+         use pgrid_class, only: pgrid
+         use mathtools,   only: Pi
+         implicit none
+         type(pgrid), intent(in) :: inner
+         real(WP), dimension(3), intent(in) :: pos
+         real(WP), intent(in) :: delta
+         real(WP) :: dx,dy,dz,dx_in,dy_in,dz_in
+         logical :: is_out_x,is_out_y,is_out_z
+         ! X direction
+         if (inner%nx.gt.1) then ! Only force in -x
+            dx=max(inner%x(inner%imin)-pos(1),0.0_WP)!,pos(1)-inner%x(inner%imax+1))
+            dx_in=pos(1)-inner%x(inner%imin)!min(pos(1)-inner%x(inner%imin),inner%x(inner%imax+1)-pos(1))
+            is_out_x=(pos(1).lt.inner%x(inner%imin))!.or.pos(1).gt.inner%x(inner%imax+1))
+         else
+            dx=0.0_WP
+            dx_in=huge(1.0_WP)
+            is_out_x=.false.
+         end if
+         ! Y direction
+         if (inner%ny.gt.1) then
+            dy=max(inner%y(inner%jmin)-pos(2),0.0_WP,pos(2)-inner%y(inner%jmax+1))
+            dy_in=min(inner%y(inner%jmax+1)-pos(2),pos(2)-inner%y(inner%jmin))
+            is_out_y=(pos(2).lt.inner%y(inner%jmin).or.pos(2).gt.inner%y(inner%jmax+1))
+         else
+            dy=0.0_WP
+            dy_in=huge(1.0_WP)
+            is_out_y=.false.
+         end if
+         ! Z direction
+         if (inner%nz.gt.1) then
+            dz=max(inner%z(inner%kmin)-pos(3),0.0_WP,pos(3)-inner%z(inner%kmax+1))
+            dz_in=min(inner%z(inner%kmax+1)-pos(3),pos(3)-inner%z(inner%kmin))
+            is_out_z=(pos(3).lt.inner%z(inner%kmin).or.pos(3).gt.inner%z(inner%kmax+1))
+         else
+            dz=0.0_WP
+            dz_in=huge(1.0_WP)
+            is_out_z=.false.
+         end if
+         ! Signed distance
+         if (is_out_x.or.is_out_y.or.is_out_z) then
+            sponge_forcing=-sqrt(dx**2+dy**2+dz**2)
+         else
+            sponge_forcing=min(dx_in,dy_in,dz_in)
+         end if
+         ! Return a smooth forcing coefficient in [0,1]
+         sponge_forcing=sponge_forcing/delta
+         if (sponge_forcing.ge.1.0_WP) then
+            sponge_forcing=0.0_WP
+         else if (sponge_forcing.ge.0.0_WP) then
+            sponge_forcing=(0.5_WP*(1.0_WP+cos(Pi*sponge_forcing)))**4
+         else
+            sponge_forcing=1.0_WP
+         end if
+      end function sponge_forcing
+   end subroutine couple_ff2sd
+   
+   
    !> Finalize the NGA2 simulation
    subroutine simulation_final
       implicit none
-      ! Deallocate work arrays
-      deallocate(dQdt,Ui,Vi,Wi,Ma,beta,visc)
+      if (associated(sd)) then
+         call sd%finalize()
+         deallocate(sd)
+      end if
+      if (associated(sd2ff)) then
+         call sd2ff%finalize()
+         deallocate(sd2ff)
+      end if
+      if (associated(ff2sd)) then
+         call ff2sd%finalize()
+         deallocate(ff2sd)
+      end if
+      call ff%finalize()
+      call ens_evt%finalize()
+      call remesh_evt%finalize()
    end subroutine simulation_final
    
    

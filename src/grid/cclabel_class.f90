@@ -41,6 +41,7 @@ module cclabel_class
       procedure :: initialize
       procedure :: build
       procedure :: empty
+      procedure :: finalize
    end type cclabel
    
    !> Type of the make_label function used to generate a structure
@@ -495,9 +496,11 @@ contains
       ! Extra QOL step to ensure that id=1 is always the largest structure in terms of number of cells
       rename_largest_structure: block
          use mpi_f08, only: MPI_ALLREDUCE,MPI_SUM,MPI_INTEGER,MPI_IN_PLACE
-         integer :: n,ierr,bigid,i,j,k
+         integer :: ierr,bigid,i,j,k
          integer, dimension(:), allocatable :: ncells
          type(struct_type) :: tmp
+         ! Skip if no structure was found
+         if (this%nstruct.eq.0) exit rename_largest_structure
          ! Loop over all structures and count total number of cells to find ID of largest structure
          allocate(ncells(1:this%nstruct)); ncells=this%struct(:)%n_
          call MPI_ALLREDUCE(MPI_IN_PLACE,ncells,this%nstruct,MPI_INTEGER,MPI_SUM,this%pg%comm,ierr)
@@ -645,6 +648,17 @@ contains
       ! Reset id to zero
       this%id=0
    end subroutine empty
+   
+   
+   !> Finalize CCL object
+   subroutine finalize(this)
+      implicit none
+      class(cclabel), intent(inout) :: this
+      call this%empty()
+      if (allocated(this%id)) deallocate(this%id)
+      nullify(this%pg)
+      this%name='UNNAMED_CCL'
+   end subroutine finalize
    
    
 end module cclabel_class
