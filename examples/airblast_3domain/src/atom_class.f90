@@ -1037,7 +1037,7 @@ subroutine transfer_ligs(this,lp_spray)
             else
                this%lp%p(this%lp%np_)%pos =lpos(n,:)+0.5_WP*Lrp*(l-(nmain+1))*lmoi(n,:,1)
             end if
-            this%lp%p(this%lp%np_)%vel =lvel(n,:)
+            this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)
             this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])     
             this%lp%p(this%lp%np_)%flag=0                                                                                        
             this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                  
