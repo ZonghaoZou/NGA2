@@ -1,0 +1,40 @@
+# Parallelization
+Partition : 22 1 12
+I/O partition : 1 1 1
+
+# Mesh definition
+X shift : 0.01
+Lx :  0.18
+Ly :  0.12
+Lz :  0.12
+nx :  225!150
+ny :  150!100
+nz :  150!100
+
+# PLY file
+PLY filename : atomizer_tip.ply
+
+# Flow conditions
+Gas flow rate (SLPM) : 150         
+
+
+# Fluid properties
+Liquid dynamic viscosity :    1.137e-3
+Gas dynamic viscosity :       1.780e-5
+Liquid density :              1000
+Gas density :                 1.226
+
+# Pressure solver
+Pressure tolerance : 1e-4
+Pressure iteration : 100
+
+# Time integration
+Max timestep size : 1.5e-6
+Max cfl number :    0.8
+
+# Data output
+Ensight output period : 1.5e-4
+Restart output period : 0.5e-2
+
+# Data restart
+Restart from : !2.00000E-02

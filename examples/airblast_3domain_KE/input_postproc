@@ -1,0 +1,18 @@
+# Parallelization
+Partition : 10 12 1
+
+# Mesh definition
+X shift : 0.01
+Lx :  0.06
+Ly :  0.05!0.04
+Lz :  0.05!0.04
+nx :  300!210!420
+ny :  250!210!420
+nz :  250!210!420
+
+Total flow rate (SLPM) : 150.0
+
+# Files to analyze
+File start: 1
+File end  : 125
+# VOF file : VOF.000180
