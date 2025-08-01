@@ -85,7 +85,7 @@ module dispersion_class
   real(WP), parameter, public :: rl=0.0010_WP   ! Liquid pipe inner radius
   real(WP), parameter, public :: rlo=0.0015_WP   ! Liquid pipe outer radius
   real(WP), parameter, public :: rgi=0.005_WP   ! Liquid pipe outer radius
-  real(WP) :: rho_l,visc_l
+  real(WP) :: rho_l
    
 contains
    
@@ -101,20 +101,20 @@ contains
      real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
      integer, dimension(:), allocatable:: plist,dispels
    !   real(WP) :: xloc_30,xloc_60,xloc_90,xloc_120,xloc_150,input_xloc
-     real(WP) :: xloc_100,xloc_150,xloc_200,input_xloc
+     real(WP) :: xloc_90,xloc_100,xloc_150,xloc_200,input_xloc
    !   integer:: n,count_30,count_60,count_90,count_120,count_150,totalcount,input_count,i
-     integer:: n,count_100,count_150,count_200,totalcount,input_count,i
+     integer:: n,count_90,count_100,count_150,count_200,totalcount,input_count,i
      integer:: rank,count,ierr,iunit
    !   xloc_30=30e-3_WP; xloc_60=60e-3_WP; xloc_90=90e-3_WP; xloc_120=120e-3_WP ; xloc_150=150e-3_WP
-     xloc_100=100e-3_WP;xloc_150=150e-3_WP;xloc_200=200e-3_WP
+     xloc_90=90e-3_WP;xloc_100=100e-3_WP;xloc_150=150e-3_WP;xloc_200=200e-3_WP
    !   count_30=0; count_60=0; count_90=0; count_120=0; count_150=0
-     count_100=0;count_150=0;count_200=0 
+     count_90=0;count_100=0;count_150=0;count_200=0 
      allocate(plist(0:this%cfg%nproc-1))
      ! For each particle on each processor, count how many have passed the different x locations
      do n =1, this%lp%np_
       !  if (this%lp%p(n)%pos(1).lt.xloc_30 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_30) count_30=count_30+1
       !  if (this%lp%p(n)%pos(1).lt.xloc_60 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_60) count_60=count_60+1
-      !  if (this%lp%p(n)%pos(1).lt.xloc_90 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_90) count_90=count_90+1
+       if (this%lp%p(n)%pos(1).lt.xloc_90 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_90) count_90=count_90+1
       !  if (this%lp%p(n)%pos(1).lt.xloc_120 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_120) count_120=count_120+1
        if (this%lp%p(n)%pos(1).lt.xloc_100 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_100) count_100=count_100+1
        if (this%lp%p(n)%pos(1).lt.xloc_150 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_150) count_150=count_150+1
@@ -123,7 +123,7 @@ contains
      
    !   input_count=count_30; input_xloc=xloc_30; call output()
    !   input_count=count_60; input_xloc=xloc_60; call output()
-   !   input_count=count_90; input_xloc=xloc_90; call output()
+     input_count=count_90; input_xloc=xloc_90; call output()
    !   input_count=count_120; input_xloc=xloc_120; call output()
      input_count=count_100; input_xloc=xloc_100; call output()
      input_count=count_150; input_xloc=xloc_150; call output()
@@ -527,6 +527,7 @@ contains
         real(WP) :: input_xloc
         this%lp=lpt(cfg=this%cfg,name='spray_dispersion')
         this%lp%rho=rho_l
+        this%lp%filter_width=3.5_WP*this%cfg%min_meshsize
         call this%lp%resize(0)
         ! this%lp%filter_width=3.5_WP*this%cfg%min_meshsize
         if (this%restarted) then
@@ -559,6 +560,11 @@ contains
          !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
          !   close(iunit)    
          !   filename='spray-disper/x=150e-3'
+           input_xloc = 90e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+           open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
+           if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
+           close(iunit)
+
            input_xloc = 100e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
@@ -660,8 +666,8 @@ contains
      
       call this%record_droplet() 
       
-      this%resU=rho_l
-      this%resV=visc_l
+      this%resU=this%fs%rho
+      this%resV=this%fs%visc
       call this%lp%advance(dt=this%time%dt,U=this%fs%U,V=this%fs%V,W=this%fs%W,rho=this%resU,visc=this%resV)
 
       ! Remember old velocity
