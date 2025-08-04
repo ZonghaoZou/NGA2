@@ -492,7 +492,7 @@ subroutine transfer_films(this,lp_spray)
    if (fthc_avg(n).gt.0.0_WP .and. fcnt(n).gt.0.0_WP) then
       fthc_avg(n)=fthc_avg(n)/fcnt(n)
    else
-      fthc_avg(n)=10.0_WP*this%fmin
+      fthc_avg(n)=5.0_WP*this%cfg%min_meshsize
    end if
    ! Min thickness below threshold and film volume greater than a threshold 
    frem_active = .false.
@@ -738,6 +738,8 @@ subroutine transfer_films(this,lp_spray)
       call this%vf%clean_irl_and_band()
       ! Synchronize particles
       call this%lp%sync()
+
+      call lp_spray%sync()
       ! Integrate monitoring variables 
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_film,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_film    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
@@ -1109,6 +1111,8 @@ subroutine transfer_ligs(this,lp_spray)
    call this%vf%clean_irl_and_band()
    ! Synchronize particles
    call this%lp%sync()
+
+   call lp_spray%sync()
    ! Integrate monitoring variables 
    call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_lig,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
    call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_lig    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
@@ -1622,7 +1626,7 @@ end subroutine transfer_ligs
             this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             ! this%fmin=2.2e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             ! this%fmin=1.0e-8 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
-            this%fmin=2.0e-5 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            this%fmin=4.0e-5 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%fnumcell=50.0_WP
             ! Zero out monitoring variables
             this%vof_tf_film=0.0_WP
