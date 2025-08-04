@@ -85,7 +85,7 @@ module dispersion_class
   real(WP), parameter, public :: rl=0.0010_WP   ! Liquid pipe inner radius
   real(WP), parameter, public :: rlo=0.0015_WP   ! Liquid pipe outer radius
   real(WP), parameter, public :: rgi=0.005_WP   ! Liquid pipe outer radius
-  real(WP) :: rho_l
+  real(WP) :: rho_l,visc_l
    
 contains
    
@@ -527,7 +527,6 @@ contains
         real(WP) :: input_xloc
         this%lp=lpt(cfg=this%cfg,name='spray_dispersion')
         this%lp%rho=rho_l
-        this%lp%filter_width=3.5_WP*this%cfg%min_meshsize
         call this%lp%resize(0)
         ! this%lp%filter_width=3.5_WP*this%cfg%min_meshsize
         if (this%restarted) then
@@ -762,7 +761,6 @@ contains
          
          ! Apply other boundary conditions on the resulting fields
          call this%fs%apply_bcond(this%time%t,this%time%dt)
-         
          ! Solve Poisson equation
          call this%fs%correct_mfr()
          call this%fs%get_div()  !< a volume source term to div
@@ -771,6 +769,7 @@ contains
          call this%fs%psolv%solve()
          call this%fs%shift_p(this%fs%psolv%sol)
          
+         ! if (this%cfg%amRoot) print *, "I am here"
          ! Correct velocity
          call this%fs%get_pgrad(this%fs%psolv%sol,this%resU,this%resV,this%resW)
          this%fs%P=this%fs%P+this%fs%psolv%sol

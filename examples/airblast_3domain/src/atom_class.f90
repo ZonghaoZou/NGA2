@@ -428,61 +428,60 @@ subroutine transfer_films(this,lp_spray)
    class(atom), intent(inout) :: this
    class(lpt), intent(inout) :: lp_spray
    real(WP), dimension(:), allocatable :: fvol
-   real(WP), dimension(:), allocatable :: fmthc
    real(WP), dimension(:), allocatable :: fthc
-   real(WP), dimension(:), allocatable :: fcount
    real(WP), dimension(:), allocatable :: frem
+   real(WP), dimension(:), allocatable :: fthc_avg
+   real(WP), dimension(:), allocatable :: fcnt
    character(len=str_medium) :: filename
    real(WP), dimension(:), allocatable :: sort_ke
    integer, dimension(:), allocatable ::  sort_id,plist,dispels
    real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
    integer :: n,nn,m,i,j,k,ii,jj,kk,ncell_,tmp_id,l,totalnewp,np_start,np_old,count,ierr,ind,ip,iunit,rank,np_old_spray
-   real(WP)  :: tmp_ke,curv_sum,ncurv,Vt,Vl,Vd,alpha,beta
+   real(WP)  :: tmp_ke,curv_sum,ncurv,Vt,Vl,Vd,alpha,beta,minthic
    real(WP), dimension(3) :: nref,tref,sref
    logical :: sampled, frem_active
-
+   minthic=1.0e-6 
    ! Start by performing a CCL based on film criteria
    call this%ccl_film%build(make_label,same_label)
    if (this%ccl_film%nstruct.ge.1) then
    ! Allocate film stats arrays
-   allocate(fvol(1:this%ccl_film%nstruct));   fvol=0.0_WP
-   allocate(fmthc(1:this%ccl_film%nstruct));  fmthc=HUGE(alpha)!5.0_WP*this%cfg%min_meshsize
-   allocate(fthc(1:this%ccl_film%nstruct));   fthc=0.0_WP
-   allocate(fcount(1:this%ccl_film%nstruct)); fcount=0.0_WP
-   allocate(frem(1:this%ccl_film%nstruct));   frem=0.0_WP
+   allocate(fvol(1:this%ccl_film%nstruct)); fvol=0.0_WP
+   allocate(fthc(1:this%ccl_film%nstruct)); fthc=HUGE(alpha)!5.0_WP*this%cfg%min_meshsize
+   allocate(frem(1:this%ccl_film%nstruct)); frem=0.0_WP
+   allocate(fthc_avg(1:this%ccl_film%nstruct)); fthc_avg=0.0_WP
+   allocate(fcnt    (1:this%ccl_film%nstruct)); fcnt=0.0_WP
 
    ! Get local thickness of the film to determine if film should be convereted
    call this%vf%get_thickness()
 
    ! First pass to accumulate volume and get minimum thickness
    do n=1,this%ccl_film%nstruct
-      fcount(n)=1.0_WP*this%ccl_film%struct(n)%n_
-      ! Loop over cells in structure
-      do m=1,this%ccl_film%struct(n)%n_
-         ! Get cell indices
-         i=this%ccl_film%struct(n)%map(1,m)
-         j=this%ccl_film%struct(n)%map(2,m) 
-         k=this%ccl_film%struct(n)%map(3,m)
-         ! Accumulate volume
-         fvol(n)=fvol(n)+this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
-         ! Get minimum thickness
-         fmthc(n)=min(fmthc(n),this%vf%thickness(i,j,k))
-         ! Sum the thickness
-         fthc(n)=fthc(n)+this%vf%thickness(i,j,k)
-         ! Check if film touches auto burst layer
-         if (i.ge.this%vf%cfg%imax-this%nlayer.or.&
-         &   j.le.this%vf%cfg%jmin+this%nlayer.or.&
-         &   j.ge.this%vf%cfg%jmax-this%nlayer.or.&
-         &   k.le.this%vf%cfg%kmin+this%nlayer.or.&
-         &   k.ge.this%vf%cfg%kmax-this%nlayer) frem(n)=1.0_WP
-      end do
+   fcnt(n)=this%ccl_film%struct(n)%n_
+   ! Loop over cells in structure
+   do m=1,this%ccl_film%struct(n)%n_
+      ! Get cell indices
+      i=this%ccl_film%struct(n)%map(1,m)
+      j=this%ccl_film%struct(n)%map(2,m) 
+      k=this%ccl_film%struct(n)%map(3,m)
+      ! Accumulate volume
+      fvol(n)=fvol(n)+this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+      ! Get minimum thickness
+      fthc(n)=min(fthc(n),this%vf%thickness(i,j,k))
+      ! Get average thickness
+      fthc_avg(n)=fthc_avg(n)+this%vf%thickness(i,j,k)
+      ! Check if film touches auto burst layer
+      if (i.ge.this%vf%cfg%imax-this%nlayer.or.&
+      &   j.le.this%vf%cfg%jmin+this%nlayer.or.&
+      &   j.ge.this%vf%cfg%jmax-this%nlayer.or.&
+      &   k.le.this%vf%cfg%kmin+this%nlayer.or.&
+      &   k.ge.this%vf%cfg%kmax-this%nlayer) frem(n)=1.0_WP
    end do
-   call MPI_ALLREDUCE(MPI_IN_PLACE,fvol,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,fmthc,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,fthc,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,fcount,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,frem,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
-
+   end do
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fvol    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fthc    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,frem    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fthc_avg,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fcnt    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
    ! Zero out monitoring variables
    this%vof_tf_film=0.0_WP
    this%np_film=0
@@ -490,176 +489,119 @@ subroutine transfer_films(this,lp_spray)
    np_start=this%lp%np_; sampled=.false.
    ! Second pass to decide if the film has reached a minimum thickness to burst
    do n=1,this%ccl_film%nstruct
-      ! Get an averaged film thickness
-      if (fcount(n).gt.0.0_WP) then
-         fthc(n)=fthc(n)/fcount(n)
-      else
-         fthc(n)=HUGE(alpha)
-      end if
-      ! Min thickness below threshold and film volume greater than a threshold 
-      frem_active = .false.
-      if (fmthc(n).le.this%fmin .and. fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
-      ! Too close to the end of domain
-      else if (frem(n).gt.0.0_WP) then
-         frem_active = .true.
-      else
-         cycle
-      end if
-      ! output to confirm
-      if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", fmthc(n), "averaged film thickness",fthc(n),  "and this is id:", n ,"vol is:", fvol(n)
-      ! Assume fd0 across the processor based on the total volume of the film
-      if (.not.frem_active) then
-         this%fd0 =(6.0_WP*Pi*fvol(n)/this%fbvol2dvol)**(1.0_WP/3.0_WP)
-      else
-         this%fd0 =dl
-      end if
-      ! sort cell index based on local film thickness
-      if (this%ccl_film%struct(n)%n_.ge.1) then
-         allocate(sort_id(1:this%ccl_film%struct(n)%n_)) 
-         allocate(sort_ke(1:this%ccl_film%struct(n)%n_))
-         ncell_ = this%ccl_film%struct(n)%n_
-         do m=1,ncell_
-            i=this%ccl_film%struct(n)%map(1,m)
-            j=this%ccl_film%struct(n)%map(2,m)
-            k=this%ccl_film%struct(n)%map(3,m)
-            sort_id(m)=m 
-            sort_ke(m)=this%vf%thickness(i,j,k)
+   if (fthc_avg(n).gt.0.0_WP .and. fcnt(n).gt.0.0_WP) then
+      fthc_avg(n)=fthc_avg(n)/fcnt(n)
+   else
+      fthc_avg(n)=10.0_WP*this%fmin
+   end if
+   ! Min thickness below threshold and film volume greater than a threshold 
+   frem_active = .false.
+   ! if (fthc(n).le.this%fmin .and. fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
+   if (fthc_avg(n).le.this%fmin .and.fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
+   ! Too close to the end of domain
+   else if (frem(n).gt.0.0_WP) then
+      frem_active = .true.
+   else
+      cycle
+   end if
+   ! output to confirm
+   ! if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", fthc(n), "and this is id:", n ,"vol is:", fvol(n)
+   if (this%vf%cfg%amRoot) print *, "This is a thin film with average thickness", fthc_avg(n), "and this is id:", n ,"vol is:", fvol(n)
+   ! Assume fd0 across the processor based on the total volume of the film
+   if (.not.frem_active) then
+      this%fd0 =(6.0_WP*Pi*fvol(n)/this%fbvol2dvol)**(1.0_WP/3.0_WP)
+   else
+      this%fd0 =dl
+   end if
+   ! sort cell index based on local film thickness
+   if (this%ccl_film%struct(n)%n_.ge.1) then
+      allocate(sort_id(1:this%ccl_film%struct(n)%n_)) 
+      allocate(sort_ke(1:this%ccl_film%struct(n)%n_))
+      ncell_ = this%ccl_film%struct(n)%n_
+      do m=1,ncell_
+         i=this%ccl_film%struct(n)%map(1,m)
+         j=this%ccl_film%struct(n)%map(2,m)
+         k=this%ccl_film%struct(n)%map(3,m)
+         sort_id(m)=m 
+         sort_ke(m)=this%vf%thickness(i,j,k)
+      end do
+      ! sort based on thickness
+      do ii = 1, ncell_-1
+         do jj = 1, ncell_-ii
+            if (sort_ke(jj).gt.sort_ke(jj+1)) then
+               ! Swap the values
+               tmp_ke = sort_ke(jj)
+               sort_ke(jj) = sort_ke(jj+1)
+               sort_ke(jj+1) = tmp_ke
+               ! Swap the corresponding IDs
+               tmp_id = sort_id(jj)
+               sort_id(jj) = sort_id(jj+1)
+               sort_id(jj+1) = tmp_id
+            end if
          end do
-         ! sort based on thickness
-         do ii = 1, ncell_-1
-            do jj = 1, ncell_-ii
-               if (sort_ke(jj).gt.sort_ke(jj+1)) then
-                  ! Swap the values
-                  tmp_ke = sort_ke(jj)
-                  sort_ke(jj) = sort_ke(jj+1)
-                  sort_ke(jj+1) = tmp_ke
-                  ! Swap the corresponding IDs
-                  tmp_id = sort_id(jj)
-                  sort_id(jj) = sort_id(jj+1)
-                  sort_id(jj+1) = tmp_id
+      end do
+      Vt=0.0_WP; Vl=0.0_WP
+      np_old=this%lp%np_; np_old_spray=lp_spray%np_
+      do m=1,ncell_
+         i=this%ccl_film%struct(n)%map(1,sort_id(m))
+         j=this%ccl_film%struct(n)%map(2,sort_id(m))
+         k=this%ccl_film%struct(n)%map(3,sort_id(m))
+         ! Accumulate 
+         Vl=Vl+this%vf%VF(i,j,k)*this%vf%cfg%vol(i,j,k)
+         if (.not.sampled) then
+            ! Get droplet information based on localized curvature
+            curv_sum=0.0_WP; ncurv=0.0_WP
+            do l=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
+               if (getNumberOfVertices(this%vf%interface_polygon(l,i,j,k)).gt.0) then
+                  curv_sum=curv_sum+abs(this%vf%curv2p(l,i,j,k))
+                  ncurv=ncurv+1.0_WP
                end if
             end do
-         end do
-         Vt=0.0_WP; Vl=0.0_WP
-         np_old=this%lp%np_; np_old_spray=lp_spray%np_
-         do m=1,ncell_
-            i=this%ccl_film%struct(n)%map(1,sort_id(m))
-            j=this%ccl_film%struct(n)%map(2,sort_id(m))
-            k=this%ccl_film%struct(n)%map(3,sort_id(m))
-            ! Accumulate 
-            Vl=Vl+this%vf%VF(i,j,k)*this%vf%cfg%vol(i,j,k)
-            if (.not.sampled) then
-               ! Get droplet information based on localized curvature
-               curv_sum=0.0_WP; ncurv=0.0_WP
-               do l=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
-                  if (getNumberOfVertices(this%vf%interface_polygon(l,i,j,k)).gt.0) then
-                     curv_sum=curv_sum+abs(this%vf%curv2p(l,i,j,k))
-                     ncurv=ncurv+1.0_WP
-                  end if
-               end do
-               ! call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP*ncurv/curv_sum)
-               ! call bag_droplet_gamma(this%fmin,2.0_WP*ncurv/curv_sum)
-               call bag_droplet_gamma(this%fmin,ncurv/curv_sum)
-               Vd = pi/6.0_WP*(min(random_gamma(alpha)*beta*this%fd0,2.0_WP*this%frp))**3
-               sampled = .true.
-            end if
-            if (Vl.gt.Vd) then
-               nref=calculateNormal(this%vf%interface_polygon(1,i,j,k))
-               select case (maxloc(abs(nref),1))
-               case (1)
-                  tref=normalize([+nref(2),-nref(1),0.0_WP])
-               case (2)
-                  tref=normalize([0.0_WP,+nref(3),-nref(2)])
-               case (3)
-                  tref=normalize([-nref(3),0.0_WP,+nref(1)])
-               end select
-               sref=cross_product(nref,tref)
-               ! Increment particle counter
-               this%lp%np_=this%lp%np_+1
-               ! Make room for new drop
-               call this%lp%resize(this%lp%np_)
-               ! Add the drop
-               if (frem_active) then
-                  this%lp%p(this%lp%np_)%id  =int(7,8)
-               else                                   
-                  this%lp%p(this%lp%np_)%id  =int(6,8)
-               end if
-               this%lp%p(this%lp%np_)%d   =(6.0_WP*Vd/pi)**(1.0_WP/3.0_WP)            
-               this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)+random_uniform(-0.5_WP*this%vf%cfg%meshsize(i,j,k),0.5_WP*this%vf%cfg%meshsize(i,j,k))*tref+random_uniform(-0.5_WP*this%vf%cfg%meshsize(i,j,k),0.5_WP*this%vf%cfg%meshsize(i,j,k))*sref
-               this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)    !< Interpolate local cell velocity as drop velocity
-               this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])    !< Place the drop in the proper cell for the this%lp%cfg
-               this%lp%p(this%lp%np_)%flag=0                                          
-               this%lp%p(this%lp%np_)%dt  =0.0_WP                                     
-               this%lp%p(this%lp%np_)%Acol=0.0_WP                                     
-               this%lp%p(this%lp%np_)%Tcol=0.0_WP  
-
-               lp_spray%np_=lp_spray%np_+1
-               ! Make room for new drop
-               call lp_spray%resize(lp_spray%np_)
-               ! Add the drop
-               if (frem_active) then
-                  lp_spray%p(lp_spray%np_)%id  =int(7,8)
-               else                                   
-                  lp_spray%p(lp_spray%np_)%id  =int(6,8)
-               end if
-               lp_spray%p(lp_spray%np_)%d   =(6.0_WP*Vd/pi)**(1.0_WP/3.0_WP)            
-               lp_spray%p(lp_spray%np_)%pos =this%lp%p(this%lp%np_)%pos
-               lp_spray%p(lp_spray%np_)%vel =this%lp%p(this%lp%np_)%vel
-               lp_spray%p(lp_spray%np_)%ind =lp_spray%cfg%get_ijk_global(lp_spray%p(lp_spray%np_)%pos,[lp_spray%cfg%imin,lp_spray%cfg%jmin,lp_spray%cfg%kmin])    !< Place the drop in the proper cell for the this%lp%cfg
-               lp_spray%p(lp_spray%np_)%flag=0                                          
-               lp_spray%p(lp_spray%np_)%dt  =0.0_WP                                     
-               lp_spray%p(lp_spray%np_)%Acol=0.0_WP                                     
-               lp_spray%p(lp_spray%np_)%Tcol=0.0_WP  
-
-               ! Update tracked volumes
-               Vl=Vl-Vd
-               Vt=Vt+Vd
-               sampled = .false.
-
-               ! Increment monitoring variables
-               this%vof_tf_film=this%vof_tf_film+Vd
-               this%np_film=this%np_film+1
-               this%lp%np_new=this%lp%np_new+1
-               this%lp%vp_new=this%lp%vp_new+Vd
-
-               lp_spray%np_new=lp_spray%np_new+1
-               lp_spray%vp_new=lp_spray%vp_new+Vd
-            end if
-            ! Remove liquid in that cell
-            this%vf%VF(i,j,k)=0.0_WP
-         end do
-         deallocate(sort_id,sort_ke)
-         ! If for some reason a film with 0 liquid volume has been tagged, skip it
-         if (Vt.eq.0.0_WP .and. Vl.eq.0.0_WP) cycle
-         ! Based on how many particles were created, decide what to do with left-over volume
-         if (Vt.eq.0.0_WP) then ! No particle was created, we need one...
+            ! call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP*ncurv/curv_sum)
+            ! call bag_droplet_gamma(this%fmin,2.0_WP*ncurv/curv_sum)
+            ! call bag_droplet_gamma(this%fmin,ncurv/curv_sum)
+            call bag_droplet_gamma(minthic,ncurv/curv_sum)
+            Vd = pi/6.0_WP*(min(random_gamma(alpha)*beta*this%fd0,2.0_WP*this%frp))**3
+            sampled = .true.
+         end if
+         if (Vl.gt.Vd) then
+            nref=calculateNormal(this%vf%interface_polygon(1,i,j,k))
+            select case (maxloc(abs(nref),1))
+            case (1)
+               tref=normalize([+nref(2),-nref(1),0.0_WP])
+            case (2)
+               tref=normalize([0.0_WP,+nref(3),-nref(2)])
+            case (3)
+               tref=normalize([-nref(3),0.0_WP,+nref(1)])
+            end select
+            sref=cross_product(nref,tref)
             ! Increment particle counter
             this%lp%np_=this%lp%np_+1
             ! Make room for new drop
             call this%lp%resize(this%lp%np_)
             ! Add the drop
             if (frem_active) then
-               this%lp%p(this%lp%np_)%id  =int(4,8)
+               this%lp%p(this%lp%np_)%id  =int(7,8)
             else                                   
-               this%lp%p(this%lp%np_)%id  =int(3,8)
-            end if                                   
-            this%lp%p(this%lp%np_)%d   =(6.0_WP*Vl/pi)**(1.0_WP/3.0_WP)            
-            this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)                     
-            this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W) !< Interpolate local cell velocity as drop velocity
-            this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin]) !< Place the drop in the proper cell for the this%lp%cfg
+               this%lp%p(this%lp%np_)%id  =int(6,8)
+            end if
+            this%lp%p(this%lp%np_)%d   =(6.0_WP*Vd/pi)**(1.0_WP/3.0_WP)            
+            this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)+random_uniform(-0.5_WP*this%vf%cfg%meshsize(i,j,k),0.5_WP*this%vf%cfg%meshsize(i,j,k))*tref+random_uniform(-0.5_WP*this%vf%cfg%meshsize(i,j,k),0.5_WP*this%vf%cfg%meshsize(i,j,k))*sref
+            this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)    !< Interpolate local cell velocity as drop velocity
+            this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])    !< Place the drop in the proper cell for the this%lp%cfg
             this%lp%p(this%lp%np_)%flag=0                                          
             this%lp%p(this%lp%np_)%dt  =0.0_WP                                     
-            this%lp%p(this%lp%np_)%Acol =0.0_WP                                    
-            this%lp%p(this%lp%np_)%Tcol =0.0_WP
-            
+            this%lp%p(this%lp%np_)%Acol=0.0_WP                                     
+            this%lp%p(this%lp%np_)%Tcol=0.0_WP  
+
             lp_spray%np_=lp_spray%np_+1
             ! Make room for new drop
             call lp_spray%resize(lp_spray%np_)
             ! Add the drop
             if (frem_active) then
-               lp_spray%p(lp_spray%np_)%id  =int(4,8)
+               lp_spray%p(lp_spray%np_)%id  =int(7,8)
             else                                   
-               lp_spray%p(lp_spray%np_)%id  =int(3,8)
+               lp_spray%p(lp_spray%np_)%id  =int(6,8)
             end if
             lp_spray%p(lp_spray%np_)%d   =(6.0_WP*Vd/pi)**(1.0_WP/3.0_WP)            
             lp_spray%p(lp_spray%np_)%pos =this%lp%p(this%lp%np_)%pos
@@ -670,27 +612,86 @@ subroutine transfer_films(this,lp_spray)
             lp_spray%p(lp_spray%np_)%Acol=0.0_WP                                     
             lp_spray%p(lp_spray%np_)%Tcol=0.0_WP  
 
+            ! Update tracked volumes
+            Vl=Vl-Vd
+            Vt=Vt+Vd
+            sampled = .false.
 
             ! Increment monitoring variables
-            this%lp%np_new=this%lp%np_new+1
+            this%vof_tf_film=this%vof_tf_film+Vd
             this%np_film=this%np_film+1
+            this%lp%np_new=this%lp%np_new+1
+            this%lp%vp_new=this%lp%vp_new+Vd
 
             lp_spray%np_new=lp_spray%np_new+1
-         else ! Some particles were created, make them all larger
-            do ip=np_old+1,this%lp%np_
-               this%lp%p(ip)%d=this%lp%p(ip)%d*((Vt+Vl)/Vt)**(1.0_WP/3.0_WP)
-            end do
-
-            do ip=np_old_spray+1,lp_spray%np_
-               lp_spray%p(ip)%d=lp_spray%p(ip)%d*((Vt+Vl)/Vt)**(1.0_WP/3.0_WP)
-            end do
+            lp_spray%vp_new=lp_spray%vp_new+Vd
          end if
-         ! Increment monitoring variables
-         this%vof_tf_film=this%vof_tf_film+Vl
-         this%lp%vp_new=this%lp%vp_new+Vl
+         ! Remove liquid in that cell
+         this%vf%VF(i,j,k)=0.0_WP
+      end do
+      deallocate(sort_id,sort_ke)
+      ! If for some reason a film with 0 liquid volume has been tagged, skip it
+      if (Vt.eq.0.0_WP .and. Vl.eq.0.0_WP) cycle
+      ! Based on how many particles were created, decide what to do with left-over volume
+      if (Vt.eq.0.0_WP) then ! No particle was created, we need one...
+         ! Increment particle counter
+         this%lp%np_=this%lp%np_+1
+         ! Make room for new drop
+         call this%lp%resize(this%lp%np_)
+         ! Add the drop
+         if (frem_active) then
+            this%lp%p(this%lp%np_)%id  =int(4,8)
+         else                                   
+            this%lp%p(this%lp%np_)%id  =int(3,8)
+         end if                                   
+         this%lp%p(this%lp%np_)%d   =(6.0_WP*Vl/pi)**(1.0_WP/3.0_WP)            
+         this%lp%p(this%lp%np_)%pos =this%vf%Lbary(:,i,j,k)                     
+         this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W) !< Interpolate local cell velocity as drop velocity
+         this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin]) !< Place the drop in the proper cell for the this%lp%cfg
+         this%lp%p(this%lp%np_)%flag=0                                          
+         this%lp%p(this%lp%np_)%dt  =0.0_WP                                     
+         this%lp%p(this%lp%np_)%Acol =0.0_WP                                    
+         this%lp%p(this%lp%np_)%Tcol =0.0_WP
          
-         lp_spray%vp_new=lp_spray%vp_new+Vl
+         lp_spray%np_=lp_spray%np_+1
+         ! Make room for new drop
+         call lp_spray%resize(lp_spray%np_)
+         ! Add the drop
+         if (frem_active) then
+            lp_spray%p(lp_spray%np_)%id  =int(4,8)
+         else                                   
+            lp_spray%p(lp_spray%np_)%id  =int(3,8)
+         end if
+         lp_spray%p(lp_spray%np_)%d   =(6.0_WP*Vd/pi)**(1.0_WP/3.0_WP)            
+         lp_spray%p(lp_spray%np_)%pos =this%lp%p(this%lp%np_)%pos
+         lp_spray%p(lp_spray%np_)%vel =this%lp%p(this%lp%np_)%vel
+         lp_spray%p(lp_spray%np_)%ind =lp_spray%cfg%get_ijk_global(lp_spray%p(lp_spray%np_)%pos,[lp_spray%cfg%imin,lp_spray%cfg%jmin,lp_spray%cfg%kmin])    !< Place the drop in the proper cell for the this%lp%cfg
+         lp_spray%p(lp_spray%np_)%flag=0                                          
+         lp_spray%p(lp_spray%np_)%dt  =0.0_WP                                     
+         lp_spray%p(lp_spray%np_)%Acol=0.0_WP                                     
+         lp_spray%p(lp_spray%np_)%Tcol=0.0_WP  
+
+
+         ! Increment monitoring variables
+         this%lp%np_new=this%lp%np_new+1
+         this%np_film=this%np_film+1
+
+         lp_spray%np_new=lp_spray%np_new+1
+      else ! Some particles were created, make them all larger
+         do ip=np_old+1,this%lp%np_
+            this%lp%p(ip)%d=this%lp%p(ip)%d*((Vt+Vl)/Vt)**(1.0_WP/3.0_WP)
+         end do
+
+         do ip=np_old_spray+1,lp_spray%np_
+            lp_spray%p(ip)%d=lp_spray%p(ip)%d*((Vt+Vl)/Vt)**(1.0_WP/3.0_WP)
+         end do
       end if
+      ! Increment monitoring variables
+      this%vof_tf_film=this%vof_tf_film+Vl
+      this%lp%vp_new=this%lp%vp_new+Vl
+      
+      lp_spray%vp_new=lp_spray%vp_new+Vl
+   end if
    end do
    ! Gather the number of newly generated particles from each processor due to film burst
    totalnewp = 0
@@ -741,7 +742,8 @@ subroutine transfer_films(this,lp_spray)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_film,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_film    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
    end if
-   deallocate(fvol,fmthc,frem)
+   deallocate(fvol,fthc,frem,fthc_avg,fcnt)
+   ! deallocate(fvol,frem,fthc_avg,fcnt)
    end if 
 
    contains
@@ -1052,7 +1054,7 @@ subroutine transfer_ligs(this,lp_spray)
             else
                this%lp%p(this%lp%np_)%pos =lpos(n,:)+0.5_WP*Lrp*(l-(nmain+1))*lmoi(n,:,1)
             end if
-            this%lp%p(this%lp%np_)%vel =this%cfg%get_velocity(pos=this%lp%p(this%lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)
+            this%lp%p(this%lp%np_)%vel =lvel(n,:)
             this%lp%p(this%lp%np_)%ind =this%cfg%get_ijk_global(this%lp%p(this%lp%np_)%pos,[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])     
             this%lp%p(this%lp%np_)%flag=0                                                                                        
             this%lp%p(this%lp%np_)%dt  =0.0_WP                                                                                  
@@ -1619,7 +1621,8 @@ end subroutine transfer_ligs
             this%fd0 =dl     ! Take the baseline diamter as the liquid core diameter 
             this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             ! this%fmin=2.2e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
-            this%fmin=0.5e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            ! this%fmin=1.0e-8 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            this%fmin=2.0e-5 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%fnumcell=50.0_WP
             ! Zero out monitoring variables
             this%vof_tf_film=0.0_WP
