@@ -1701,48 +1701,43 @@ contains
    
 
    !> Update pressure Poisson operator - option is given to pin a point
-   subroutine update_laplacian_slip(this,alpha_x,alpha_y,alpha_z,VFlo)
+   subroutine update_laplacian_slip(this,x0,y0,z0,t1,t2)!,alpha_x,alpha_y,alpha_z,VFlo)
+      use mathtools, only: normalize
       implicit none
       class(tpns), intent(inout) :: this
+      real(WP), intent(in) :: x0,y0,z0
+      real(WP), dimension(3), intent(in) :: t1,t2
+      real(WP) :: x,y,z,xr,yr
+      real(WP), dimension(3) :: er
       integer :: i,j,k,s1,s2
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: alpha_x
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: alpha_y
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: alpha_z
-      real(WP), intent(in) :: VFlo
+      ! real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: alpha_x
+      ! real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: alpha_y
+      ! real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: alpha_z
+      ! real(WP), intent(in) :: VFlo
       ! Setup the scaled Laplacian operator from  metrics: lap(*)=-vol.div(grad(*)/rho)
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
+               ! Get radial direction
+               x=this%cfg%xm(i)-x0; y=this%cfg%ym(j)-y0; z=this%cfg%zm(k)-z0
+               xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
+               er=normalize(xr*t1+yr*t2)
                ! Zero out Laplacian
                this%psolv%opr(:,i,j,k)=0.0_WP
-               ! Tranverse the stencil and recompute Laplacian
-               ! do s1=0,1
-               !    do s2=-1,0
-               !       if (alpha_x(i+s1,j,k).gt.VFlo) then
-               !          ! this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)=this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)+0.0_WP
-               !       ! else    
-               !          this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)=this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)+this%divp_x(s1,i,j,k)*this%divu_x(s2,i+s1,j,k)/(alpha_x(i+s1,j,k)*this%rho_l)
-               !       end if
-               !       if (alpha_y(i,j+s1,k).gt.VFlo) then
-               !          ! this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)=this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)
-               !       ! else   
-               !          this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)=this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)+this%divp_y(s1,i,j,k)*this%divv_y(s2,i,j+s1,k)/(alpha_y(i,j+s1,k)*this%rho_l)
-               !       end if
-               !       if (alpha_z(i,j,k+s1).gt.VFlo) then
-               !          ! this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)=0.0_WP
-               !       ! else   
-               !          this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)=this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)+this%divp_z(s1,i,j,k)*this%divw_z(s2,i,j,k+s1)/(alpha_z(i,j,k+s1)*this%rho_l)
-               !       end if
-               !    end do
-               ! end do
-               do s1=0,1
-                  do s2=-1,0
-                     this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)=this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)+this%divp_x(s1,i,j,k)*this%divu_x(s2,i+s1,j,k)!/this%RHOX(i+s1,j,k)
-                     this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)=this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)+this%divp_y(s1,i,j,k)*this%divv_y(s2,i,j+s1,k)!/this%RHOY(i,j+s1,k)
-                     this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)=this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)+this%divp_z(s1,i,j,k)*this%divw_z(s2,i,j,k+s1)!/this%RHOZ(i,j,k+s1)
-                  end do
-               end do
-               ! Scale Laplacian by cell volume
+               ! Set Laplacian
+               this%psolv%opr(1,i,j,k)=this%divp_x(1,i,j,k)*this%divu_x(-1,i+1,j,k)*er(1)**2+&
+               &                       this%divp_x(0,i,j,k)*this%divu_x( 0,i  ,j,k)*er(1)**2+&
+               &                       this%divp_y(1,i,j,k)*this%divv_y(-1,i,j+1,k)*er(2)**2+&
+               &                       this%divp_y(0,i,j,k)*this%divv_y( 0,i,j  ,k)*er(2)**2+&
+               &                       this%divp_z(1,i,j,k)*this%divw_z(-1,i,j,k+1)*er(3)**2+&
+               &                       this%divp_z(0,i,j,k)*this%divw_z( 0,i,j,k  )*er(3)**2
+               this%psolv%opr(2,i,j,k)=this%divp_x(1,i,j,k)*this%divu_x( 0,i+1,j,k)*er(1)**2
+               this%psolv%opr(3,i,j,k)=this%divp_x(0,i,j,k)*this%divu_x(-1,i  ,j,k)*er(1)**2
+               this%psolv%opr(4,i,j,k)=this%divp_y(1,i,j,k)*this%divv_y( 0,i,j+1,k)*er(2)**2
+               this%psolv%opr(5,i,j,k)=this%divp_y(0,i,j,k)*this%divv_y(-1,i,j  ,k)*er(2)**2
+               this%psolv%opr(6,i,j,k)=this%divp_z(1,i,j,k)*this%divw_z( 0,i,j,k+1)*er(3)**2
+               this%psolv%opr(7,i,j,k)=this%divp_z(0,i,j,k)*this%divw_z(-1,i,j,k  )*er(3)**2
+               ! Scale it by the cell volume
                this%psolv%opr(:,i,j,k)=-this%psolv%opr(:,i,j,k)*this%cfg%vol(i,j,k)
             end do
          end do
@@ -1752,20 +1747,28 @@ contains
    end subroutine update_laplacian_slip
    
    !> Calculate the velocity divergence based on U/V/W
-   subroutine get_div_slip(this,Us,Vs,Ws)
+   subroutine get_div_slip(this,Us,Vs,Ws,x0,y0,z0,t1,t2)
+      use mathtools, only: normalize
       implicit none
       class(tpns), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Us
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Vs
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Ws
+      real(WP), intent(in) :: x0,y0,z0
+      real(WP), dimension(3), intent(in) :: t1,t2
+      real(WP) :: x,y,z,xr,yr
+      real(WP), dimension(3) :: er
       integer :: i,j,k
       ! Calculate divergence of velocity
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               this%div(i,j,k)=sum(this%divp_x(:,i,j,k)*Us(i:i+1,j,k))+&
-               &               sum(this%divp_y(:,i,j,k)*Vs(i,j:j+1,k))+&
-               &               sum(this%divp_z(:,i,j,k)*Ws(i,j,k:k+1))
+               x=this%cfg%xm(i)-x0; y=this%cfg%ym(j)-y0; z=this%cfg%zm(k)-z0
+               xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
+               er=normalize(xr*t1+yr*t2)
+               this%div(i,j,k)=sum(this%divp_x(:,i,j,k)*Us(i:i+1,j,k))*er(1)**2+&
+               &               sum(this%divp_y(:,i,j,k)*Vs(i,j:j+1,k))*er(2)**2+&
+               &               sum(this%divp_z(:,i,j,k)*Ws(i,j,k:k+1))*er(3)**2
             end do
          end do
       end do
@@ -1774,21 +1777,72 @@ contains
    end subroutine get_div_slip
 
    !> Calculate the pressure gradient based on P
-   subroutine get_pgrad_slip(this,P,Pgradx,Pgrady,Pgradz)
+   subroutine get_pgrad_slip(this,P,Pgradx,Pgrady,Pgradz,x0,y0,z0,t1,t2)
+      use mathtools, only: normalize
       implicit none
       class(tpns), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in)  :: P      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Pgradx !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Pgrady !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: Pgradz !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), intent(in) :: x0,y0,z0
+      real(WP), dimension(3), intent(in) :: t1,t2
+      real(WP) :: x,y,z,xr,yr
+      real(WP), dimension(3) :: er
+      real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ,dPgdr
       integer :: i,j,k
+
+      allocate(FX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FX=0.0_WP
+      allocate(FY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FY=0.0_WP
+      allocate(FZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FZ=0.0_WP
+      allocate(dPgdr(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));dPgdr=0.0_WP
       Pgradx=0.0_WP; Pgrady=0.0_WP; Pgradz=0.0_WP
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               Pgradx(i,j,k)=sum(this%divu_x(:,i,j,k)*P(i-1:i,j,k))
-               Pgrady(i,j,k)=sum(this%divv_y(:,i,j,k)*P(i,j-1:j,k))
-               Pgradz(i,j,k)=sum(this%divw_z(:,i,j,k)*P(i,j,k-1:k))
+               FX(i,j,k)=sum(this%itpr_x(:,i,j,k)*P(i-1:i,j,k))
+               FY(i,j,k)=sum(this%itpr_y(:,i,j,k)*P(i,j-1:j,k))
+               FZ(i,j,k)=sum(this%itpr_z(:,i,j,k)*P(i,j,k-1:k))
+            end do
+         end do
+      end do
+      call this%cfg%sync(FX); call this%cfg%sync(FY); call this%cfg%sync(FZ)
+
+
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               x=this%cfg%xm(i)-x0; y=this%cfg%ym(j)-y0; z=this%cfg%zm(k)-z0
+               xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
+               er=normalize(xr*t1+yr*t2)
+               dPgdr(i,j,k)=dot_product([sum(this%divu_x(:,i,j,k)*FX(i-1:i,j,k)),sum(this%divv_y(:,i,j,k)*FY(i,j-1:j,k)),sum(this%divw_z(:,i,j,k)*FZ(i,j,k-1:k))],er)
+            end do
+         end do
+      end do
+      call this%cfg%sync(dPgdr)
+
+      ! One way to estimate dP/dr and apply it in the er direction
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               ! For x-face
+               x=this%cfg%x(i)-x0; y=this%cfg%ym(j)-y0; z=this%cfg%zm(k)-z0
+               xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
+               er=normalize(xr*t1+yr*t2)
+               Pgradx(i,j,k)=Pgradx(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))*0.5_WP
+
+
+               ! For y-face
+               x=this%cfg%xm(i)-x0; y=this%cfg%y(j)-y0; z=this%cfg%zm(k)-z0
+               xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
+               er=normalize(xr*t1+yr*t2)
+               Pgrady(i,j,k)=Pgrady(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))*0.5_WP
+
+               ! For z-face
+               x=this%cfg%xm(i)-x0; y=this%cfg%ym(j)-y0; z=this%cfg%z(k)-z0
+               xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
+               er=normalize(xr*t1+yr*t2)
+               Pgradz(i,j,k)=Pgradz(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))*0.5_WP
             end do
          end do
       end do
