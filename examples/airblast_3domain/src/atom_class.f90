@@ -1756,6 +1756,9 @@ end subroutine transfer_ligs
             call this%df%pull(name='t' ,val=this%time%t )
             call this%df%pull(name='dt',val=this%time%dt)
             this%time%told=this%time%t-this%time%dt
+            ! Update SGS viscousity
+            call this%df%pull(name='LM',var=this%sgs%LM)
+            call this%df%pull(name='MM',var=this%sgs%MM)
             !this%time%dt=this%time%dtmax !< Force max timestep size anyway
             ! Finally, handle particle I/O
             if (this%use_drop_transfer.or.this%use_film_transfer.or.this%use_lig_transfer) then
@@ -1770,9 +1773,9 @@ end subroutine transfer_ligs
                if (.not.isdir('restart')) call makedir('restart')
             end if
             ! Prepare pardata object for saving restart files
-            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=15)
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=17)
             this%df%valname=['t ','dt']
-            this%df%varname=['U  ','V  ','W  ','P  ','Pjx','Pjy','Pjz','P11','P12','P13','P14','P21','P22','P23','P24']
+            this%df%varname=['U  ','V  ','W  ','P  ','Pjx','Pjy','Pjz','P11','P12','P13','P14','P21','P22','P23','P24','LM ','MM ']
          end if
       end block handle_restart
 
@@ -2240,7 +2243,6 @@ end subroutine transfer_ligs
       
       ! Finally, see if it's time to save restart files
       if (this%save_evt%occurs()) then
-         if (this%cfg%amRoot) print *, " Starting atom writing"
          save_restart: block
             use irl_fortran_interface
             use string, only: str_medium
@@ -2291,13 +2293,14 @@ end subroutine transfer_ligs
             call this%df%push(name='P22',var=P22         )
             call this%df%push(name='P23',var=P23         )
             call this%df%push(name='P24',var=P24         )
+            call this%df%push(name='LM', var=this%sgs%LM)
+            call this%df%push(name='MM', var=this%sgs%MM)
             call this%df%write(fdata='restart/data_atom_'//trim(adjustl(timestamp)))
             ! Deallocate
             deallocate(P11,P12,P13,P14,P21,P22,P23,P24)
             ! Finally, handle particle I/O
             if (this%use_drop_transfer.or.this%use_film_transfer.or.this%use_lig_transfer) call this%lp%write(filename='restart/part_'//trim(adjustl(timestamp)))
          end block save_restart
-         if (this%cfg%amRoot) print *, " Finishing atom writing"
       end if
    end subroutine step
    

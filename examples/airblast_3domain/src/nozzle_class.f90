@@ -333,9 +333,9 @@ contains
             if (this%cfg%amRoot) then
                if (.not.isdir('restart')) call makedir('restart')
             end if
-            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=4)
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=6)
             this%df%valname=['t ','dt']
-            this%df%varname=['U  ','V  ','W  ','P  ']
+            this%df%varname=['U  ','V  ','W  ','P  ','LM ','MM ']
          end if
       end block restart_and_save
       
@@ -473,6 +473,10 @@ contains
       ! Create an LES model
       create_sgs: block
          this%sgs=sgsmodel(cfg=this%fs%cfg,umask=this%fs%umask,vmask=this%fs%vmask,wmask=this%fs%wmask)
+         if (this%restarted) then
+            call this%df%pull(name='LM',var=this%sgs%LM)
+            call this%df%pull(name='MM',var=this%sgs%MM)
+         end if
       end block create_sgs
       
       
@@ -650,6 +654,8 @@ contains
             call this%df%push(name='V' ,var=this%fs%V   )
             call this%df%push(name='W' ,var=this%fs%W   )
             call this%df%push(name='P' ,var=this%fs%P   )
+            call this%df%push(name='LM', var=this%sgs%LM)
+            call this%df%push(name='MM', var=this%sgs%MM)
             call this%df%write(fdata='restart/data_nozzle_'//trim(adjustl(timestamp)))
          end block save_restart
          if (this%cfg%amRoot) print *, " Finishing nozzle writing"
