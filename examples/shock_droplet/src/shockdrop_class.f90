@@ -43,8 +43,10 @@ module shockdrop_class
       !> Constant phasic kinematic viscosities
       real(WP) :: cst_viscL,cst_viscG
       
-      !> Drop info
-      real(WP) :: Vcore,Mcore,Xcore,Ycore,Zcore
+      !> Various post-processing info
+      real(WP) :: Vcore,Mcore,Xcore,Ycore,Zcore !< Drop core data
+      real(WP), dimension(3) :: Lmin,Lmax       !< Liquid extent
+      
       
    contains
       procedure :: initialize                      !< Initialize shock-drop simulation
@@ -53,7 +55,7 @@ module shockdrop_class
       procedure :: output_monitor                  !< Monitoring for shock-drop case
       procedure :: output_ensight                  !< Ensight output for shock-drop case
       procedure, private :: prepare_viscosities    !< Prepare viscosities
-      procedure, private :: apply_bconds           !< Apply boundary conditions
+      procedure :: apply_bconds                    !< Apply boundary conditions
       procedure :: finalize                        !< Finalize shock-drop simulation
    end type shockdrop
    
@@ -62,11 +64,12 @@ contains
    
    !> Various postprocessing
    subroutine postproc(this)
-      use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+      use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE,MPI_MIN,MPI_MAX
       use parallel, only: MPI_REAL_WP
       implicit none
       class(shockdrop), intent(inout) :: this
       integer :: i,j,k,n,ierr
+      real(WP), parameter :: VFlo_extent=0.1_WP
       ! Update CCL
       call this%ccl%build(make_label,same_label)
       ! Core is id=1, skip if not present
@@ -90,6 +93,17 @@ contains
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%Xcore,1,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); this%Xcore=this%Xcore/this%Mcore ! Shouldn't ever
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%Ycore,1,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); this%Ycore=this%Ycore/this%Mcore ! be dividing by
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%Zcore,1,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); this%Zcore=this%Zcore/this%Mcore ! zero here...
+      ! Compute extent of liquid
+      this%Lmin=+[huge(1.0_WP),huge(1.0_WP),huge(1.0_WP)]
+      this%Lmax=-[huge(1.0_WP),huge(1.0_WP),huge(1.0_WP)]
+      do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_; do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_; do i=this%fs%cfg%imin_,this%fs%cfg%imax_
+         if (this%fs%VF(i,j,k).gt.VFlo_extent) then
+            this%Lmin=min(this%Lmin,[this%cfg%xm(i),this%cfg%ym(j),this%cfg%zm(k)])
+            this%Lmax=max(this%Lmax,[this%cfg%xm(i),this%cfg%ym(j),this%cfg%zm(k)])
+         end if
+      end do; end do; end do
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%Lmin,3,MPI_REAL_WP,MPI_MIN,this%fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%Lmax,3,MPI_REAL_WP,MPI_MAX,this%fs%cfg%comm,ierr)
    contains
       !> Function that identifies cells that need a label
       logical function make_label(i1,j1,k1)
@@ -129,7 +143,6 @@ contains
          use sgrid_class, only: cartesian,sgrid
          type(sgrid) :: grid
          integer  :: i,j,k
-         real(WP) :: Lx,Ly,Lz
          logical  :: xper,yper,zper
          real(WP), dimension(:), allocatable :: x,y,z
          ! By default, the case is fully non-periodic
