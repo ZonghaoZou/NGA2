@@ -27,7 +27,7 @@ module simulation
    !> Postprocessing tool
    type(postproc) :: pproc
    logical :: only_pproc=.false.
-   logical :: only_inlet=.true.
+   logical :: only_inlet=.false.
    public :: simulation_init,simulation_run,simulation_final
 
 contains

@@ -150,7 +150,7 @@ subroutine transfer_drops(this,lp_spray)
    real(WP), dimension(:,:)  , allocatable :: dvel
    real(WP), dimension(:,:,:), allocatable :: dmoi
    real(WP), dimension(:)    , allocatable :: drem
-   integer :: n,m,ierr,i,j,k,iunit,np_start
+   integer :: n,m,ierr,i,j,k,iunit
    real(WP) :: x,y,z,x0,y0,z0,diam,ecc,lmax,lmid,lmin
    character(len=str_medium) :: filename
    logical :: transfer
@@ -191,9 +191,6 @@ subroutine transfer_drops(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
       y=this%vf%cfg%ym(j)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
       z=this%vf%cfg%zm(k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
-      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
-      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
-      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
       ! Accumulate volume, position, and velocity
       dvol(n  )=dvol(n  )+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
       dpos(n,:)=dpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
@@ -227,9 +224,6 @@ subroutine transfer_drops(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
       y=this%vf%cfg%ym(j)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
       z=this%vf%cfg%zm(k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
-      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
-      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
-      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
       ! Accumulate moment of inertia
       dmoi(n,1,1)=dmoi(n,1,1)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(y**2+z**2)
       dmoi(n,2,2)=dmoi(n,2,2)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(z**2+x**2)
@@ -311,7 +305,6 @@ subroutine transfer_drops(this,lp_spray)
       
       ! Root creates a new Lagrangian drop
       if (this%vf%cfg%amRoot) then
-         np_start=this%lp%np_
          ! Increment particle counter
          this%lp%np_=this%lp%np_+1
          ! Make room for new drop
@@ -446,7 +439,7 @@ subroutine transfer_films(this,lp_spray)
    if (this%ccl_film%nstruct.ge.1) then
    ! Allocate film stats arrays
    allocate(fvol(1:this%ccl_film%nstruct)); fvol=0.0_WP
-   allocate(fthc(1:this%ccl_film%nstruct)); fthc=HUGE(alpha)!5.0_WP*this%cfg%min_meshsize
+   allocate(fthc(1:this%ccl_film%nstruct)); fthc=HUGE(alpha)
    allocate(frem(1:this%ccl_film%nstruct)); frem=0.0_WP
    allocate(fthc_avg(1:this%ccl_film%nstruct)); fthc_avg=0.0_WP
    allocate(fcnt    (1:this%ccl_film%nstruct)); fcnt=0.0_WP
@@ -559,7 +552,6 @@ subroutine transfer_films(this,lp_spray)
             end do
             ! call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP*ncurv/curv_sum)
             ! call bag_droplet_gamma(this%fmin,2.0_WP*ncurv/curv_sum)
-            ! call bag_droplet_gamma(this%fmin,ncurv/curv_sum)
             call bag_droplet_gamma(minthic,ncurv/curv_sum)
             Vd = pi/6.0_WP*(min(random_gamma(alpha)*beta*this%fd0,2.0_WP*this%frp))**3
             sampled = .true.
@@ -728,7 +720,6 @@ subroutine transfer_films(this,lp_spray)
          open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
          if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
          do i = 1,totalnewp
-         ! write(iunit,'(f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,f24.16,1x,f24.16,1x,f24.16,1x,I2)')
          write(iunit,*) this%time%t,pinfo(1,i),pinfo(2,i),pinfo(3,i),pinfo(4,i),pinfo(5,i),pinfo(6,i),pinfo(7,i),pinfo(8,i),INT(pinfo(9,i))
          end do
          close(iunit)
@@ -745,7 +736,6 @@ subroutine transfer_films(this,lp_spray)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_film    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
    end if
    deallocate(fvol,fthc,frem,fthc_avg,fcnt)
-   ! deallocate(fvol,frem,fthc_avg,fcnt)
    end if 
 
    contains
@@ -817,7 +807,7 @@ subroutine transfer_ligs(this,lp_spray)
    real(WP), dimension(:)    , allocatable :: lrem
    real(WP), dimension(:)    , allocatable :: lSR
    real(WP), dimension(:)    , allocatable :: xmin,xmax,ymin,ymax,zmin,zmax
-   integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_old,count,ip,rank!,np_start
+   integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_old,count,ip,rank
    real(WP) :: x,y,z,x0,y0,z0,lmax,lmid,lmin
    character(len=str_medium) :: filename
    integer, dimension(:), allocatable ::  plist,dispels
@@ -885,9 +875,6 @@ subroutine transfer_ligs(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl_lig%struct(n)%per(1)*this%vf%cfg%xL
       y=this%vf%cfg%ym(j)-this%ccl_lig%struct(n)%per(2)*this%vf%cfg%yL
       z=this%vf%cfg%zm(k)-this%ccl_lig%struct(n)%per(3)*this%vf%cfg%zL
-      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
-      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
-      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
       ! Accumulate volume and position. Get min thickness and ligament percentage
       lvol(n  )=lvol(n  )+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
       lpos(n,:)=lpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
@@ -941,9 +928,6 @@ subroutine transfer_ligs(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl_lig%struct(n)%per(1)*this%vf%cfg%xL-x0
       y=this%vf%cfg%ym(j)-this%ccl_lig%struct(n)%per(2)*this%vf%cfg%yL-y0
       z=this%vf%cfg%zm(k)-this%ccl_lig%struct(n)%per(3)*this%vf%cfg%zL-z0
-      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
-      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
-      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
       ! Accumulate moment of inertia
       lmoi(n,1,1)=lmoi(n,1,1)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(y**2+z**2)
       lmoi(n,2,2)=lmoi(n,2,2)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(z**2+x**2)
@@ -1000,7 +984,6 @@ subroutine transfer_ligs(this,lp_spray)
    this%vof_tf_lig=0.0_WP
    this%np_lig=0
    !! Record initial droplets in each processor for future outputing purpose
-   ! np_start=this%lp%np_
    ! Perform transfer
    do n=1,this%ccl_lig%nstruct
       ! Assume a cylinder ligament
@@ -1086,7 +1069,6 @@ subroutine transfer_ligs(this,lp_spray)
             write(iunit,*)this%time%t,this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
             &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
             &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
-            ! print*,"I wrote one particle out of", nsat+nmain
          end do
          ! Close the file
          close(iunit)
@@ -1448,7 +1430,6 @@ end subroutine transfer_ligs
          integer :: i,j,k
          real(WP) :: xloc,rad
          ! Create a VOF solver with LVIRA
-         ! call this%vf%initialize(cfg=this%cfg,reconstruction_method=elvira,transport_method=remap,name='VOF')
          call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
          this%vf%thin_thld_min=0.0_WP
          this%vf%flotsam_thld=0.0_WP
@@ -1626,7 +1607,7 @@ end subroutine transfer_ligs
             this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             ! this%fmin=2.2e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             ! this%fmin=1.0e-8 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
-            this%fmin=4.0e-5 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            this%fmin=2.5-5 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%fnumcell=50.0_WP
             ! Zero out monitoring variables
             this%vof_tf_film=0.0_WP
@@ -1705,8 +1686,6 @@ end subroutine transfer_ligs
             do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
                do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
                   do i=this%vf%cfg%imin_,this%vf%cfg%imax_
-                     ! if (this%vf%cfg%xm(i).lt.0.0_WP) then
-                     ! else 
                         ! Check if the second plane is meaningful
                         if (this%vf%two_planes.and.P21(i,j,k)**2+P22(i,j,k)**2+P23(i,j,k)**2.gt.0.0_WP) then
                            call setNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k),2)
@@ -1716,7 +1695,6 @@ end subroutine transfer_ligs
                            call setNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k),1)
                            call setPlane(this%vf%liquid_gas_interface(i,j,k),0,[P11(i,j,k),P12(i,j,k),P13(i,j,k)],P14(i,j,k))
                         end if
-                     ! end if
                   end do
                end do
             end do

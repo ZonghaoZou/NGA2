@@ -100,31 +100,21 @@ contains
      character(len=str_medium) :: filename
      real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
      integer, dimension(:), allocatable:: plist,dispels
-   !   real(WP) :: xloc_30,xloc_60,xloc_90,xloc_120,xloc_150,input_xloc
-     real(WP) :: xloc_100,xloc_150,xloc_200,input_xloc
-   !   integer:: n,count_30,count_60,count_90,count_120,count_150,totalcount,input_count,i
-     integer:: n,count_100,count_150,count_200,totalcount,input_count,i
+     real(WP) :: xloc_90,xloc_100,xloc_150,xloc_200,input_xloc
+     integer:: n,count_90,count_100,count_150,count_200,totalcount,input_count,i
      integer:: rank,count,ierr,iunit
-   !   xloc_30=30e-3_WP; xloc_60=60e-3_WP; xloc_90=90e-3_WP; xloc_120=120e-3_WP ; xloc_150=150e-3_WP
-     xloc_100=100e-3_WP;xloc_150=150e-3_WP;xloc_200=200e-3_WP
-   !   count_30=0; count_60=0; count_90=0; count_120=0; count_150=0
-     count_100=0;count_150=0;count_200=0 
+     xloc_90=90e-3_WP;xloc_100=100e-3_WP;xloc_150=150e-3_WP;xloc_200=200e-3_WP
+     count_90=0;count_100=0;count_150=0;count_200=0 
      allocate(plist(0:this%cfg%nproc-1))
      ! For each particle on each processor, count how many have passed the different x locations
      do n =1, this%lp%np_
-      !  if (this%lp%p(n)%pos(1).lt.xloc_30 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_30) count_30=count_30+1
-      !  if (this%lp%p(n)%pos(1).lt.xloc_60 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_60) count_60=count_60+1
-      !  if (this%lp%p(n)%pos(1).lt.xloc_90 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_90) count_90=count_90+1
-      !  if (this%lp%p(n)%pos(1).lt.xloc_120 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_120) count_120=count_120+1
+       if (this%lp%p(n)%pos(1).lt.xloc_90 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_90) count_90=count_90+1
        if (this%lp%p(n)%pos(1).lt.xloc_100 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_100) count_100=count_100+1
        if (this%lp%p(n)%pos(1).lt.xloc_150 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_150) count_150=count_150+1
        if (this%lp%p(n)%pos(1).lt.xloc_200 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_200) count_200=count_200+1
      end do
      
-   !   input_count=count_30; input_xloc=xloc_30; call output()
-   !   input_count=count_60; input_xloc=xloc_60; call output()
-   !   input_count=count_90; input_xloc=xloc_90; call output()
-   !   input_count=count_120; input_xloc=xloc_120; call output()
+     input_count=count_90; input_xloc=xloc_90; call output()
      input_count=count_100; input_xloc=xloc_100; call output()
      input_count=count_150; input_xloc=xloc_150; call output()
      input_count=count_200; input_xloc=xloc_200; call output()
@@ -227,7 +217,7 @@ contains
          end do
          
          ! General serial grid object
-         grid=sgrid(coord=cartesian,no=1,x=x,y=y,z=z,xper=.false.,yper=.false.,zper=.false.,name='dispersion')
+         grid=sgrid(coord=cartesian,no=2,x=x,y=y,z=z,xper=.false.,yper=.false.,zper=.false.,name='dispersion')
          
       end block create_grid
       
@@ -416,9 +406,9 @@ contains
             if (this%cfg%amRoot) then
                if (.not.isdir('restart')) call makedir('restart')
             end if
-            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=4)
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=6)
             this%df%valname=['t ','dt']
-            this%df%varname=['U  ','V  ','W  ','P  ']
+            this%df%varname=['U  ','V  ','W  ','P  ','LM ','MM ']
          end if
       end block restart_and_save
       
@@ -502,7 +492,7 @@ contains
         call this%fs%get_bcond('gas_inlet',mybc)
         do n=1,mybc%itr%no_
            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-           this%fs%U(i,j,k)=+sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))*Ugas
+           this%fs%U(i,j,k)=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))*Ugas
         end do
         ! Apply all other boundary conditions
         call this%fs%apply_bcond(this%time%t,this%time%dt)
@@ -538,27 +528,11 @@ contains
 
         if (this%lp%cfg%amroot) then
            if (.not.isdir('spray-disper')) call makedir('spray-disper')
-         !   filename='spray-disper/x=30e-3'
-         !   input_xloc = 30e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-         !   close(iunit)         
-         ! !   filename='spray-disper/x=60e-3'
-         !   input_xloc = 60e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-         !   close(iunit)         
-         ! !   filename='spray-disper/x=90e-3'
-         !   input_xloc = 90e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-         !   close(iunit)         
-         ! !   filename='spray-disper/x=120e-3'
-         !   input_xloc = 120e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-         !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-         !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-         !   close(iunit)    
-         !   filename='spray-disper/x=150e-3'
+           input_xloc = 90e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
+           open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
+           if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
+           close(iunit)
+
            input_xloc = 100e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
@@ -594,6 +568,10 @@ contains
       ! Create an LES model
       create_sgs: block
          this%sgs=sgsmodel(cfg=this%fs%cfg,umask=this%fs%umask,vmask=this%fs%vmask,wmask=this%fs%wmask)
+         if (this%restarted) then
+            call this%df%pull(name='LM',var=this%sgs%LM)
+            call this%df%pull(name='MM',var=this%sgs%MM)
+         end if
       end block create_sgs
       
       
@@ -660,8 +638,8 @@ contains
      
       call this%record_droplet() 
       
-      this%resU=rho_l
-      this%resV=visc_l
+      this%resU=this%fs%rho
+      this%resV=this%fs%visc
       call this%lp%advance(dt=this%time%dt,U=this%fs%U,V=this%fs%V,W=this%fs%W,rho=this%resU,visc=this%resV)
 
       ! Remember old velocity
@@ -731,32 +709,8 @@ contains
          this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV/this%fs%rho
          this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW/this%fs%rho
          
-        !  ! Apply direct IB forcing
-        !  ibforcing: block
-        !     integer :: i,j,k
-        !     real(WP) :: VFx,VFy,VFz
-        !     do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
-        !        do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
-        !           do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-        !              ! Compute staggered VF
-        !              VFx=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-        !              VFy=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-        !              VFz=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-        !              ! Enforce IB velocity
-        !              if (this%fs%umask(i,j,k).eq.0) this%fs%U(i,j,k)=VFx*this%fs%U(i,j,k)+(1.0_WP-VFx)*this%Uib(i,j,k)
-        !              if (this%fs%vmask(i,j,k).eq.0) this%fs%V(i,j,k)=VFy*this%fs%V(i,j,k)+(1.0_WP-VFy)*this%Vib(i,j,k)
-        !              if (this%fs%wmask(i,j,k).eq.0) this%fs%W(i,j,k)=VFz*this%fs%W(i,j,k)+(1.0_WP-VFz)*this%Wib(i,j,k)
-        !           end do
-        !        end do
-        !     end do
-        !     call this%fs%cfg%sync(this%fs%U)
-        !     call this%fs%cfg%sync(this%fs%V)
-        !     call this%fs%cfg%sync(this%fs%W)
-        !  end block ibforcing
-         
          ! Apply other boundary conditions on the resulting fields
          call this%fs%apply_bcond(this%time%t,this%time%dt)
-         
          ! Solve Poisson equation
          call this%fs%correct_mfr()
          call this%fs%get_div()  !< a volume source term to div
@@ -784,7 +738,6 @@ contains
       
       ! Output to ensight
       if (this%ens_evt%occurs()) then 
-           call this%ens_out%write_data(this%time%t)
            update_pmesh: block
               integer :: i
               call this%lp%update_partmesh(this%pmesh)
@@ -794,17 +747,15 @@ contains
                  this%pmesh%vec(:,1,i)=this%lp%p(i)%vel
               end do
            end block update_pmesh 
+           call this%ens_out%write_data(this%time%t)
       end if
       
       ! Perform and output monitoring
       call this%fs%get_max()
       call this%mfile%write()
       call this%cflfile%write()
-     !  call this%lp%get_max()
-     ! call this%pfile%write()
       ! Finally, see if it's time to save restart files
       if (this%save_evt%occurs()) then
-        if (this%cfg%amRoot) print *, " Starting dispersion writing"
          save_restart: block
             use string, only: str_medium
             character(len=str_medium) :: timestamp
@@ -817,10 +768,11 @@ contains
             call this%df%push(name='V' ,var=this%fs%V   )
             call this%df%push(name='W' ,var=this%fs%W   )
             call this%df%push(name='P' ,var=this%fs%P   )
+            call this%df%push(name='LM', var=this%sgs%LM)
+            call this%df%push(name='MM', var=this%sgs%MM)
             call this%df%write(fdata='restart/data_dispersion_'//trim(adjustl(timestamp)))
             call this%lp%write(filename='restart/part_dispersion_'//trim(adjustl(timestamp)))
          end block save_restart
-         if (this%cfg%amRoot) print *, " Finishing dispersion writing"
       end if
       
    end subroutine step

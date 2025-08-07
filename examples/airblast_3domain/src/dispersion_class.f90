@@ -709,29 +709,6 @@ contains
          this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV/this%fs%rho
          this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW/this%fs%rho
          
-        !  ! Apply direct IB forcing
-        !  ibforcing: block
-        !     integer :: i,j,k
-        !     real(WP) :: VFx,VFy,VFz
-        !     do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
-        !        do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
-        !           do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-        !              ! Compute staggered VF
-        !              VFx=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-        !              VFy=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-        !              VFz=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-        !              ! Enforce IB velocity
-        !              if (this%fs%umask(i,j,k).eq.0) this%fs%U(i,j,k)=VFx*this%fs%U(i,j,k)+(1.0_WP-VFx)*this%Uib(i,j,k)
-        !              if (this%fs%vmask(i,j,k).eq.0) this%fs%V(i,j,k)=VFy*this%fs%V(i,j,k)+(1.0_WP-VFy)*this%Vib(i,j,k)
-        !              if (this%fs%wmask(i,j,k).eq.0) this%fs%W(i,j,k)=VFz*this%fs%W(i,j,k)+(1.0_WP-VFz)*this%Wib(i,j,k)
-        !           end do
-        !        end do
-        !     end do
-        !     call this%fs%cfg%sync(this%fs%U)
-        !     call this%fs%cfg%sync(this%fs%V)
-        !     call this%fs%cfg%sync(this%fs%W)
-        !  end block ibforcing
-         
          ! Apply other boundary conditions on the resulting fields
          call this%fs%apply_bcond(this%time%t,this%time%dt)
          ! Solve Poisson equation
