@@ -36,16 +36,17 @@ module simulation
    !> Simulation monitor file
    type(monitor) :: mfile,cflfile
    
-   public :: simulation_init,simulation_run,simulation_final,get_gasP,apply_gasP,get_thickness,solveUs
+   public :: simulation_init,simulation_run,simulation_final,get_gasP,apply_gasP,get_thickness,solveUs,record_thickness
    
    !> Private work arrays
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    real(WP), dimension(:,:,:), allocatable :: Us,Vs,Ws
    real(WP), dimension(:,:,:), allocatable :: Usold,Vsold,Wsold
-   real(WP), dimension(:,:,:), allocatable :: Pg,Pd,dPgdr,alpha_x,alpha_y,alpha_z
+   real(WP), dimension(:,:,:), allocatable :: Pg,Pd,dPgdr,alpha_x,alpha_y,alpha_z,smag
    real(WP), dimension(:,:,:), allocatable :: radialU,verticalU
    real(WP), dimension(:,:,:), allocatable :: thickness_old,thickness_new
+   real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
    integer,  dimension(:,:,:), allocatable :: region_indicator,mask_IB
    
    !> Problem definition
@@ -54,7 +55,7 @@ module simulation
    real(WP) :: radius1,radius2
    real(WP), parameter :: HamakerC=4.4e-20_WP  ! Written in log form!
    ! real(WP) :: radius_flatten, radius_flatten_old
-   real(WP) :: anew,aold
+   real(WP) :: anew,aold,amax
    logical :: activated
    real(WP) :: x0,y0,z0
    contains
@@ -111,14 +112,15 @@ subroutine get_gasP
          y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL
          z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL
          ! Accumulate volume and position
-         dgvol(n  )=dgvol(n  )+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))
-         dgpos(n,:)=dgpos(n,:)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*[x,y,z]
+         if (thickness_new(i,j,k).le.0.6*cfg%min_meshsize) then
+            dgvol(n  )=dgvol(n  )+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))
+            dgpos(n,:)=dgpos(n,:)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*[x,y,z]
          ! Getting the flattened radius based on gas volume and film thickness
-         if (thickness_new(i,j,k).le.1.0*cfg%min_meshsize) then
             dct(n)=dct(n)+1.0_WP
-         end if
-         region_indicator(i,j,k)=1
-         mask_IB(i,j,k)=0
+            ! end if
+            region_indicator(i,j,k)=1
+            mask_IB(i,j,k)=0
+         end if 
      end do 
    end do 
    call MPI_ALLREDUCE(MPI_IN_PLACE,dgvol,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
@@ -129,9 +131,10 @@ subroutine get_gasP
    do n=1,ccl%nstruct
       if (dct(n).eq.0.0_WP) cycle
       ! Get the region gas barycenter
-      x0=dgpos(n,1)/dgvol(n)
-      y0=dgpos(n,2)/dgvol(n)
-      z0=dgpos(n,3)/dgvol(n)
+      ! x0=dgpos(n,1)/dgvol(n)
+      ! y0=dgpos(n,2)/dgvol(n)
+      ! z0=dgpos(n,3)/dgvol(n)
+      x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
       ! Loop over cells in structure
       do m=1,ccl%struct(n)%n_
           ! Get cell indices
@@ -154,9 +157,10 @@ subroutine get_gasP
    ! Get all the moment of inertia
    do n=1,ccl%nstruct
       if (dct(n).eq.0.0_WP) cycle
-      x0=dgpos(n,1)/dgvol(n)
-      y0=dgpos(n,2)/dgvol(n)
-      z0=dgpos(n,3)/dgvol(n)
+      ! x0=dgpos(n,1)/dgvol(n)
+      ! y0=dgpos(n,2)/dgvol(n)
+      ! z0=dgpos(n,3)/dgvol(n)
+      x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
       ! Get the moi directions
       A=dmoi(n,:,:)
       call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
@@ -206,7 +210,7 @@ subroutine get_gasP
             lp%p(lp%np_)%ind =cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])     
             xr=dot_product(lp%p(lp%np_)%pos,dmoi(n,:,1)); yr=dot_product(lp%p(lp%np_)%pos,dmoi(n,:,2))
             anew=sqrt(xr**2+yr**2)
-            if (anew.gt.1.2_WP*a_cell) then
+            if (abs(anew-a_cell).gt.0.1_WP*a_cell) then
                anew=a_cell
                lp%p(lp%np_)%pos = anew*dmoi(n,:,1)+[x0,y0,z0]
                lp%p(lp%np_)%ind =cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])     
@@ -223,10 +227,11 @@ subroutine get_gasP
    do n=1,ccl%nstruct
       if (dct(n).eq.0.0_WP) cycle
       ! Get the region gas barycenter
-      x0=dgpos(n,1)/dgvol(n)
-      y0=dgpos(n,2)/dgvol(n)
-      z0=dgpos(n,3)/dgvol(n)
-      t1=dmoi(n,:,1); t2=dmoi(n,:,2)
+      ! x0=dgpos(n,1)/dgvol(n)
+      ! y0=dgpos(n,2)/dgvol(n)
+      ! z0=dgpos(n,3)/dgvol(n)
+      x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
+      t1=dmoi(n,:,1); t2=dmoi(n,:,2); t3=dmoi(n,:,3)
       do m=1,ccl%struct(n)%n_
          ! Get cell indices
          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
@@ -245,19 +250,32 @@ subroutine get_gasP
          end if
          dlogadt=(log(anew)-log(aold))/time%dt
          maxdthdt=max(maxdthdt,abs(thickness_new(i,j,k)-thickness_old(i,j,k)))
-         ! Gas pressure accounts for both GKE and van der Waals effects 
-         Pg(i,j,k)=3.0_WP*fs%visc_g*(rmag**2-anew**2)*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
-         Pd(i,j,k)=-HamakerC/(6*pi*thickness_new(i,j,k)**3)
-         dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
+         if (region_indicator(i,j,k)==1) then
+            ! Gas pressure accounts for both GKE and van der Waals effects 
+            Pg(i,j,k)=3.0_WP*fs%visc_g*(rmag**2-anew**2)*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
+            Pd(i,j,k)=-HamakerC/(6*pi*thickness_new(i,j,k)**3)
+            dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
+            ! dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
+         end if
       end do
    end do
    call MPI_ALLREDUCE(MPI_IN_PLACE,anew,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
-   if (cfg%amRoot) print *, anew,aold, (log(anew)-log(aold))/time%dt
-   if (cfg%amRoot) print *, maxdthdt, maxdthdt/time%dt
+   amax=max(amax,anew)
+   ! if (cfg%amRoot) print *, "anew",anew/cfg%min_meshsize,aold/cfg%min_meshsize
+   ! if (cfg%amRoot) print *, "dloga", (log(anew)-log(aold)), "d a/anew", (anew-aold)/anew, "d a/aold", (anew-aold)/aold
+   ! if (cfg%amRoot) print *, "acell",a_cell/cfg%min_meshsize
+   ! if (cfg%amRoot) print *, "x0",x0/cfg%min_meshsize,y0/cfg%min_meshsize,z0/cfg%min_meshsize
+   ! ! if (cfg%amRoot) print *, x0/cfg%min_meshsize,y0/cfg%min_meshsize,z0/cfg%min_meshsize
+   ! do i = 1, lp%np_
+   !    print *, "PPos", lp%p(lp%np_)%pos/cfg%min_meshsize
+   ! end do
+   ! if (cfg%amRoot) print *, maxdthdt, maxdthdt/time%dt
+
    aold=anew
    call cfg%sync(Pg)
    call cfg%sync(Pd)
    call cfg%sync(region_indicator)
+   call cfg%sync(mask_IB)
    ! if (cfg%amRoot) print *, radius_flatten,radius_flatten_old, dlogadt!, (radius_flatten-radius_flatten_old)/(time%dt*max(radius_flatten,radius_flatten_old))
    contains
       !> Function that identifies cells that need a label
@@ -265,7 +283,7 @@ subroutine get_gasP
       implicit none
       integer, intent(in) :: i,j,k
       ! if (vf%VF(i,j,k).gt.0.0_WP) then
-      if (vf%thin_sensor(i,j,k).eq.2.0_WP) then
+      if (vf%thin_sensor(i,j,k).eq.2.0_WP) then! .and.thickness_new(i,j,k).le.1.1*cfg%min_meshsize) then
          make_label=.true.
       else
          make_label=.false.
@@ -333,7 +351,7 @@ end subroutine get_gasP
                end do
                ! Calculate thickness
                if (vf%VF(i,j,k).ge.VFhi) then
-                  thickness_in(i,j,k) = 0.0_WP
+                  thickness_in(i,j,k) = 3.5_WP*cfg%min_meshsize
                else if (tmparea .gt. 0.0_WP) then    
                   thickness_in(i,j,k) = 2.0_WP*tmpgvol/(tmparea+tiny(1.0_WP))
                else
@@ -344,6 +362,32 @@ end subroutine get_gasP
       end do
       call cfg%sync(thickness_in)
    end subroutine get_thickness
+
+   subroutine record_thickness()
+      use mpi_f08
+      use parallel,  only: MPI_REAL_WP
+      use string,    only: str_medium
+      implicit none
+      real(WP):: minThickness
+      integer :: i,j,k,iunit,ierr
+      character(len=str_medium) :: filename
+      minThickness=3.5_WP*cfg%min_meshsize
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               minThickness=min(minThickness,thickness_new(i,j,k))
+            end do 
+         end do 
+      end do
+      call MPI_ALLREDUCE(MPI_IN_PLACE,minThickness,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
+      ! if (cfg%amRoot) print *, minThickness
+      filename='thickness.csv'
+      if (cfg%amRoot) then
+         open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',position='append',iostat=ierr)
+         write(iunit,*) time%t, minThickness
+         close(iunit)
+      end if
+   end subroutine record_thickness
 
    ! A subroutine that solves the slip velocity field based on current info
    ! Two subiterations
@@ -400,14 +444,15 @@ end subroutine get_gasP
          Ws=0.5_WP*(Ws+Wsold)
          ! Calculate - umix doct grad us -grad Pg
          get_dmomdt : block
-            real(WP) :: xr,yr,x,y,z
+            real(WP) :: xr,yr,zr,x,y,z
             real(WP), dimension(3) :: er,dPdr
-            real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
+            ! real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ!,smag
             real(WP), dimension(:,:,:), allocatable :: drhoUdt,drhoVdt,drhoWdt
             ! Allocate flux arrays
-            allocate(FX(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FX=0.0_WP
-            allocate(FY(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FY=0.0_WP
-            allocate(FZ(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FZ=0.0_WP
+            ! allocate(FX(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FX=0.0_WP
+            ! allocate(FY(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FY=0.0_WP
+            ! allocate(FZ(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FZ=0.0_WP
+            ! allocate(smag(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));smag=0.0_WP
             allocate(drhoUdt(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));drhoUdt=0.0_WP
             allocate(drhoVdt(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));drhoVdt=0.0_WP
             allocate(drhoWdt(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));drhoWdt=0.0_WP
@@ -526,6 +571,7 @@ end subroutine get_gasP
             ! call fs%cfg%sync(dPgdr)
 
             ! One way to estimate dP/dr and apply it in the er direction
+            FX=0.0_WP; FY=0.0_WP; FZ=0.0_WP; smag=0.0_WP
             do k=fs%cfg%kmin_,fs%cfg%kmax_
                do j=fs%cfg%jmin_,fs%cfg%jmax_
                   do i=fs%cfg%imin_,fs%cfg%imax_
@@ -534,9 +580,11 @@ end subroutine get_gasP
                      xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
                      er=normalize(xr*t1+yr*t2)
                      if (Pg(i,j,k).eq.0.0_WP .or. Pg(i-1,j,k).eq.0.0_WP) then
-                        resU(i,j,k)=resU(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))
+                        FX(i,j,k)=FX(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))
+                        ! resU(i,j,k)=resU(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))
                      else
-                        resU(i,j,k)=resU(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))*0.5_WP
+                        FX(i,j,k)=FX(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))*0.5_WP
+                        ! resU(i,j,k)=resU(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))*0.5_WP
                      end if
 
                      ! For y-face
@@ -544,9 +592,11 @@ end subroutine get_gasP
                      xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
                      er=normalize(xr*t1+yr*t2)
                      if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j-1,k).eq.0.0_WP) then
-                        resV(i,j,k)=resV(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))
+                        FY(i,j,k)=FY(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))
+                        ! resV(i,j,k)=resV(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))
                      else
-                        resV(i,j,k)=resV(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))*0.5_WP
+                        FY(i,j,k)=FY(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))*0.5_WP
+                        ! resV(i,j,k)=resV(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))*0.5_WP
                      end if
 
                      ! For z-face
@@ -554,41 +604,127 @@ end subroutine get_gasP
                      xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
                      er=normalize(xr*t1+yr*t2)
                      if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j,k-1).eq.0.0_WP) then
-                        resW(i,j,k)=resW(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))
+                        FZ(i,j,k)=FZ(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))
+                        ! resW(i,j,k)=resW(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))
                      else 
-                        resW(i,j,k)=resW(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))*0.5_WP
+                        FZ(i,j,k)=FZ(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))*0.5_WP
+                        ! resW(i,j,k)=resW(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))*0.5_WP
                      end if 
                   end do
                end do
             end do
+            call cfg%sync(FX); call cfg%sync(FY); call cfg%sync(FZ)
+            ! Now work on a semi-divergence free squeeze velocity
+            do k=fs%cfg%kmin_,fs%cfg%kmax_
+               do j=fs%cfg%jmin_,fs%cfg%jmax_
+                  do i=fs%cfg%imin_,fs%cfg%imax_
+                     smag(i,j,k)=sum(fs%divp_x(:,i,j,k)*FX(i:i+1,j,k))+sum(fs%divp_y(:,i,j,k)*FY(i,j:j+1,k))+sum(fs%divp_z(:,i,j,k)*FZ(i,j,k:k+1))/2.0_WP
+                  end do
+               end do
+            end do
+            call cfg%sync(smag)
+
+            do k=fs%cfg%kmin_,fs%cfg%kmax_
+               do j=fs%cfg%jmin_,fs%cfg%jmax_
+                  do i=fs%cfg%imin_,fs%cfg%imax_
+                        ! For x-face
+                     x=cfg%x(i)-x0; y=cfg%ym(j)-y0; z=cfg%zm(k)-z0
+                     zr=dot_product([x,y,z],t3)
+                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i-1,j,k).eq.0.0_WP) then
+                        FX(i,j,k)=FX(i,j,k)-zr*dot_product([1.0_WP, 0.0_WP, 0.0_WP],t3)*sum(smag(i-1:i,j,k))
+                     else
+                        FX(i,j,k)=FX(i,j,k)-zr*dot_product([1.0_WP, 0.0_WP, 0.0_WP],t3)*sum(smag(i-1:i,j,k))*0.5_WP
+                     end if
+
+                     ! For y-face
+                     x=cfg%xm(i)-x0; y=cfg%y(j)-y0; z=cfg%zm(k)-z0
+                     zr=dot_product([x,y,z],t3)
+                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j-1,k).eq.0.0_WP) then
+                        FY(i,j,k)=FY(i,j,k)-zr*dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(smag(i,j-1:j,k))
+                     else
+                        FY(i,j,k)=FY(i,j,k)-zr*dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(smag(i,j-1:j,k))*0.5_WP
+                     end if
+
+                     ! For z-face
+                     x=cfg%xm(i)-x0; y=cfg%ym(j)-y0; z=cfg%z(k)-z0
+                     zr=dot_product([x,y,z],t3)
+                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j,k-1).eq.0.0_WP) then
+                        FZ(i,j,k)=FZ(i,j,k)-zr*dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(smag(i,j,k-1:k))
+                     else 
+                        FZ(i,j,k)=FZ(i,j,k)-zr*dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(smag(i,j,k-1:k))*0.5_WP
+                     end if 
+                  end do
+               end do
+            end do
+
+            call cfg%sync(FX); call cfg%sync(FY); call cfg%sync(FZ)
+            resU=resU+FX
+            resV=resV+FY
+            resW=resW+Fz
+
+            do k=fs%cfg%kmin_,fs%cfg%kmax_
+               do j=fs%cfg%jmin_,fs%cfg%jmax_
+                  do i=fs%cfg%imin_,fs%cfg%imax_
+                     if (Pg(i,j,k).ne.0.0_WP .or. Pg(i-1,j,k).ne.0.0_WP) then
+                        Us(i,j,k)=Usold(i,j,k)+resU(i,j,k)*time%dt
+                     else
+                        Us(i,j,k)=0.0_WP
+                     end if
+
+                     ! if (mask_IB_y(i,j,k).eq.0) then
+                     if (Pg(i,j,k).ne.0.0_WP .or. Pg(i,j-1,k).ne.0.0_WP) then
+                        Vs(i,j,k)=Vsold(i,j,k)+resV(i,j,k)*time%dt
+                     else
+                        Vs(i,j,k)=0.0_WP
+                     end if
+
+                     ! if (mask_IB_z(i,j,k).eq.0) then
+                     if (Pg(i,j,k).ne.0.0_WP .or. Pg(i,j,k-1).ne.0.0_WP) then
+                        Ws(i,j,k)=Wsold(i,j,k)+resW(i,j,k)*time%dt
+                     else
+                        Ws(i,j,k)=0.0_WP
+                     end if
+                  end do 
+               end do 
+            end do
+            call cfg%sync(Us); call cfg%sync(Vs); call cfg%sync(Ws)
          end block get_dmomdt
 
+         if (anew.lt.0.9_WP*amax) then
+            Us=0.0_WP
+            Vs=0.0_WP
+            Ws=0.0_WP
+         end if
+
          ! Applying an IB-style forcing of 0 gas velocity away from the region
-         beta_IB=1.0_WP/time%dt
-         resU=resU-mask_IB_x*beta_IB*Usold
-         resV=resV-mask_IB_y*beta_IB*Vsold
-         resW=resW-mask_IB_z*beta_IB*Wsold
-
-         ! Update slip velocity
-         Us=Usold+resU*time%dt
-         Vs=Vsold+resV*time%dt
-         Ws=Wsold+resW*time%dt
+         ! beta_IB=1.0_WP/time%dt
+         ! resU=resU-mask_IB_x*beta_IB*Usold
+         ! resV=resV-mask_IB_y*beta_IB*Vsold
+         ! resW=resW-mask_IB_z*beta_IB*Wsold
          
-         resU=Us!*alpha_x
-         resV=Vs!*alpha_y
-         resW=Ws!*alpha_z
+         ! Update slip velocity
+         ! Us=Usold+resU*time%dt
+         ! Vs=Vsold+resV*time%dt
+         ! Ws=Wsold+resW*time%dt
+         
+         ! Us=0.0_WP
+         ! Vs=0.0_WP
+         ! Ws=0.0_WP
+         ! resU=Us!*alpha_x
+         ! resV=Vs!*alpha_y
+         ! resW=Ws!*alpha_z
 
-         call fs%update_laplacian_slip(x0,y0,z0,t1,t2)
-         call fs%get_div_slip(resU,resV,resW,x0,y0,z0,t1,t2)
-         fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
-         fs%psolv%sol=0.0_WP
-         call fs%psolv%solve()
-         call fs%shift_p(fs%psolv%sol)
-         ! ! Correct velocity
-         call fs%get_pgrad_slip(fs%psolv%sol,resU,resV,resW,x0,y0,z0,t1,t2)
-         Us=Us-time%dt*resU
-         Vs=Vs-time%dt*resV
-         Ws=Ws-time%dt*resW
+         ! call fs%update_laplacian_slip(x0,y0,z0,t1,t2)
+         ! call fs%get_div_slip(resU,resV,resW,x0,y0,z0,t1,t2)
+         ! fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
+         ! fs%psolv%sol=0.0_WP
+         ! call fs%psolv%solve()
+         ! call fs%shift_p(fs%psolv%sol)
+         ! ! ! Correct velocity
+         ! call fs%get_pgrad_slip(fs%psolv%sol,resU,resV,resW,x0,y0,z0,t1,t2)
+         ! Us=Us-time%dt*resU
+         ! Vs=Vs-time%dt*resV
+         ! Ws=Ws-time%dt*resW
       end do
    end subroutine solveUs
    !> Function that defines a level set function for colliding drops problem
@@ -604,289 +740,7 @@ end subroutine get_gasP
       ! Combine
       G=max(G1,G2)
    end function levelset_colliding_drops
-   
-   
-   ! ! This is based on the work of Chubynsky et al for getting the gas pressure
-   ! subroutine get_gasP
-   !    use irl_fortran_interface
-   !    use mpi_f08
-   !    use parallel,  only: MPI_REAL_WP
-   !    use mathtools, only: pi,normalize
-   !    use messager,  only: die
-   !    implicit none
-   !    ! Parameters for moment of inertia
-   !    real(WP), dimension(:), allocatable, save :: work !< Saved!
-   !    integer, save :: lwork                            !< Saved!
-   !    real(WP), dimension(1) :: lwork_query
-   !    real(WP), dimension(3) :: d
-   !    real(WP), dimension(3,3) :: A
-   !    integer :: info
-   !    integer :: total_cell,ierr,rank,count,i,j,k,m,n,l,rind,ni,ll,mm
-   !    real(WP) :: x,y,z,x0,y0,z0,lambdaAir,Kn,myvol,u1,u2,u3,xr,yr,rmag,signmeasure,voltmp,ptmp,pmin_,pmin,dPgdrtmpval
-   !    real(WP), dimension(3) :: mybary,myvel,tmp_r
-   !    real(WP), dimension(4) :: plane
-   !    real(WP), dimension(5) :: tmprow
-   !    integer, dimension(:), allocatable:: plist,dispels
-   !    real(WP), dimension(:)    , allocatable :: dgvol,rdhdt_int!,dr0,dP0,
-   !    real(WP), dimension(:,:)  , allocatable :: dgpos,gpinfo_,gpinfo 
-   !    real(WP), dimension(:,:,:), allocatable :: dmoi
-   !    ! Output to learn what's going on
-   !    radialU=0.0_WP;verticalU=0.0_WP
-   !    resU=fs%U+Us;resV=fs%V+Vs;resW=fs%W+Ws
-   !    ! Set indicator to 0
-   !    region_indicator(i,j,k)=0
-   !    ! First get the global minium gas pressure as my base reference
-   !    pmin_=huge(1.0_WP);pmin=0.0_WP; dPgdr=0.0_WP
-   !    do k=cfg%kmin_,cfg%kmax_
-   !       do j=cfg%jmin_,cfg%jmax_
-   !          do i=cfg%imin_,cfg%imax_
-   !             if (cfg%VF(i,j,k).gt.0.0_WP .and. vf%VF(i,j,k).eq.0.0_WP) pmin_=min(pmin_,fs%P(i,j,k) )
-   !          end do
-   !       end do
-   !    end do
-   !    call MPI_ALLREDUCE(pmin_,pmin,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
-   !    ! Pg=pmin
-   !    Pg=0.0_WP
-   !    lambdaAir=69e-9_WP
-   !    ! Query optimal work array size
-   !    if (.not.allocated(work)) then
-   !       call dsyev('V','U',3,A,3,d,lwork_query,-1,info)
-   !       lwork=int(lwork_query(1)); allocate(work(lwork))
-   !    end if
 
-   !    ! Build ccl to get the thin gas region for caculating gas pressure
-   !    call ccl%build(make_label,same_label)
-
-   !    ! Allocate fields for calculation
-   !    allocate(dgvol(1:ccl%nstruct        )); dgvol=0.0_WP
-   !    allocate(dgpos(1:ccl%nstruct,1:3    )); dgpos=0.0_WP
-   !    allocate(dmoi(1:ccl%nstruct,1:3,1:3)); dmoi=0.0_WP
-   !    ! allocate(dr0(1:ccl%nstruct        )); dr0=0.0_WP
-   !    ! allocate(dP0(1:ccl%nstruct        )); dP0=huge(1.0_WP)
-   !    allocate(plist(0:cfg%nproc-1))
-   !    allocate(dispels(0:cfg%nproc-1))
-   !    ! First pass to accumulate position for moment of inertia
-   !    do n=1,ccl%nstruct
-   !       ! Loop over cells in structure
-   !       do m=1,ccl%struct(n)%n_
-   !          ! Get cell indices
-   !          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !          ! Get cell position, accounting for periodicity
-   !          x=vf%Gbary(1,i,j,k)-ccl%struct(n)%per(1)*cfg%xL
-   !          y=vf%Gbary(2,i,j,k)-ccl%struct(n)%per(2)*cfg%yL
-   !          z=vf%Gbary(3,i,j,k)-ccl%struct(n)%per(3)*cfg%zL
-
-   !          ! Accumulate volume and position
-   !          dgvol(n  )=dgvol(n  )+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))
-   !          dgpos(n,:)=dgpos(n,:)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*[x,y,z]
-   !          region_indicator(i,j,k)=1
-   !      end do 
-   !    end do 
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dgvol,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dgpos,3*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-
-   !    ! Second pass to accumulate moment of inertia
-   !    do n=1,ccl%nstruct
-   !       ! Get the region gas barycenter
-   !       x0=dgpos(n,1)/dgvol(n)
-   !       y0=dgpos(n,2)/dgvol(n)
-   !       z0=dgpos(n,3)/dgvol(n)
-   !       ! Loop over cells in structure
-   !       do m=1,ccl%struct(n)%n_
-   !           ! Get cell indices
-   !           i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !           ! Get cell position relative to drop barycenter, accounting for periodicity
-   !           x=vf%Gbary(1,i,j,k)-ccl%struct(n)%per(1)*cfg%xL-x0
-   !           y=vf%Gbary(2,i,j,k)-ccl%struct(n)%per(2)*cfg%yL-y0
-   !           z=vf%Gbary(3,i,j,k)-ccl%struct(n)%per(3)*cfg%zL-z0
-   !           ! Accumulate moment of inertia
-   !           dmoi(n,2,2)=dmoi(n,2,2)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(z**2+x**2)
-   !           dmoi(n,3,3)=dmoi(n,3,3)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x**2+y**2)
-   !           dmoi(n,1,1)=dmoi(n,1,1)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y**2+z**2)
-   !           dmoi(n,1,2)=dmoi(n,1,2)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*y)
-   !           dmoi(n,1,3)=dmoi(n,1,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*z)
-   !           dmoi(n,2,3)=dmoi(n,2,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y*z)
-   !       end do
-   !    end do
-   !    call MPI_ALLREDUCE(MPI_IN_PLACE,dmoi,9*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   !    do n=1,ccl%nstruct
-   !       x0=dgpos(n,1)/dgvol(n)
-   !       y0=dgpos(n,2)/dgvol(n)
-   !       z0=dgpos(n,3)/dgvol(n)
-   !       ! Get the moi directions
-   !       A=dmoi(n,:,:)
-   !       call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
-   !       dmoi(n,:,:)=A ! dmoi(n,:,2) and dmoi(n,:,3) are the two principle axes marking the tagential plane
-   !       ! allocate the fields needed for getting the gas pressure
-   !       ! 1 is r, 2 is h, 3 is deltP, 4 is ur, 5 is uz
-   !       allocate(gpinfo_(1:ccl%struct(n)%n_,1:5));gpinfo_=0.0_WP
-   !       ! Fill out all the info of the required parameters
-   !       do m=1,ccl%struct(n)%n_
-   !          ! Get cell indices
-   !          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !          ! Get cell position relative to drop barycenter, accounting for periodicity
-   !          x=vf%Gbary(1,i,j,k)-ccl%struct(n)%per(1)*cfg%xL-x0
-   !          y=vf%Gbary(2,i,j,k)-ccl%struct(n)%per(2)*cfg%yL-y0
-   !          z=vf%Gbary(3,i,j,k)-ccl%struct(n)%per(3)*cfg%zL-z0
-   !          ! Get the r magnitude
-   !          xr=dot_product([x,y,z],dmoi(n,:,1)); yr=dot_product([x,y,z],dmoi(n,:,2))
-   !          gpinfo_(m,1)=sqrt(xr**2+yr**2)
-   !          gpinfo_(m,2)=thickness_new(i,j,k)
-   !          Kn = lambdaAir/thickness_new(i,j,k)
-   !          ! gpinfo_(m,2)=vf%thickness(i,j,k)
-   !          ! Kn = lambdaAir/vf%thickness(i,j,k)
-   !          gpinfo_(m,3)=1.0_WP+6.88_WP*Kn+6.0_WP*Kn*LOG(1.0_WP+2.76_WP*Kn+0.127_WP*Kn**2)/pi
-   !          ! ! Record pressure as P_0 that has the largest r
-   !          ! if (gpinfo_(m,1).gt.dr0(n)) then
-   !          !    dr0(n) = gpinfo_(m,1)
-   !          !    dP0(n) = fs%P(i,j,k)
-   !          ! end if
-   !          voltmp=0.0_WP
-   !          ! For each interface
-   !          do ni=1,getNumberOfPlanes(vf%liquid_gas_interface(i,j,k))
-   !             if (getNumberOfVertices(vf%interface_polygon(ni,i,j,k)).ne.0) then
-   !                ! add the surface area of the polygon
-   !                myvol=abs(calculateVolume(vf%interface_polygon(ni,i,j,k)))
-   !                ! Get the barycetner of the polygon
-   !                mybary=calculateCentroid(vf%interface_polygon(ni,i,j,k))
-   !                ! get my velocity based on my polygon barycenter
-   !                ! myvel=cfg%get_velocity(mybary,i,j,k,fs%U,fs%V,fs%W)
-   !                myvel=cfg%get_velocity(mybary,i,j,k,resU,resV,resW)
-   !                u1=dot_product(myvel,dmoi(n,:,1)); u2=dot_product(myvel,dmoi(n,:,2)); u3=dot_product(myvel,dmoi(n,:,3))
-   !                gpinfo_(m,4)=gpinfo_(m,4)+myvol*(sqrt(u1**2+u2**2))
-   !                ! Using the current interface as a measure for film expansion direction
-   !                ! plane=getPlane(vf%liquid_gas_interface(i,j,k),ni-1)
-   !                ! signmeasure=dot_product(plane(1:3),myvel)
-   !                ! ! If the velocity is aligned with outward normal, the gas film thickness decreases, therefore negative
-   !                ! if (signmeasure.gt.0) then
-   !                !    gpinfo_(m,5)=gpinfo_(m,5)-myvol*(abs(u3))
-   !                ! else
-   !                !    gpinfo_(m,5)=gpinfo_(m,5)+myvol*(abs(u3))
-   !                ! end if
-   !                ! gpinfo_(m,5)=(vf%thickness(i,j,k)-thickness_old(i,j,k))/time%dt
-                  
-   !                ! adding the volume of each polygon
-   !                voltmp=voltmp+myvol
-   !             end if
-   !          end do
-   !          gpinfo_(m,5)=(thickness_new(i,j,k)-thickness_old(i,j,k))/time%dt
-   !          ! surface area weighted average of the velocities
-   !          gpinfo_(m,4)=gpinfo_(m,4)/voltmp
-   !          ! gpinfo_(m,5)=2.0_WP*gpinfo_(m,5)/voltmp
-   !          radialU(i,j,k)=gpinfo_(m,4)
-   !          verticalU(i,j,k)=gpinfo_(m,5)
-   !       end do
-   !       ! call MPI_ALLREDUCE(MPI_IN_PLACE,dr0,1*ccl%nstruct,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
-   !       ! call MPI_ALLREDUCE(MPI_IN_PLACE,dP0,1*ccl%nstruct,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
-   !       call MPI_AllGATHER(ccl%struct(n)%n_,1,MPI_INTEGER,plist,1,MPI_INTEGER,cfg%comm,ierr)
-   !       total_cell=sum(plist)
-   !       if (total_cell.gt.0) then
-   !          allocate(gpinfo(1:total_cell,1:5));gpinfo=0.0_WP
-   !          allocate(rdhdt_int(1:total_cell));rdhdt_int=0.0_WP
-   !          ! Calculate dispels
-   !          count = 0
-   !          do rank=0,cfg%nproc-1
-   !             dispels(rank) = count
-   !             count = count + plist(rank)
-   !          end do
-   !          ! Communicate to root
-   !          do i = 1,5
-   !             call MPI_ALLGATHERV(gpinfo_(:,i),ccl%struct(n)%n_,MPI_REAL_WP,gpinfo(:,i),plist,dispels,MPI_REAL_WP,cfg%comm)
-   !          end do
-   !          ! Now I want to bubble sort them in ascending order
-   !          do i = 1, total_cell-1
-   !             do j = i+1, total_cell
-   !                if (gpinfo(j,1) < gpinfo(i,1)) then
-   !                   tmprow = gpinfo(i,:)     ! swap whole rows
-   !                   gpinfo(i,:)  = gpinfo(j,:)
-   !                   gpinfo(j,:)  = tmprow
-   !                end if
-   !             end do
-   !          end do
-
-   !          do l=2,total_cell
-   !             do m=1,l-1
-   !                ! integral of r*dh/dt
-   !                rdhdt_int(l)=rdhdt_int(l)+0.5_WP*(gpinfo(m,1)*gpinfo(m,5)+gpinfo(m+1,1)*gpinfo(m+1,5))*(gpinfo(m+1,1)-gpinfo(m,1))
-   !             end do 
-   !          end do
-
-   !          ! Pg =Pg+dP0(n)
-   !          ! Based on the gpinfo, we can now loop through each cell in the processor to get the corresponding gas pressure
-   !          do m=1,ccl%struct(n)%n_
-   !             x0=dgpos(n,1)/dgvol(n)
-   !             y0=dgpos(n,2)/dgvol(n)
-   !             z0=dgpos(n,3)/dgvol(n)
-   !             ! Get cell indices
-   !             i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-   !             ! Get cell position relative to drop barycenter, accounting for periodicity
-   !             x=vf%Gbary(1,i,j,k)-ccl%struct(n)%per(1)*cfg%xL-x0
-   !             y=vf%Gbary(2,i,j,k)-ccl%struct(n)%per(2)*cfg%yL-y0
-   !             z=vf%Gbary(3,i,j,k)-ccl%struct(n)%per(3)*cfg%zL-z0
-   !             ! Get the r magnitude
-   !             xr=dot_product([x,y,z],dmoi(n,:,1)); yr=dot_product([x,y,z],dmoi(n,:,2))
-   !             rmag=sqrt(xr**2+yr**2)
-   !             do l =1, total_cell
-   !                if (gpinfo(l,1)>=rmag) then
-   !                   rind=l
-   !                   exit
-   !                end if 
-   !             end do 
-               
-   !             ptmp=0.0_WP
-   !             do l=rind,total_cell-1
-   !                ! 1/2 * (r(l+1)-r(l))*(f(l+1)+f(l))
-   !                ! f(l) = -12 mu_g * 1/deltaP  *(ur/h^2 + r dhdt/2h^3)          ! 1 is r, 2 is h, 3 is deltP, 4 is ur, 5 is uz
-   !                ! ptmp=ptmp-6.0_WP*fs%visc_g*((gpinfo(l,4)/(gpinfo(l,2)**2)+rdhdt_int(l)/(gpinfo(l,1)*gpinfo(l,2)**3))/gpinfo(l,3)+&
-   !                ! & (gpinfo(l+1,4)/(gpinfo(l+1,2)**2)+rdhdt_int(l+1)/(gpinfo(l+1,1)*gpinfo(l+1,2)**3))/gpinfo(l+1,3))*(gpinfo(l+1,1)-gpinfo(l,1))
-   !                ptmp=ptmp-6.0_WP*fs%visc_g*((rdhdt_int(l)/(gpinfo(l,1)*gpinfo(l,2)**3))/gpinfo(l,3)+&
-   !                & (rdhdt_int(l+1)/(gpinfo(l+1,1)*gpinfo(l+1,2)**3))/gpinfo(l+1,3))*(gpinfo(l+1,1)-gpinfo(l,1))
-   !             end do
-   !             Pg(i,j,k)=ptmp
-   !             ! Pd(i,j,k)=-10**(HamakerC-log10(6*pi*thickness_new(i,j,k)**3))
-   !             Pd(i,j,k)=-HamakerC/(6*pi*thickness_new(i,j,k)**3)
-   !             ! dPgdrtmpval=12.0_WP*fs%visc_g*(gpinfo(rind,4)*thickness_new(i,j,k)+rdhdt_int(rind)/rmag)/(gpinfo(rind,3)*thickness_new(i,j,k)**3)
-   !             ! tmp_r=dot_product(normalize([vf%Gbary(1,i,j,k), vf%Gbary(2,i,j,k),vf%Gbary(3,i,j,k)]-[x0,y0,z0]),dmoi(n,:,1))*dmoi(n,:,1) &
-   !             ! &    +dot_product(normalize([vf%Gbary(1,i,j,k), vf%Gbary(2,i,j,k),vf%Gbary(3,i,j,k)]-[x0,y0,z0]),dmoi(n,:,2))*dmoi(n,:,2) 
-   !             ! do ll =1,3
-   !             !    do mm = 1,3
-   !             !       dPgdr(ll,mm,i,j,k)=dPgdrtmpval*dmoi(n,ll,3)*tmp_r(mm)
-   !             !    end do 
-   !             ! end do
-   !             dPgdr(i,j,k)=12.0_WP*fs%visc_g*(gpinfo(rind,4)*thickness_new(i,j,k)+rdhdt_int(rind)/rmag)/(gpinfo(rind,3)*thickness_new(i,j,k)**3)
-   !          end do
-   !          deallocate(gpinfo,rdhdt_int)
-   !       end if
-   !       deallocate(gpinfo_)
-   !    end do
-   !    ! Pg=Pg*10.0_WP
-   !    call cfg%sync(Pg)
-   !    call cfg%sync(Pd)
-   !    call cfg%sync(dPgdr)
-   !    call cfg%sync(verticalU)
-   !    call cfg%sync(radialU)
-   !    call cfg%sync(region_indicator)
-   !    contains
-   !       !> Function that identifies cells that need a label
-   !       logical function make_label(i,j,k)
-   !       implicit none
-   !       integer, intent(in) :: i,j,k
-   !       ! if (vf%VF(i,j,k).gt.0.0_WP) then
-   !       if (vf%thin_sensor(i,j,k).eq.2.0_WP) then
-   !          make_label=.true.
-   !       else
-   !          make_label=.false.
-   !       end if
-   !       end function make_label
-
-   !       !> Function that identifies if cell pairs have same label
-   !       logical function same_label(i1,j1,k1,i2,j2,k2)
-   !       implicit none
-   !       integer, intent(in) :: i1,j1,k1,i2,j2,k2
-   !       same_label=.true.
-   !       end function same_label
-
-   ! end subroutine get_gasP
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
@@ -895,9 +749,9 @@ end subroutine get_gasP
       
       ! Allocate work arrays
       allocate_work_arrays: block
-         allocate(resU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(resV(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(resW(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(resU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));resU=0.0_WP
+         allocate(resV(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));resV=0.0_WP
+         allocate(resW(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));resW=0.0_WP
          allocate(Ui  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Ui=0.0_WP
          allocate(Vi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Vi=0.0_WP
          allocate(Wi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Wi=0.0_WP
@@ -909,6 +763,7 @@ end subroutine get_gasP
          allocate(Wsold(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Wsold=0.0_WP 
          allocate(Pg  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Pg=0.0_WP
          allocate(Pd  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Pd=0.0_WP
+         allocate(smag  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));smag=0.0_WP 
          allocate(mask_IB  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));mask_IB=0
          allocate(region_indicator(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));region_indicator=0
          allocate(dPgdr  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));dPgdr  =0.0_WP
@@ -919,7 +774,11 @@ end subroutine get_gasP
          allocate(alpha_x(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(alpha_y(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(alpha_z(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(FX(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FX=0.0_WP
+         allocate(FY(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FY=0.0_WP
+         allocate(FZ(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FZ=0.0_WP
          activated=.false.
+         amax=0.0_WP;anew=0.0_WP;aold=0.0_WP
       end block allocate_work_arrays
       
       
@@ -949,6 +808,7 @@ end subroutine get_gasP
          call vf%initialize(cfg=cfg,reconstruction_method=r2pnet,name='VOF')
          vf%thin_thld_max=1.5_WP
          vf%twoplane_thld2=0.8_WP
+         vf%thin_thld_min=0.0_WP
          ! Initialize two droplets
          call param_read('Droplet 1 diameter',radius1); radius1=0.5_WP*radius1
          call param_read('Droplet 1 position',center1)
@@ -1145,12 +1005,14 @@ end subroutine get_gasP
          ! Add variables to output
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
          call ens_out%add_vector('slipvel',resU,resV,resW)
+         call ens_out%add_vector('currvel',FX,FY,FZ)
          ! call ens_out%add_vector('slipvel',Us,Vs,Ws)
          call ens_out%add_scalar('VOF',vf%VF)
          call ens_out%add_scalar('Indicator',region_indicator)
          call ens_out%add_scalar('pressure',fs%P)
          call ens_out%add_scalar('Gpressure',Pg)
          call ens_out%add_scalar('dPgdr',dPgdr)
+         call ens_out%add_scalar('smag',smag)
          ! call ens_out%add_scalar('curvature',vf%curv)
          ! call ens_out%add_scalar('radialU',radialU)
          ! call ens_out%add_scalar('verticalU',verticalU)
@@ -1290,7 +1152,7 @@ end subroutine get_gasP
             call fs%correct_mfr()
             call fs%get_div()
             ! call fs%add_surface_tension_jump(dt=time%dt,div=fs%div,vf=vf)
-            call fs%add_surface_tension_jump_thin(dt=time%dt,div=fs%div,vf=vf)
+            call fs%add_surface_tension_jump_twoVF(dt=time%dt,div=fs%div,vf=vf)
             fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
             fs%psolv%sol=0.0_WP
             call fs%psolv%solve()
@@ -1310,6 +1172,7 @@ end subroutine get_gasP
          ! Recompute interpolated velocity and divergence
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
+         call record_thickness()
          ! !> Calculate the interpolated velocity, including overlap and ghosts
          interp_vel: block         
             integer :: i,j,k
