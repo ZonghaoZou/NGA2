@@ -1,0 +1,38 @@
+# Parallelization
+Partition :	6 1 1
+
+# Mesh definition
+Lx :	1e-3
+Ly :	1e-3
+Lz :	1e-3
+nx :	96!128!64
+ny :	96!128!64
+nz :	96!128!64
+
+Droplet 1 diameter : 360e-6
+Droplet 1 position : -190-6 -00.0e-6 0
+Droplet 1 velocity : +0.55 0 0
+
+# Droplet 2 definiton
+Droplet 2 diameter : 360e-6
+Droplet 2 position : +200.417-6 0 0 !+200.4167-6 0.0 0!+190-6 +00.0e-6 0
+Droplet 2 velocity : -0.55 0 0
+
+# Fluid properties
+Liquid dynamic viscosity :    2.46e-3!2.128e-3
+Gas dynamic viscosity :       1.76e-5!1.827e-5
+Liquid density :              762.0!762.0
+Gas density :                 1.145!1.225
+Surface tension coefficient : 0.0266!0.0265
+
+# Time integration
+Max timestep size : 1e-6!6e-7!2.0e-6!8e-7
+Max cfl number :    0.8
+Max time :          1.0e-2
+
+# Pressure solver
+Pressure tolerance : 1e-6
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 5e-6
