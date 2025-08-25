@@ -36,7 +36,7 @@ module simulation
    !> Simulation monitor file
    type(monitor) :: mfile,cflfile
    
-   public :: simulation_init,simulation_run,simulation_final,get_gasP,apply_gasP,get_thickness,solveUs,record_thickness
+   public :: simulation_init,simulation_run,simulation_final,get_gasP,apply_gasP,get_thickness,solveUs,record_thickness,attempt_breakup
    
    !> Private work arrays
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
@@ -52,11 +52,12 @@ module simulation
    !> Problem definition
    real(WP), dimension(3) :: center1,center2,vel1,vel2
    real(WP), dimension(3) :: t1,t2,t3
-   real(WP) :: radius1,radius2
-   real(WP), parameter :: HamakerC=4.4e-20_WP  ! Written in log form!
+   real(WP) :: radius1,radius2,thickthd2,thickthd1
+   real(WP) :: HamakerC,lambdaAir
+   ! real(WP), parameter :: HamakerC=5.1e-20_WP  ! Written in log form!
    ! real(WP) :: radius_flatten, radius_flatten_old
-   real(WP) :: anew,aold,amax
-   logical :: activated
+   real(WP) :: anew,aold,amax,minThickness,init_dhdt
+   logical :: activated,breakup
    real(WP) :: x0,y0,z0
    contains
 ! This is based on Zhang and Law's theoretical gas pressure derivation
@@ -75,7 +76,8 @@ subroutine get_gasP
    real(WP), dimension(3,3) :: A
    integer :: info
    integer :: ierr,i,j,k,m,n
-   real(WP) :: x,y,z,lambdaAir,Kn,myvol,xr,yr,rmag,DeltaKn,dlogadt,a_cell,maxdthdt
+   real(WP) :: x,y,z,Kn,myvol,xr,yr,rmag,DeltaKn,dlogadt,a_cell,maxdthdt,minThick1,minThick2
+   real(WP) :: count_thic
    real(WP), dimension(3) :: mybary
    real(WP), dimension(:)    , allocatable :: dgvol
    real(WP), dimension(:)    , allocatable :: dct!,dthc,dthcvol
@@ -84,7 +86,7 @@ subroutine get_gasP
    ! Set indicator to 0
    region_indicator=0; anew=0.0_WP;x0=0.0_WP;y0=0.0_WP;z0=0.0_WP;a_cell=0.0_WP
    Pg=0.0_WP;dPgdr=0.0_WP;maxdthdt=0.0_WP
-   lambdaAir=69e-9_WP
+   ! lambdaAir=69e-9_WP
    mask_IB=1
    ! Query optimal work array size
    if (.not.allocated(work)) then
@@ -131,10 +133,10 @@ subroutine get_gasP
    do n=1,ccl%nstruct
       if (dct(n).eq.0.0_WP) cycle
       ! Get the region gas barycenter
-      ! x0=dgpos(n,1)/dgvol(n)
-      ! y0=dgpos(n,2)/dgvol(n)
-      ! z0=dgpos(n,3)/dgvol(n)
-      x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
+      x0=dgpos(n,1)/dgvol(n)
+      y0=dgpos(n,2)/dgvol(n)
+      z0=dgpos(n,3)/dgvol(n)
+      ! x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
       ! Loop over cells in structure
       do m=1,ccl%struct(n)%n_
           ! Get cell indices
@@ -157,10 +159,10 @@ subroutine get_gasP
    ! Get all the moment of inertia
    do n=1,ccl%nstruct
       if (dct(n).eq.0.0_WP) cycle
-      ! x0=dgpos(n,1)/dgvol(n)
-      ! y0=dgpos(n,2)/dgvol(n)
-      ! z0=dgpos(n,3)/dgvol(n)
-      x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
+      x0=dgpos(n,1)/dgvol(n)
+      y0=dgpos(n,2)/dgvol(n)
+      z0=dgpos(n,3)/dgvol(n)
+      ! x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
       ! Get the moi directions
       A=dmoi(n,:,:)
       call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
@@ -199,6 +201,37 @@ subroutine get_gasP
             lp%p(lp%np_)%Acol=0.0_WP                                                                                  
             lp%p(lp%np_)%Tcol=0.0_WP
          end if
+         ! minThick1=3.5_WP*cfg%min_meshsize; minThick2=3.5_WP*cfg%min_meshsize;init_dhdt=0.0_WP;count_thic=0.0_WP
+         ! do m=1,ccl%struct(n)%n_
+         !    ! Get cell indices
+         !    i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
+         !    minThick1=min(minThick1,thickness_new(i,j,k))
+         !    minThick2=min(minThick1,thickness_old(i,j,k))
+         !    ! print *, thickness_new(i,j,k),thickness_old(i,j,k),thickness_new(i,j,k)-thickness_old(i,j,k)
+         !    ! init_dhdt=max(abs((thickness_new(i,j,k)-thickness_old(i,j,k))/(thickness_old(i,j,k)*time%dt)),init_dhdt)
+
+         !    count_thic=count_thic+1.0_WP
+         !    init_dhdt=(thickness_new(i,j,k)-thickness_old(i,j,k))/(thickness_old(i,j,k)*time%dt)
+         ! end do
+         ! ! do k=cfg%kmin_,cfg%kmax_
+         ! !    do j=cfg%jmin_,cfg%jmax_
+         ! !       do i=cfg%imin_,cfg%imax_
+         ! !          minThick1=min(minThick1,thickness_new(i,j,k))
+         ! !          minThick2=min(minThick1,thickness_old(i,j,k))
+         ! !          ! init_dhdt=max(abs((thickness_new(i,j,k)-thickness_old(i,j,k))/(thickness_old(i,j,k)*time%dt)),init_dhdt)
+         ! !          ! print *, abs(thickness_new(i,j,k)-thickness_old(i,j,k)), i,j,k
+         ! !          init_dhdt=max(abs(thickness_new(i,j,k)-thickness_old(i,j,k)),init_dhdt)
+         ! !       end do
+         ! !    end do
+         ! ! end do
+         ! call MPI_ALLREDUCE(MPI_IN_PLACE,init_dhdt,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr) 
+         ! call MPI_ALLREDUCE(MPI_IN_PLACE,count_thic,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr) 
+         ! if (cfg%amRoot) print *, "HEREERE", abs(init_dhdt)/count_thic
+         ! call MPI_ALLREDUCE(MPI_IN_PLACE,minThick1,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
+         ! call MPI_ALLREDUCE(MPI_IN_PLACE,minThick2,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
+         ! call MPI_ALLREDUCE(MPI_IN_PLACE,init_dhdt,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
+         ! if (cfg%amRoot) print * , "HEREERE", minThick1,minThick2, abs(minThick1-minThick2),init_dhdt
+         ! if (cfg%amRoot) print *, "HEREERE", init_dhdt
          ! Move the particle to the correct processor
          call lp%sync()
       else if (activated) then
@@ -226,11 +259,24 @@ subroutine get_gasP
    ! Now build the gas pressure
    do n=1,ccl%nstruct
       if (dct(n).eq.0.0_WP) cycle
+
+      ! if ((anew.gt. 1.0_WP .and. minThickness .lt. thickthd1) .or. (anew.lt. 1.0_WP .and. minThickness .lt. thickthd2)) then
+      !    do m=1,ccl%struct(n)%n_
+      !       i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
+      !       ! print *, i,j,k,vf%VF(i,j,k)
+      !       ! vf%VFold(i,j,k)=1.0_WP
+      !       vf%VF(i,j,k)=1.0_WP
+      !    end do
+      !    breakup=.true.
+      !    exit
+      ! end if
+      
+      
       ! Get the region gas barycenter
-      ! x0=dgpos(n,1)/dgvol(n)
-      ! y0=dgpos(n,2)/dgvol(n)
-      ! z0=dgpos(n,3)/dgvol(n)
-      x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
+      x0=dgpos(n,1)/dgvol(n)
+      y0=dgpos(n,2)/dgvol(n)
+      z0=dgpos(n,3)/dgvol(n)
+      ! x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
       t1=dmoi(n,:,1); t2=dmoi(n,:,2); t3=dmoi(n,:,3)
       do m=1,ccl%struct(n)%n_
          ! Get cell indices
@@ -252,16 +298,16 @@ subroutine get_gasP
          maxdthdt=max(maxdthdt,abs(thickness_new(i,j,k)-thickness_old(i,j,k)))
          if (region_indicator(i,j,k)==1) then
             ! Gas pressure accounts for both GKE and van der Waals effects 
-            Pg(i,j,k)=3.0_WP*fs%visc_g*(rmag**2-anew**2)*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
+            Pg(i,j,k)=3.0_WP*fs%visc_g*(rmag**2-anew**2)*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)/fs%rho_g
             Pd(i,j,k)=-HamakerC/(6*pi*thickness_new(i,j,k)**3)
-            dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
+            dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)/fs%rho_g
             ! dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
          end if
       end do
    end do
    call MPI_ALLREDUCE(MPI_IN_PLACE,anew,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
    amax=max(amax,anew)
-   ! if (cfg%amRoot) print *, "anew",anew/cfg%min_meshsize,aold/cfg%min_meshsize
+   if (cfg%amRoot) print *, "anew",anew/cfg%min_meshsize,aold/cfg%min_meshsize
    ! if (cfg%amRoot) print *, "dloga", (log(anew)-log(aold)), "d a/anew", (anew-aold)/anew, "d a/aold", (anew-aold)/aold
    ! if (cfg%amRoot) print *, "acell",a_cell/cfg%min_meshsize
    ! if (cfg%amRoot) print *, "x0",x0/cfg%min_meshsize,y0/cfg%min_meshsize,z0/cfg%min_meshsize
@@ -276,6 +322,7 @@ subroutine get_gasP
    call cfg%sync(Pd)
    call cfg%sync(region_indicator)
    call cfg%sync(mask_IB)
+   ! call cfg%sync(vf%VF)
    ! if (cfg%amRoot) print *, radius_flatten,radius_flatten_old, dlogadt!, (radius_flatten-radius_flatten_old)/(time%dt*max(radius_flatten,radius_flatten_old))
    contains
       !> Function that identifies cells that need a label
@@ -326,12 +373,14 @@ end subroutine get_gasP
 
 
    subroutine get_thickness(thickness_in)
+      use mpi_f08
       use vfs_class, only: VFlo,VFhi
+      use parallel,  only: MPI_REAL_WP
       implicit none 
       real(WP), dimension(cfg%imino_:,cfg%jmino_:,cfg%kmino_:), intent(out) :: thickness_in
       real(WP) :: tmplvol,tmpgvol,tmparea
       real(WP), dimension(1:3) :: tmpxvol, tmpL
-      integer :: nneigh_thickness,i,j,k,ii,jj,kk
+      integer :: nneigh_thickness,i,j,k,ii,jj,kk,ierr
       nneigh_thickness=3
       do k=cfg%kmin_,cfg%kmax_
          do j=cfg%jmin_,cfg%jmax_
@@ -353,7 +402,7 @@ end subroutine get_gasP
                if (vf%VF(i,j,k).ge.VFhi) then
                   thickness_in(i,j,k) = 3.5_WP*cfg%min_meshsize
                else if (tmparea .gt. 0.0_WP) then    
-                  thickness_in(i,j,k) = 2.0_WP*tmpgvol/(tmparea+tiny(1.0_WP))
+                  thickness_in(i,j,k) = min(2.0_WP*tmpgvol/(tmparea+tiny(1.0_WP)),3.5_WP*cfg%min_meshsize)
                else
                   thickness_in(i,j,k) = 3.5_WP*cfg%min_meshsize
                end if
@@ -361,28 +410,32 @@ end subroutine get_gasP
          end do 
       end do
       call cfg%sync(thickness_in)
-   end subroutine get_thickness
 
-   subroutine record_thickness()
-      use mpi_f08
-      use parallel,  only: MPI_REAL_WP
-      use string,    only: str_medium
-      implicit none
-      real(WP):: minThickness
-      integer :: i,j,k,iunit,ierr
-      character(len=str_medium) :: filename
       minThickness=3.5_WP*cfg%min_meshsize
       do k=cfg%kmin_,cfg%kmax_
          do j=cfg%jmin_,cfg%jmax_
             do i=cfg%imin_,cfg%imax_
-               minThickness=min(minThickness,thickness_new(i,j,k))
+               minThickness=min(minThickness,thickness_in(i,j,k))
             end do 
          end do 
       end do
       call MPI_ALLREDUCE(MPI_IN_PLACE,minThickness,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
-      ! if (cfg%amRoot) print *, minThickness
-      filename='thickness.csv'
+
+
+   end subroutine get_thickness
+
+   subroutine record_thickness()
+      use param, only: param_read
+      use string,    only: str_medium
+      implicit none
+      real(WP):: We
+      integer :: iunit,ival,ierr
+      character(len=str_medium) :: filename
       if (cfg%amRoot) then
+         call param_read('Weber number',We)
+         ival = nint(We*100)
+         ! build filename as thickness_pXX.csv
+         write(filename,'("thickness_p",I0,".csv")') ival
          open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',position='append',iostat=ierr)
          write(iunit,*) time%t, minThickness
          close(iunit)
@@ -618,7 +671,7 @@ end subroutine get_gasP
             do k=fs%cfg%kmin_,fs%cfg%kmax_
                do j=fs%cfg%jmin_,fs%cfg%jmax_
                   do i=fs%cfg%imin_,fs%cfg%imax_
-                     smag(i,j,k)=sum(fs%divp_x(:,i,j,k)*FX(i:i+1,j,k))+sum(fs%divp_y(:,i,j,k)*FY(i,j:j+1,k))+sum(fs%divp_z(:,i,j,k)*FZ(i,j,k:k+1))/2.0_WP
+                     smag(i,j,k)=sum(fs%divp_x(:,i,j,k)*FX(i:i+1,j,k))+sum(fs%divp_y(:,i,j,k)*FY(i,j:j+1,k))+sum(fs%divp_z(:,i,j,k)*FZ(i,j,k:k+1))
                   end do
                end do
             end do
@@ -690,7 +743,7 @@ end subroutine get_gasP
             call cfg%sync(Us); call cfg%sync(Vs); call cfg%sync(Ws)
          end block get_dmomdt
 
-         if (anew.lt.0.9_WP*amax) then
+         if (anew.lt.0.99_WP*amax) then
             Us=0.0_WP
             Vs=0.0_WP
             Ws=0.0_WP
@@ -727,6 +780,48 @@ end subroutine get_gasP
          ! Ws=Ws-time%dt*resW
       end do
    end subroutine solveUs
+
+   subroutine attempt_breakup
+      implicit none
+      integer :: n,i,j,k,m
+      call ccl%build(make_label,same_label)
+      do n=1,ccl%nstruct
+         if ((anew.gt. 1.0_WP .and. minThickness .lt. thickthd1) .or. (anew.lt. 1.0_WP .and. minThickness .lt. thickthd2).or. breakup) then
+               do m=1,ccl%struct(n)%n_
+                  i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
+                  if (vf%VF(i,j,k).gt.0.5_WP) vf%VF(i,j,k)=1.0_WP
+                  ! if (thickness_new(i,j,k).le.cfg%min_meshsize) vf%VF(i,j,k)=1.0_WP
+               end do
+               breakup=.true.
+               exit
+         end if
+      end do
+      if (breakup) then 
+         Us=0.0_WP
+         Vs=0.0_WP   
+         Ws=0.0_WP
+      end if
+      call cfg%sync(vf%VF)
+      contains
+         !> Function that identifies cells that need a label
+         logical function make_label(i,j,k)
+         implicit none
+         integer, intent(in) :: i,j,k
+         ! if (vf%VF(i,j,k).gt.0.0_WP) then
+         if (vf%thin_sensor(i,j,k).eq.2.0_WP) then! .and.thickness_new(i,j,k).le.1.1*cfg%min_meshsize) then
+            make_label=.true.
+         else
+            make_label=.false.
+         end if
+         end function make_label
+
+         !> Function that identifies if cell pairs have same label
+         logical function same_label(i1,j1,k1,i2,j2,k2)
+         implicit none
+         integer, intent(in) :: i1,j1,k1,i2,j2,k2
+         same_label=.true.
+         end function same_label
+   end subroutine attempt_breakup
    !> Function that defines a level set function for colliding drops problem
    function levelset_colliding_drops(xyz,t) result(G)
       implicit none
@@ -777,8 +872,8 @@ end subroutine get_gasP
          allocate(FX(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FX=0.0_WP
          allocate(FY(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FY=0.0_WP
          allocate(FZ(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FZ=0.0_WP
-         activated=.false.
-         amax=0.0_WP;anew=0.0_WP;aold=0.0_WP
+         activated=.false.; breakup=.false.
+         amax=0.0_WP;anew=0.0_WP;aold=0.0_WP;init_dhdt=3.5_WP*cfg%min_meshsize
       end block allocate_work_arrays
       
       
@@ -800,7 +895,8 @@ end subroutine get_gasP
          integer :: i,j,k,n,si,sj,sk
          real(WP), dimension(3,8) :: cube_vertex
          real(WP), dimension(3) :: v_cent,a_cent
-         real(WP) :: vol,area
+         real(WP) :: vol,area,Lx,init_dist,ip
+         integer:: nx
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver with r2p reconstruction
          ! call vf%initialize(cfg=cfg,reconstruction_method=r2pnet,name='VOF')
@@ -810,10 +906,11 @@ end subroutine get_gasP
          vf%twoplane_thld2=0.8_WP
          vf%thin_thld_min=0.0_WP
          ! Initialize two droplets
-         call param_read('Droplet 1 diameter',radius1); radius1=0.5_WP*radius1
-         call param_read('Droplet 1 position',center1)
-         call param_read('Droplet 2 diameter',radius2); radius2=0.5_WP*radius2
-         call param_read('Droplet 2 position',center2)
+         call param_read('Lx',Lx); call param_read('nx',nx)
+         call param_read('Initial Location',init_dist); call param_read('Impact Parameter',ip)
+         radius1=1.0_WP;radius2=1.0_WP
+         center1=[-1.1_WP,-ip,0.0_WP]; center2=[1.1_WP+Lx/nx,+ip,0.0_WP]
+         call param_read('Threshold 1', thickthd1); call param_read('Threshold 2', thickthd2)
          do k=cfg%kmino_,cfg%kmaxo_
             do j=cfg%jmino_,cfg%jmaxo_
                do i=cfg%imino_,cfg%imaxo_
@@ -891,17 +988,23 @@ end subroutine get_gasP
          use hypre_str_class, only: pcg_pfmg2
          use mathtools,       only: Pi
          integer :: i,j,k
+         real(WP) :: Re,We,r,m
          real(WP), dimension(3) :: xyz
          ! Create flow solver
          fs=tpns(cfg=cfg,name='Two-phase NS')
-         ! Assign constant viscosity to each phase
-         call param_read('Liquid dynamic viscosity',fs%visc_l)
-         call param_read('Gas dynamic viscosity',fs%visc_g)
-         ! Assign constant density to each phase
-         call param_read('Liquid density',fs%rho_l)
-         call param_read('Gas density',fs%rho_g)
-         ! Read in surface tension coefficient
-         call param_read('Surface tension coefficient',fs%sigma)
+
+         ! Read in adimensional parameters
+         call param_read('Reynolds number',Re)   ! Re=rho_l*2U*2R0/mu_l=4/mu_l
+         call param_read('Weber number',We)      ! We=2R0rho_l(2U)^2/sigma=8/sigma
+         call param_read('Density ratio',r)      ! r=rho_l/rho_g=1/rho_g
+         call param_read('Viscosity ratio',m)    ! m=mu_l/mu_g
+         call param_read('Hamaker Constant',HamakerC)    ! m=mu_l/mu_g
+         call param_read('Mean Free Path',lambdaAir)    
+         fs%rho_l=1.0_WP 
+         fs%rho_g=fs%rho_l/r
+         fs%visc_l=(Re/4.0_WP)**(-1.0_WP)
+         fs%visc_g=fs%visc_l/m
+         fs%sigma=(We/8.0_WP)**(-1.0_WP)
          ! Configure pressure solver
          ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg2,nst=7)
          ps%maxlevel=20
@@ -912,8 +1015,8 @@ end subroutine get_gasP
          ! Setup the solver
          call fs%setup(pressure_solver=ps)!,implicit_solver=vs)
          ! Initial droplet velocity
-         call param_read('Droplet 1 velocity',vel1)
-         call param_read('Droplet 2 velocity',vel2)
+         vel1=[+1.0_WP,0.0_WP,0.0_WP]
+         vel2=[-1.0_WP,0.0_WP,0.0_WP]
          do k=fs%cfg%kmino_,fs%cfg%kmaxo_
             do j=fs%cfg%jmino_,fs%cfg%jmaxo_
                do i=fs%cfg%imino_,fs%cfg%imaxo_
@@ -1103,15 +1206,21 @@ end subroutine get_gasP
          ! ! Get the two thickness to integrate gas pressure field
          thickness_old=thickness_new
          call get_thickness(thickness_new)
-         call get_gasP()
-         ! ! Based on the pressure, we can produce a grad Pg as a forcing for the slip velocity
-         call solveUs()
-         resU=fs%U+Us*alpha_x!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-         resV=fs%V+Vs*alpha_y!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-         resW=fs%W+Ws*alpha_z!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-         ! VOF solver step
-         ! call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)
-         call vf%advance(dt=time%dt,U=resU,V=resV,W=resW)
+         if (.not. breakup) then
+            call get_gasP()
+            ! ! Based on the pressure, we can produce a grad Pg as a forcing for the slip velocity
+            call solveUs()
+            resU=fs%U+Us*alpha_x!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
+            resV=fs%V+Vs*alpha_y!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
+            resW=fs%W+Ws*alpha_z!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
+            call vf%advance(dt=time%dt,U=resU,V=resV,W=resW)
+         else
+         ! VOF solver ste
+            ! Remember old VOF
+            vf%VFold=vf%VF
+            call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)
+         end if
+         
          
          ! Prepare new staggered viscosity (at n+1)
          call fs%get_viscosity(vf=vf,strat=harmonic_visc)
@@ -1173,6 +1282,7 @@ end subroutine get_gasP
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
          call record_thickness()
+         ! call attempt_breakup()
          ! !> Calculate the interpolated velocity, including overlap and ghosts
          interp_vel: block         
             integer :: i,j,k
