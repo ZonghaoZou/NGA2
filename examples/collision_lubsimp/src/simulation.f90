@@ -36,37 +36,33 @@ module simulation
    !> Simulation monitor file
    type(monitor) :: mfile,cflfile
    
-   public :: simulation_init,simulation_run,simulation_final,get_gasP,apply_gasP,get_thickness,solveUs,record_thickness,attempt_breakup
+   public :: simulation_init,simulation_run,simulation_final,get_gasVel,get_thickness,record_thickness
    
    !> Private work arrays
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    real(WP), dimension(:,:,:), allocatable :: Us,Vs,Ws
-   real(WP), dimension(:,:,:), allocatable :: Usold,Vsold,Wsold
-   real(WP), dimension(:,:,:), allocatable :: Pg,Pd,dPgdr,alpha_x,alpha_y,alpha_z,smag
-   real(WP), dimension(:,:,:), allocatable :: radialU,verticalU
    real(WP), dimension(:,:,:), allocatable :: thickness_old,thickness_new
-   real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
    integer,  dimension(:,:,:), allocatable :: region_indicator,mask_IB
    
    !> Problem definition
    real(WP), dimension(3) :: center1,center2,vel1,vel2
-   real(WP), dimension(3) :: t1,t2,t3
-   real(WP) :: radius1,radius2,thickthd2,thickthd1
+   real(WP) :: radius1,radius2
    real(WP) :: HamakerC,lambdaAir
-   ! real(WP), parameter :: HamakerC=5.1e-20_WP  ! Written in log form!
-   ! real(WP) :: radius_flatten, radius_flatten_old
-   real(WP) :: anew,aold,amax,minThickness,init_dhdt
-   logical :: activated,breakup
-   real(WP) :: x0,y0,z0
+   real(WP) :: anew,aold,amax,minThickness,thickthd1,thickthd2,mulfact,thicknew,minThicknessold
+   real(WP) :: meshaligned_angle
+   integer :: curr_case,mesh_ratio
+   logical :: activated,breakup,default
    contains
 ! This is based on Zhang and Law's theoretical gas pressure derivation
-subroutine get_gasP
+subroutine get_gasVel
    use irl_fortran_interface
    use mpi_f08
    use parallel,  only: MPI_REAL_WP
    use mathtools, only: pi,normalize
    use messager,  only: die
+   use vfs_class, only: VFlo,VFhi
+   use string,    only: str_medium
    implicit none
    ! Parameters for moment of inertia
    real(WP), dimension(:), allocatable, save :: work !< Saved!
@@ -75,33 +71,32 @@ subroutine get_gasP
    real(WP), dimension(3) :: d
    real(WP), dimension(3,3) :: A
    integer :: info
-   integer :: ierr,i,j,k,m,n
-   real(WP) :: x,y,z,Kn,myvol,xr,yr,rmag,DeltaKn,dlogadt,a_cell,maxdthdt,minThick1,minThick2
-   real(WP) :: count_thic
-   real(WP), dimension(3) :: mybary
-   real(WP), dimension(:)    , allocatable :: dgvol
-   real(WP), dimension(:)    , allocatable :: dct!,dthc,dthcvol
-   real(WP), dimension(:,:)  , allocatable :: dgpos
-   real(WP), dimension(:,:,:), allocatable :: dmoi
+   integer :: ierr,i,j,k,m,n,iunit
+   real(WP) :: x,y,z,myvol,a_cell,Kn,xr,yr,zr
+   real(WP) :: x0,y0,z0,dhdt,thickold,DeltaKn,dlogadt
+   character(len=str_medium) :: filename
+   real(WP), dimension(3) :: mybary,t1,t2,t3
+   real(WP), dimension(:)    , allocatable :: fgvol
+   real(WP), dimension(:)    , allocatable :: fct
+   real(WP), dimension(:,:)  , allocatable :: fgpos
+   real(WP), dimension(:,:,:), allocatable :: fmoi
+   
    ! Set indicator to 0
-   region_indicator=0; anew=0.0_WP;x0=0.0_WP;y0=0.0_WP;z0=0.0_WP;a_cell=0.0_WP
-   Pg=0.0_WP;dPgdr=0.0_WP;maxdthdt=0.0_WP
-   ! lambdaAir=69e-9_WP
-   mask_IB=1
+   anew=0.0_WP;x0=0.0_WP;y0=0.0_WP;z0=0.0_WP;a_cell=0.0_WP
+   mask_IB=1;thickold=0.0_WP;thicknew=0.0_WP;dhdt=0.0_WP
    ! Query optimal work array size
    if (.not.allocated(work)) then
       call dsyev('V','U',3,A,3,d,lwork_query,-1,info)
       lwork=int(lwork_query(1)); allocate(work(lwork))
    end if
-
    ! Build ccl to get the thin gas region for caculating gas pressure
    call ccl%build(make_label,same_label)
 
    ! Allocate fields for calculation
-   allocate(dgvol(1:ccl%nstruct        )); dgvol=0.0_WP
-   allocate(dct  (1:ccl%nstruct        )); dct=0.0_WP
-   allocate(dgpos(1:ccl%nstruct,1:3    )); dgpos=0.0_WP
-   allocate(dmoi (1:ccl%nstruct,1:3,1:3)); dmoi =0.0_WP
+   allocate(fgvol(1:ccl%nstruct        )); fgvol=0.0_WP
+   allocate(fct  (1:ccl%nstruct        )); fct=0.0_WP
+   allocate(fgpos(1:ccl%nstruct,1:3    )); fgpos=0.0_WP
+   allocate(fmoi (1:ccl%nstruct,1:3,1:3)); fmoi =0.0_WP
 
    ! First pass to accumulate position for moment of inertia
    do n=1,ccl%nstruct
@@ -109,91 +104,90 @@ subroutine get_gasP
       do m=1,ccl%struct(n)%n_
          ! Get cell indices
          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-         ! Get cell position, accounting for periodicity
-         x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL
-         y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL
-         z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL
+         x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL!x=vf%Gbary(1,i,j,k)-ccl%struct(n)%per(1)*cfg%xL! x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL
+         y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL!y=vf%Gbary(2,i,j,k)-ccl%struct(n)%per(2)*cfg%yL! y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL
+         z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL!z=vf%Gbary(3,i,j,k)-ccl%struct(n)%per(3)*cfg%zL! z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL
          ! Accumulate volume and position
-         if (thickness_new(i,j,k).le.0.6*cfg%min_meshsize) then
-            dgvol(n  )=dgvol(n  )+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))
-            dgpos(n,:)=dgpos(n,:)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*[x,y,z]
-         ! Getting the flattened radius based on gas volume and film thickness
-            dct(n)=dct(n)+1.0_WP
-            ! end if
-            region_indicator(i,j,k)=1
+         if (thickness_new(i,j,k).le.0.7_WP*cfg%min_meshsize) then
+            fgvol(n  )=fgvol(n  )+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))
+            fgpos(n,:)=fgpos(n,:)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*[x,y,z]
+            thickold=thickold+thickness_old(i,j,k)
+            thicknew=thicknew+thickness_new(i,j,k)
+            fct(n)=fct(n)+1.0_WP
             mask_IB(i,j,k)=0
          end if 
      end do 
-   end do 
-   call MPI_ALLREDUCE(MPI_IN_PLACE,dgvol,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,dgpos,3*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,dct,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-   
+   end do
+   call cfg%sync(mask_IB)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fgvol   ,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fgpos   ,3*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fct     ,1*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,thickold,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,thicknew,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
    ! Second pass to accumulate moment of inertia
    do n=1,ccl%nstruct
-      if (dct(n).eq.0.0_WP) cycle
+      if (fct(n).eq.0.0_WP) cycle
       ! Get the region gas barycenter
-      x0=dgpos(n,1)/dgvol(n)
-      y0=dgpos(n,2)/dgvol(n)
-      z0=dgpos(n,3)/dgvol(n)
-      ! x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
+      x0=fgpos(n,1)/fgvol(n)
+      y0=fgpos(n,2)/fgvol(n)
+      z0=fgpos(n,3)/fgvol(n)
+      thicknew=thicknew/fct(n)
+      thickold=thickold/fct(n)
+      dhdt=(thicknew-thickold)/time%dt
       ! Loop over cells in structure
       do m=1,ccl%struct(n)%n_
           ! Get cell indices
           i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-          ! Get cell position relative to drop barycenter, accounting for periodicity
-          x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL-x0
-          y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL-y0
-          z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL-z0
+          x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL-x0!x=vf%Gbary(1,i,j,k)-ccl%struct(n)%per(1)*cfg%xL-x0!  x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL-x0
+          y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL-y0!y=vf%Gbary(2,i,j,k)-ccl%struct(n)%per(2)*cfg%yL-y0!  y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL-y0
+          z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL-z0!z=vf%Gbary(3,i,j,k)-ccl%struct(n)%per(3)*cfg%zL-z0!  z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL-z0
           ! Accumulate moment of inertia
-          dmoi(n,2,2)=dmoi(n,2,2)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(z**2+x**2)
-          dmoi(n,3,3)=dmoi(n,3,3)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x**2+y**2)
-          dmoi(n,1,1)=dmoi(n,1,1)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y**2+z**2)
-          dmoi(n,1,2)=dmoi(n,1,2)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*y)
-          dmoi(n,1,3)=dmoi(n,1,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*z)
-          dmoi(n,2,3)=dmoi(n,2,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y*z)
+          fmoi(n,2,2)=fmoi(n,2,2)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(z**2+x**2)
+          fmoi(n,3,3)=fmoi(n,3,3)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x**2+y**2)
+          fmoi(n,1,1)=fmoi(n,1,1)+cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y**2+z**2)
+          fmoi(n,1,2)=fmoi(n,1,2)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*y)
+          fmoi(n,1,3)=fmoi(n,1,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(x*z)
+          fmoi(n,2,3)=fmoi(n,2,3)-cfg%vol(i,j,k)*(1.0_WP-vf%VF(i,j,k))*(y*z)
       end do
    end do
-   call MPI_ALLREDUCE(MPI_IN_PLACE,dmoi,9*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
-
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fmoi,9*ccl%nstruct,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
    ! Get all the moment of inertia
    do n=1,ccl%nstruct
-      if (dct(n).eq.0.0_WP) cycle
-      x0=dgpos(n,1)/dgvol(n)
-      y0=dgpos(n,2)/dgvol(n)
-      z0=dgpos(n,3)/dgvol(n)
-      ! x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
+      if (fct(n).eq.0.0_WP) cycle
+      x0=fgpos(n,1)/fgvol(n)
+      y0=fgpos(n,2)/fgvol(n)
+      z0=fgpos(n,3)/fgvol(n)
       ! Get the moi directions
-      A=dmoi(n,:,:)
+      A=fmoi(n,:,:)
       call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
-      dmoi(n,:,:)=A ! dmoi(n,:,1) and dmoi(n,:,2) are the two principle axes marking the tagential plane
+      fmoi(n,:,:)=A ! fmoi(n,:,1) and fmoi(n,:,2) are the two principle axes marking the tagential plane
+      t1=fmoi(n,:,1); t2=fmoi(n,:,2); t3=fmoi(n,:,3)
       do m=1,ccl%struct(n)%n_
          ! Get cell indices
          i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
          ! Get cell position relative to drop barycenter, accounting for periodicity
-         x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL-x0
-         y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL-y0
-         z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL-z0
-         xr=dot_product([x,y,z],dmoi(n,:,1)); yr=dot_product([x,y,z],dmoi(n,:,2))
+         x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL-x0!x=vf%Gbary(1,i,j,k)-ccl%struct(n)%per(1)*cfg%xL-x0!
+         y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL-y0!y=vf%Gbary(2,i,j,k)-ccl%struct(n)%per(2)*cfg%yL-y0!
+         z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL-z0!z=vf%Gbary(3,i,j,k)-ccl%struct(n)%per(3)*cfg%zL-z0!
+         xr=dot_product([x,y,z],fmoi(n,:,1)); yr=dot_product([x,y,z],fmoi(n,:,2))
          a_cell=max(sqrt(xr**2+yr**2),a_cell)
       end do
    end do
    call MPI_ALLREDUCE(MPI_IN_PLACE,a_cell,1*ccl%nstruct,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
    do n=1,ccl%nstruct
-      if (dct(n).eq.0.0_WP) cycle
+      if (fct(n).eq.0.0_WP) cycle
       ! If this is first time detected a thin gas region use the cell based estimation
       if (.not. activated .and. ccl%nstruct.ge.1)  then
          ! Estimation of the flattened radius
          activated=.true.
          anew=a_cell
          aold=anew
-         ! print *, dthcvol(n),  dthc(n),anew, aold,activated
          if (cfg%amRoot) then
             lp%np_=lp%np_+1
             call lp%resize(lp%np_)
             lp%p(lp%np_)%id=int(1,8)
             lp%p(lp%np_)%d=1.0e-7_WP 
-            lp%p(lp%np_)%pos=anew*dmoi(n,:,1)+[x0,y0,z0]
+            lp%p(lp%np_)%pos=anew*fmoi(n,:,1)+[x0,y0,z0]
             lp%p(lp%np_)%vel =0.0_WP
             lp%p(lp%np_)%ind =cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])     
             lp%p(lp%np_)%flag=0                                                                                        
@@ -201,37 +195,6 @@ subroutine get_gasP
             lp%p(lp%np_)%Acol=0.0_WP                                                                                  
             lp%p(lp%np_)%Tcol=0.0_WP
          end if
-         ! minThick1=3.5_WP*cfg%min_meshsize; minThick2=3.5_WP*cfg%min_meshsize;init_dhdt=0.0_WP;count_thic=0.0_WP
-         ! do m=1,ccl%struct(n)%n_
-         !    ! Get cell indices
-         !    i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-         !    minThick1=min(minThick1,thickness_new(i,j,k))
-         !    minThick2=min(minThick1,thickness_old(i,j,k))
-         !    ! print *, thickness_new(i,j,k),thickness_old(i,j,k),thickness_new(i,j,k)-thickness_old(i,j,k)
-         !    ! init_dhdt=max(abs((thickness_new(i,j,k)-thickness_old(i,j,k))/(thickness_old(i,j,k)*time%dt)),init_dhdt)
-
-         !    count_thic=count_thic+1.0_WP
-         !    init_dhdt=(thickness_new(i,j,k)-thickness_old(i,j,k))/(thickness_old(i,j,k)*time%dt)
-         ! end do
-         ! ! do k=cfg%kmin_,cfg%kmax_
-         ! !    do j=cfg%jmin_,cfg%jmax_
-         ! !       do i=cfg%imin_,cfg%imax_
-         ! !          minThick1=min(minThick1,thickness_new(i,j,k))
-         ! !          minThick2=min(minThick1,thickness_old(i,j,k))
-         ! !          ! init_dhdt=max(abs((thickness_new(i,j,k)-thickness_old(i,j,k))/(thickness_old(i,j,k)*time%dt)),init_dhdt)
-         ! !          ! print *, abs(thickness_new(i,j,k)-thickness_old(i,j,k)), i,j,k
-         ! !          init_dhdt=max(abs(thickness_new(i,j,k)-thickness_old(i,j,k)),init_dhdt)
-         ! !       end do
-         ! !    end do
-         ! ! end do
-         ! call MPI_ALLREDUCE(MPI_IN_PLACE,init_dhdt,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr) 
-         ! call MPI_ALLREDUCE(MPI_IN_PLACE,count_thic,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr) 
-         ! if (cfg%amRoot) print *, "HEREERE", abs(init_dhdt)/count_thic
-         ! call MPI_ALLREDUCE(MPI_IN_PLACE,minThick1,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
-         ! call MPI_ALLREDUCE(MPI_IN_PLACE,minThick2,1,MPI_REAL_WP,MPI_MIN,cfg%comm,ierr)
-         ! call MPI_ALLREDUCE(MPI_IN_PLACE,init_dhdt,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
-         ! if (cfg%amRoot) print * , "HEREERE", minThick1,minThick2, abs(minThick1-minThick2),init_dhdt
-         ! if (cfg%amRoot) print *, "HEREERE", init_dhdt
          ! Move the particle to the correct processor
          call lp%sync()
       else if (activated) then
@@ -241,89 +204,146 @@ subroutine get_gasP
             lp%p(lp%np_)%vel = cfg%get_velocity(pos=lp%p(lp%np_)%pos,i0=lp%p(lp%np_)%ind(1),j0=lp%p(lp%np_)%ind(2),k0=lp%p(lp%np_)%ind(3),U=fs%U,V=fs%V,W=fs%W)
             lp%p(lp%np_)%pos = lp%p(lp%np_)%pos + time%dt*lp%p(lp%np_)%vel
             lp%p(lp%np_)%ind =cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])     
-            xr=dot_product(lp%p(lp%np_)%pos,dmoi(n,:,1)); yr=dot_product(lp%p(lp%np_)%pos,dmoi(n,:,2))
+            xr=dot_product(lp%p(lp%np_)%pos,fmoi(n,:,1)); yr=dot_product(lp%p(lp%np_)%pos,fmoi(n,:,2))
             anew=sqrt(xr**2+yr**2)
             if (abs(anew-a_cell).gt.0.1_WP*a_cell) then
                anew=a_cell
-               lp%p(lp%np_)%pos = anew*dmoi(n,:,1)+[x0,y0,z0]
+               lp%p(lp%np_)%pos = anew*fmoi(n,:,1)+[x0,y0,z0]
                lp%p(lp%np_)%ind =cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])     
             end if
          end do
-         
          call MPI_ALLREDUCE(MPI_IN_PLACE,anew,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
          ! Move the particle to the correct processor
          call lp%sync()
       end if
    end do
-
-   ! Now build the gas pressure
-   do n=1,ccl%nstruct
-      if (dct(n).eq.0.0_WP) cycle
-
-      ! if ((anew.gt. 1.0_WP .and. minThickness .lt. thickthd1) .or. (anew.lt. 1.0_WP .and. minThickness .lt. thickthd2)) then
-      !    do m=1,ccl%struct(n)%n_
-      !       i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-      !       ! print *, i,j,k,vf%VF(i,j,k)
-      !       ! vf%VFold(i,j,k)=1.0_WP
-      !       vf%VF(i,j,k)=1.0_WP
-      !    end do
-      !    breakup=.true.
-      !    exit
-      ! end if
-      
-      
-      ! Get the region gas barycenter
-      x0=dgpos(n,1)/dgvol(n)
-      y0=dgpos(n,2)/dgvol(n)
-      z0=dgpos(n,3)/dgvol(n)
-      ! x0=0.5_WP*cfg%min_meshsize; y0=0.0_WP; z0=0.0_WP
-      t1=dmoi(n,:,1); t2=dmoi(n,:,2); t3=dmoi(n,:,3)
-      do m=1,ccl%struct(n)%n_
-         ! Get cell indices
-         i=ccl%struct(n)%map(1,m); j=ccl%struct(n)%map(2,m); k=ccl%struct(n)%map(3,m)
-         ! Get cell position relative to drop barycenter, accounting for periodicity
-         x=vf%cfg%xm(i)-ccl%struct(n)%per(1)*cfg%xL-x0
-         y=vf%cfg%ym(j)-ccl%struct(n)%per(2)*cfg%yL-y0
-         z=vf%cfg%zm(k)-ccl%struct(n)%per(3)*cfg%zL-z0
-         ! Get the r magnitude
-         xr=dot_product([x,y,z],dmoi(n,:,1)); yr=dot_product([x,y,z],dmoi(n,:,2))
-         rmag=sqrt(xr**2+yr**2)
-         Kn=lambdaAir/thickness_new(i,j,k)
-         if (Kn .ge.1) then
-            DeltaKn = 8.7583_WP*Kn**1.1551
-         else
-            DeltaKn = 1.0_WP + 6.0966_WP*Kn + 0.965_WP*Kn**2 +0.6967_WP*Kn**3
-         end if
-         dlogadt=(log(anew)-log(aold))/time%dt
-         maxdthdt=max(maxdthdt,abs(thickness_new(i,j,k)-thickness_old(i,j,k)))
-         if (region_indicator(i,j,k)==1) then
-            ! Gas pressure accounts for both GKE and van der Waals effects 
-            Pg(i,j,k)=3.0_WP*fs%visc_g*(rmag**2-anew**2)*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)/fs%rho_g
-            Pd(i,j,k)=-HamakerC/(6*pi*thickness_new(i,j,k)**3)
-            dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k))+2*thickness_new(i,j,k)*(log(anew)-log(aold)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)/fs%rho_g
-            ! dPgdr(i,j,k)=6.0_WP*fs%visc_g*rmag*((thickness_new(i,j,k)-thickness_old(i,j,k)))/(time%dt*DeltaKn*thickness_new(i,j,k)**3)
-         end if
-      end do
-   end do
-   call MPI_ALLREDUCE(MPI_IN_PLACE,anew,1,MPI_REAL_WP,MPI_MAX,cfg%comm,ierr)
-   amax=max(amax,anew)
-   if (cfg%amRoot) print *, "anew",anew/cfg%min_meshsize,aold/cfg%min_meshsize
-   ! if (cfg%amRoot) print *, "dloga", (log(anew)-log(aold)), "d a/anew", (anew-aold)/anew, "d a/aold", (anew-aold)/aold
-   ! if (cfg%amRoot) print *, "acell",a_cell/cfg%min_meshsize
-   ! if (cfg%amRoot) print *, "x0",x0/cfg%min_meshsize,y0/cfg%min_meshsize,z0/cfg%min_meshsize
-   ! ! if (cfg%amRoot) print *, x0/cfg%min_meshsize,y0/cfg%min_meshsize,z0/cfg%min_meshsize
-   ! do i = 1, lp%np_
-   !    print *, "PPos", lp%p(lp%np_)%pos/cfg%min_meshsize
-   ! end do
-   ! if (cfg%amRoot) print *, maxdthdt, maxdthdt/time%dt
-
+   ! Get global parameters
+   ! Kn=lambdaAir/thicknew
+   thicknew=minThickness
+   thickold=minThicknessold
+   dlogadt=(log(anew)-log(aold))/time%dt
+   dhdt=(thicknew-thickold)/time%dt
    aold=anew
-   call cfg%sync(Pg)
-   call cfg%sync(Pd)
-   call cfg%sync(region_indicator)
-   call cfg%sync(mask_IB)
-   ! call cfg%sync(vf%VF)
-   ! if (cfg%amRoot) print *, radius_flatten,radius_flatten_old, dlogadt!, (radius_flatten-radius_flatten_old)/(time%dt*max(radius_flatten,radius_flatten_old))
+   ! thicknew=minThickness
+   Kn=lambdaAir/thicknew
+   if (Kn .ge.1) then
+      DeltaKn = 8.7583_WP*Kn**1.1551
+   else
+      DeltaKn = 1.0_WP + 6.0966_WP*Kn + 0.965_WP*Kn**2 +0.6967_WP*Kn**3
+   end if
+   dlogadt=0.0_WP
+   ! if (cfg%amRoot) print *, "t1: ", t1, "t2: ",t2,"t3: ",t3
+   ! DeltaKn=1.0_WP
+   ! dlogadt=0.0_WP
+   ! if (cfg%amRoot) then
+   !    ! write(filename,'("thickness_p",I0,".csv")') 
+   !    filename="output.txt"
+   !    open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',position='append',iostat=ierr)
+   !    write(iunit,*) time%t,"dlogadt", dlogadt, "dhdt",dhdt,"hnew",thicknew,"hold",thickold,"anew", anew, "aold", aold, "anewm",anew/cfg%min_meshsize,"aoldm", aold/cfg%min_meshsize,"dt", time%dt
+   !    close(iunit)
+   ! end if
+   ! if (cfg%amRoot) print *, "dlogadt", dlogadt, "dhdt",dhdt,"hnew",thicknew,"hold",thickold,"anew", anew, "aold", aold, "anewm",anew/cfg%min_meshsize,"aoldm", aold/cfg%min_meshsize,"dt", time%dt
+   ! We can now directly prescribe my gas lubrication velocity in r and z directions
+   getUs: block
+      real(WP) :: Ur,Uz,rmag
+      real(WP), dimension(3) :: er,ef
+      integer, dimension(:,:,:), allocatable :: mask_IB_x,mask_IB_y,mask_IB_z,tmp_mask
+      allocate(tmp_mask(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));tmp_mask=mask_IB
+      ! ! Extend mask_IB for one more layer
+      ! do k=cfg%kmin_,cfg%kmax_
+      !    do j=cfg%jmin_,cfg%jmax_
+      !       do i=cfg%imin_,cfg%imax_
+      !          if (mask_IB(i,j,k).eq.0) then
+      !             tmp_mask(i-1,j,k)=0; tmp_mask(i+1,j,k)=0
+      !             tmp_mask(i,j-1,k)=0; tmp_mask(i,j+1,k)=0
+      !             tmp_mask(i,j,k-1)=0; tmp_mask(i,j,k+1)=0
+      !          end if
+      !       end do 
+      !    end do 
+      ! end do 
+      ! call cfg%sync(tmp_mask); mask_IB=tmp_mask
+      allocate(mask_IB_x(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_x=1
+      allocate(mask_IB_y(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_y=1
+      allocate(mask_IB_z(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_z=1
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               if (sum(mask_IB(i-1:i,j,k)).lt.2) mask_IB_x(i,j,k)=0
+               if (sum(mask_IB(i,j-1:j,k)).lt.2) mask_IB_y(i,j,k)=0
+               if (sum(mask_IB(i,j,k-1:k)).lt.2) mask_IB_z(i,j,k)=0
+            end do 
+         end do 
+      end do 
+      ! Handle non-periodic borders
+      if (.not.cfg%xper.and.cfg%iproc.eq.1) mask_IB_x(cfg%imino,:,:)=mask_IB(cfg%imino,:,:)
+      if (.not.cfg%yper.and.cfg%jproc.eq.1) mask_IB_y(:,cfg%jmino,:)=mask_IB(:,cfg%jmino,:)
+      if (.not.cfg%zper.and.cfg%kproc.eq.1) mask_IB_z(:,:,cfg%kmino)=mask_IB(:,:,cfg%kmino)
+      call cfg%sync(mask_IB_x)
+      call cfg%sync(mask_IB_y)
+      call cfg%sync(mask_IB_z)
+
+      Us=0.0_WP;Vs=0.0_WP;Ws=0.0_WP
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               if (mask_IB_x(i,j,k).eq.0) then
+                  x=cfg%x(i)-x0; y=cfg%ym(j)-y0; z=cfg%zm(k)-z0
+                  xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2); zr=dot_product([x,y,z],t3)
+                  rmag=sqrt(xr**2+yr**2); er=normalize(xr*t1+yr*t2); ef=[1.0_WP,0.0_WP,0.0_WP]
+                  ! Ur=2.0_WP*rmag*(2.0_WP*(DeltaKn-1.0_WP)*dlogadt*thicknew-dhdt)/(2.0_WP*DeltaKn*thicknew)
+                  Ur=rmag*(2.0_WP*(DeltaKn-1.0_WP)*dlogadt*thicknew-dhdt)/(2.0_WP*DeltaKn*thicknew)
+                  Uz=mulfact*(2*(5.0_WP-4.0_WP*DeltaKn)*dlogadt*thicknew+5.0_WP*dhdt)/(16*DeltaKn)
+                  ! Ur=mulfact*-rmag*(dlogadt*(DeltaKn-1.0_WP)+DeltaKn*dhdt/(2.0_WP*thicknew))
+                  ! Uz=mulfact*(2.0_WP*dlogadt*thicknew*(5*DeltaKn-4.0_WP)+5*DeltaKn*dhdt)/16.0_WP
+                  ! if (vf%VF(i-1,j,k).gt.VFlo.and.vf%VF(i-1,j,k).lt.VFhi .and. vf%VF(i,j,k).gt.VFlo.and.vf%VF(i,j,k).lt.VFhi) then
+                  ! if (abs(zr))
+                  !    ! Could add another constraint on seeing if the face is contained in gas, but skip that for now
+                     ! Us(i,j,k)=Ur*dot_product(er,ef)
+                  ! else
+                     Us(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz
+                  ! end if
+                  ! Us(i,j,k)=sign(1.0_WP,dot_product([x,y,z],t3))*dot_product(t3,ef)*Uz
+               end if
+
+               if (mask_IB_y(i,j,k).eq.0) then
+                  x=cfg%xm(i)-x0; y=cfg%y(j)-y0; z=cfg%zm(k)-z0
+                  xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2); zr=dot_product([x,y,z],t3)
+                  rmag=sqrt(xr**2+yr**2); er=normalize(xr*t1+yr*t2); ef=[0.0_WP,1.0_WP,0.0_WP]
+                  ! Ur=2.0_WP*rmag*(2.0_WP*(DeltaKn-1.0_WP)*dlogadt*thicknew-dhdt)/(2.0_WP*DeltaKn*thicknew)
+                  Ur=rmag*(2.0_WP*(DeltaKn-1.0_WP)*dlogadt*thicknew-dhdt)/(2.0_WP*DeltaKn*thicknew)
+                  Uz=mulfact*(2*(5.0_WP-4.0_WP*DeltaKn)*dlogadt*thicknew+5.0_WP*dhdt)/(16*DeltaKn)
+                  ! if (vf%VF(i,j-1,k).gt.VFlo.and.vf%VF(i,j-1,k).lt.VFhi .and. vf%VF(i,j,k).gt.VFlo.and.vf%VF(i,j,k).lt.VFhi) then
+                  ! !    ! Could add another constraint on seeing if the face is contained in gas, but skip that for now
+                     ! Vs(i,j,k)=Ur*dot_product(er,ef)
+                  ! else
+                     Vs(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz
+                  ! end if
+                  ! Vs(i,j,k)=sign(1.0_WP,dot_product([x,y,z],t3))*dot_product(t3,ef)*Uz
+               end if
+
+               if (mask_IB_z(i,j,k).eq.0) then
+                  x=cfg%xm(i)-x0; y=cfg%ym(j)-y0; z=cfg%z(k)-z0
+                  xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2); zr=dot_product([x,y,z],t3)
+                  rmag=sqrt(xr**2+yr**2); er=normalize(xr*t1+yr*t2); ef=[0.0_WP,0.0_WP,1.0_WP]
+                  ! Ur=2.0_WP*rmag*(2.0_WP*(DeltaKn-1.0_WP)*dlogadt*thicknew-dhdt)/(2.0_WP*DeltaKn*thicknew)
+                  Ur=rmag*(2.0_WP*(DeltaKn-1.0_WP)*dlogadt*thicknew-dhdt)/(2.0_WP*DeltaKn*thicknew)
+                  Uz=mulfact*(2*(5.0_WP-4.0_WP*DeltaKn)*dlogadt*thicknew+5.0_WP*dhdt)/(16*DeltaKn)
+                  ! if (vf%VF(i,j,k-1).gt.VFlo.and.vf%VF(i,j,k-1).lt.VFhi .and. vf%VF(i,j,k).gt.VFlo.and.vf%VF(i,j,k).lt.VFhi) then
+                  ! !    ! Could add another constraint on seeing if the face is contained in gas, but skip that for now
+                     ! Ws(i,j,k)=Ur*dot_product(er,ef)
+                  ! else
+                     Ws(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz
+                  ! end if
+                  ! Ws(i,j,k)=sign(1.0_WP,dot_product([x,y,z],t3))*dot_product(t3,ef)*Uz
+               end if
+            end do 
+         end do 
+      end do 
+      deallocate(mask_IB_x,mask_IB_y,mask_IB_z)
+   end block getUs
+   call cfg%sync(Us)
+   call cfg%sync(Vs)
+   call cfg%sync(Ws)
    contains
       !> Function that identifies cells that need a label
       logical function make_label(i,j,k)
@@ -344,33 +364,7 @@ subroutine get_gasP
       same_label=.true.
       end function same_label
 
-end subroutine get_gasP
-
-   subroutine apply_gasP
-      implicit none
-      integer :: i,j,k
-      real(WP), dimension(:,:,:), allocatable :: Pgradx,Pgrady,Pgradz
-      allocate(Pgradx(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      allocate(Pgrady(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      allocate(Pgradz(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      do k=cfg%kmin_,cfg%kmax_
-         do j=cfg%jmin_,cfg%jmax_
-            do i=cfg%imin_,cfg%imax_
-               Pgradx(i,j,k)=sum(fs%divu_x(:,i,j,k)*Pg(i-1:i,j,k))
-               Pgrady(i,j,k)=sum(fs%divv_y(:,i,j,k)*Pg(i,j-1:j,k))
-               Pgradz(i,j,k)=sum(fs%divw_z(:,i,j,k)*Pg(i,j,k-1:k))
-            end do
-         end do
-      end do
-      ! Sync it
-      call cfg%sync(Pgradx)
-      call cfg%sync(Pgrady)
-      call cfg%sync(Pgradz)
-      resU=resU+Pgradx
-      resV=resV+Pgrady
-      resW=resW+Pgradz
-   end subroutine apply_gasP
-
+end subroutine get_gasVel
 
    subroutine get_thickness(thickness_in)
       use mpi_f08
@@ -390,8 +384,6 @@ end subroutine get_gasP
                do kk = k-nneigh_thickness,k+nneigh_thickness
                   do jj = j-nneigh_thickness,j+nneigh_thickness
                      do ii = i-nneigh_thickness,i+nneigh_thickness
-                        ! tmpvol = tmpvol + vf%VF(ii,jj,kk)*cfg%vol(i,j,k)
-                        ! tmparea = tmparea + vf%SD(ii,jj,kk)*cfg%vol(i,j,k)
                         tmplvol=tmplvol+(       vf%VF(ii,jj,kk))*cfg%vol(ii,jj,kk)
                         tmpgvol=tmpgvol+(1.0_WP-vf%VF(ii,jj,kk))*cfg%vol(ii,jj,kk)
                         tmparea=tmparea+        vf%SD(ii,jj,kk) *cfg%vol(ii,jj,kk)
@@ -410,7 +402,7 @@ end subroutine get_gasP
          end do 
       end do
       call cfg%sync(thickness_in)
-
+      minThicknessold=minThickness
       minThickness=3.5_WP*cfg%min_meshsize
       do k=cfg%kmin_,cfg%kmax_
          do j=cfg%jmin_,cfg%jmax_
@@ -429,357 +421,25 @@ end subroutine get_gasP
       use string,    only: str_medium
       implicit none
       real(WP):: We
-      integer :: iunit,ival,ierr
+      integer :: iunit,ival,ierr,angle
       character(len=str_medium) :: filename
       if (cfg%amRoot) then
          call param_read('Weber number',We)
          ival = nint(We*100)
+         call param_read('Mesh aligned angle',angle)
          ! build filename as thickness_pXX.csv
-         write(filename,'("thickness_p",I0,".csv")') ival
+         if (default) then
+            write(filename,'("thickness_de_p",I0,"_",I0,"_","dist_",I0,".csv")') ival,angle,mesh_ratio
+         else
+            write(filename,'("thickness_p",I0,"_",I0,"_","dist_",I0,".csv")') ival,angle,mesh_ratio
+            ! write(filename,'("thickness_p",I0,".csv")') ival
+            ! write(filename,'("thickness_p",I0,".csv")') ival
+         end if
          open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',position='append',iostat=ierr)
-         write(iunit,*) time%t, minThickness
+         write(iunit,*) time%t, minThickness, thicknew
          close(iunit)
       end if
    end subroutine record_thickness
-
-   ! A subroutine that solves the slip velocity field based on current info
-   ! Two subiterations
-   subroutine solveUs
-      use vfs_class, only: VFlo,VFhi
-      use mathtools, only: pi,normalize
-      implicit none
-      integer :: i,j,k,ii,jj,kk,maxItr,n
-      real(WP) :: beta_IB
-      integer, dimension(:,:,:), allocatable :: mask_IB_x,mask_IB_y,mask_IB_z
-      Usold=Us;Vsold=Vs;Wsold=Ws;maxItr=2
-      Update_IBmask : block
-         allocate(mask_IB_x(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_x=1
-         allocate(mask_IB_y(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_y=1
-         allocate(mask_IB_z(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_z=1
-         ! Calculate square root of face densities
-         do k=cfg%kmino_  ,cfg%kmaxo_
-            do j=cfg%jmino_  ,cfg%jmaxo_
-               do i=cfg%imino_+1,cfg%imaxo_
-                  if (sum(mask_IB(i-1:i,j,k)).lt.2) mask_IB_x(i,j,k)=0
-                  alpha_x(i,j,k)=sum(fs%itpr_x(:,i,j,k)*(1.0_WP-vf%VF(i-1:i,j,k))*fs%rho_g/(vf%VF(i-1:i,j,k)*fs%rho_l+(1.0_WP-vf%VF(i-1:i,j,k))*fs%rho_g))
-               end do
-            end do
-         end do
-         do k=cfg%kmino_  ,cfg%kmaxo_
-            do j=cfg%jmino_+1,cfg%jmaxo_
-               do i=cfg%imino_  ,cfg%imaxo_
-                  if (sum(mask_IB(i,j-1:j,k)).lt.2) mask_IB_y(i,j,k)=0
-                  alpha_y(i,j,k)=sum(fs%itpr_y(:,i,j,k)*(1.0_WP-vf%VF(i,j-1:j,k))*fs%rho_g/(vf%VF(i,j-1:j,k)*fs%rho_l+(1.0_WP-vf%VF(i,j-1:j,k))*fs%rho_g))
-               end do
-            end do
-         end do
-         do k=cfg%kmino_+1,cfg%kmaxo_
-            do j=cfg%jmino_  ,cfg%jmaxo_
-               do i=cfg%imino_  ,cfg%imaxo_
-                  if (sum(mask_IB(i,j,k-1:k)).lt.2) mask_IB_z(i,j,k)=0
-                  alpha_z(i,j,k)=sum(fs%itpr_z(:,i,j,k)*(1.0_WP-vf%VF(i,j,k-1:k))*fs%rho_g/(vf%VF(i,j,k-1:k)*fs%rho_l+(1.0_WP-vf%VF(i,j,k-1:k))*fs%rho_g))
-               end do
-            end do
-         end do
-         ! Handle non-periodic borders
-         if (.not.cfg%xper.and.cfg%iproc.eq.1) mask_IB_x(cfg%imino,:,:)=mask_IB(cfg%imino,:,:)
-         if (.not.cfg%yper.and.cfg%jproc.eq.1) mask_IB_y(:,cfg%jmino,:)=mask_IB(:,cfg%jmino,:)
-         if (.not.cfg%zper.and.cfg%kproc.eq.1) mask_IB_z(:,:,cfg%kmino)=mask_IB(:,:,cfg%kmino)
-         ! Synchronize boundaries
-         call cfg%sync(mask_IB_x); call cfg%sync(alpha_x)
-         call cfg%sync(mask_IB_y); call cfg%sync(alpha_y)
-         call cfg%sync(mask_IB_z); call cfg%sync(alpha_z)
-      end block Update_IBmask
-      
-      do n=1,maxItr
-         Us=0.5_WP*(Us+Usold)
-         Vs=0.5_WP*(Vs+Vsold)
-         Ws=0.5_WP*(Ws+Wsold)
-         ! Calculate - umix doct grad us -grad Pg
-         get_dmomdt : block
-            real(WP) :: xr,yr,zr,x,y,z
-            real(WP), dimension(3) :: er,dPdr
-            ! real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ!,smag
-            real(WP), dimension(:,:,:), allocatable :: drhoUdt,drhoVdt,drhoWdt
-            ! Allocate flux arrays
-            ! allocate(FX(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FX=0.0_WP
-            ! allocate(FY(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FY=0.0_WP
-            ! allocate(FZ(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));FZ=0.0_WP
-            ! allocate(smag(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));smag=0.0_WP
-            allocate(drhoUdt(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));drhoUdt=0.0_WP
-            allocate(drhoVdt(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));drhoVdt=0.0_WP
-            allocate(drhoWdt(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));drhoWdt=0.0_WP
-            ! Calcualting div (umix times uslip) = div (umix) uslip + umix dot grad uslip
-            ! Zero out drhoUVW/dt arrays
-            drhoUdt=0.0_WP; drhoVdt=0.0_WP; drhoWdt=0.0_WP
-            do kk=fs%cfg%kmin_,fs%cfg%kmax_+1
-               do jj=fs%cfg%jmin_,fs%cfg%jmax_+1
-                  do ii=fs%cfg%imin_,fs%cfg%imax_+1
-                     ! Fluxes on x-face
-                     i=ii-1; j=jj-1; k=kk-1
-                     FX(i,j,k)=-sum(fs%itpu_x(:,i,j,k)*fs%U(i:i+1,j,k))*sum(fs%itpu_x(:,i,j,k)*Us(i:i+1,j,k))!-Pg(i,j,k)/fs%rho_g
-                     ! Fluxes on y-face
-                     i=ii; j=jj; k=kk
-                     FY(i,j,k)=-sum(fs%itpv_x(:,i,j,k)*fs%V(i-1:i,j,k))*sum(fs%itpu_y(:,i,j,k)*Us(i,j-1:j,k))
-                     ! Fluxes on z-face
-                     i=ii; j=jj; k=kk
-                     FZ(i,j,k)=-sum(fs%itpw_x(:,i,j,k)*fs%W(i-1:i,j,k))*sum(fs%itpu_z(:,i,j,k)*Us(i,j,k-1:k))
-                  end do
-               end do
-            end do
-            ! Time derivative of rhoU
-            do k=fs%cfg%kmin_,fs%cfg%kmax_
-               do j=fs%cfg%jmin_,fs%cfg%jmax_
-                  do i=fs%cfg%imin_,fs%cfg%imax_
-                     drhoUdt(i,j,k)=sum(fs%divu_x(:,i,j,k)*FX(i-1:i,j,k))+&
-                     &              sum(fs%divu_y(:,i,j,k)*FY(i,j:j+1,k))+&
-                     &              sum(fs%divu_z(:,i,j,k)*FZ(i,j,k:k+1))
-                  end do
-               end do
-            end do
-            ! Sync it
-            call fs%cfg%sync(drhoUdt)
-            ! Flux of rhoV
-            do kk=fs%cfg%kmin_,fs%cfg%kmax_+1
-               do jj=fs%cfg%jmin_,fs%cfg%jmax_+1
-                  do ii=fs%cfg%imin_,fs%cfg%imax_+1
-                     ! Fluxes on x-face
-                     i=ii; j=jj; k=kk
-                     FX(i,j,k)=-sum(fs%itpu_y(:,i,j,k)*fs%U(i,j-1:j,k))*sum(fs%itpv_x(:,i,j,k)*Vs(i-1:i,j,k))
-                     ! Fluxes on y-face
-                     i=ii-1; j=jj-1; k=kk-1
-                     FY(i,j,k)=-sum(fs%itpv_y(:,i,j,k)*fs%V(i,j:j+1,k))*sum(fs%itpv_y(:,i,j,k)*Vs(i,j:j+1,k))!-Pg(i,j,k)/fs%rho_g
-                     ! Fluxes on z-face
-                     i=ii; j=jj; k=kk
-                     FZ(i,j,k)=-sum(fs%itpw_y(:,i,j,k)*fs%W(i,j-1:j,k))*sum(fs%itpv_z(:,i,j,k)*Vs(i,j,k-1:k))
-                  end do
-               end do
-            end do
-            ! Time derivative of rhoV
-            do k=fs%cfg%kmin_,fs%cfg%kmax_
-               do j=fs%cfg%jmin_,fs%cfg%jmax_
-                  do i=fs%cfg%imin_,fs%cfg%imax_
-                     drhoVdt(i,j,k)=sum(fs%divv_x(:,i,j,k)*FX(i:i+1,j,k))+&
-                     &              sum(fs%divv_y(:,i,j,k)*FY(i,j-1:j,k))+&
-                     &              sum(fs%divv_z(:,i,j,k)*FZ(i,j,k:k+1))
-                  end do
-               end do
-            end do
-            ! Sync it
-            call fs%cfg%sync(drhoVdt)
-
-            ! Flux of rhoW
-            do kk=fs%cfg%kmin_,fs%cfg%kmax_+1
-               do jj=fs%cfg%jmin_,fs%cfg%jmax_+1
-                  do ii=fs%cfg%imin_,fs%cfg%imax_+1
-                     ! Fluxes on x-face
-                     i=ii; j=jj; k=kk
-                     FX(i,j,k)=-sum(fs%itpu_z(:,i,j,k)*fs%U(i,j,k-1:k))*sum(fs%itpw_x(:,i,j,k)*Ws(i-1:i,j,k))!&
-                     ! Fluxes on y-face
-                     i=ii; j=jj; k=kk
-                     FY(i,j,k)=-sum(fs%itpv_z(:,i,j,k)*fs%V(i,j,k-1:k))*sum(fs%itpw_y(:,i,j,k)*Ws(i,j-1:j,k))!&
-                     ! Fluxes on z-face
-                     i=ii-1; j=jj-1; k=kk-1
-                     FZ(i,j,k)=-sum(fs%itpw_z(:,i,j,k)*fs%W(i,j,k:k+1))*sum(fs%itpw_z(:,i,j,k)*Ws(i,j,k:k+1))!-Pg(i,j,k)/fs%rho_g!&
-                  end do
-               end do
-            end do
-            ! Time derivative of rhoW
-            do k=fs%cfg%kmin_,fs%cfg%kmax_
-               do j=fs%cfg%jmin_,fs%cfg%jmax_
-                  do i=fs%cfg%imin_,fs%cfg%imax_
-                     drhoWdt(i,j,k)=sum(fs%divw_x(:,i,j,k)*FX(i:i+1,j,k))+&
-                     &              sum(fs%divw_y(:,i,j,k)*FY(i,j:j+1,k))+&
-                     &              sum(fs%divw_z(:,i,j,k)*FZ(i,j,k-1:k))
-                  end do
-               end do
-            end do
-            ! Sync it
-            call fs%cfg%sync(drhoWdt)
-            resU=drhoUdt; resV=drhoVdt; resW=drhoWdt
-
-            ! ! Get the interpolated pressure field
-            ! do k=fs%cfg%kmin_,fs%cfg%kmax_
-            !    do j=fs%cfg%jmin_,fs%cfg%jmax_
-            !       do i=fs%cfg%imin_,fs%cfg%imax_
-            !          FX(i,j,k)=sum(fs%itpr_x(:,i,j,k)*Pg(i-1:i,j,k))
-            !          FY(i,j,k)=sum(fs%itpr_y(:,i,j,k)*Pg(i,j-1:j,k))
-            !          FZ(i,j,k)=sum(fs%itpr_z(:,i,j,k)*Pg(i,j,k-1:k))
-            !       end do
-            !    end do
-            ! end do
-            ! call fs%cfg%sync(FX); call fs%cfg%sync(FY); call fs%cfg%sync(FZ)
-
-
-            ! do k=fs%cfg%kmin_,fs%cfg%kmax_
-            !    do j=fs%cfg%jmin_,fs%cfg%jmax_
-            !       do i=fs%cfg%imin_,fs%cfg%imax_
-            !          x=cfg%xm(i)-x0; y=cfg%ym(j)-y0; z=cfg%zm(k)-z0
-            !          xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
-            !          er=normalize(xr*t1+yr*t2)
-            !          dPgdr(i,j,k)=dot_product([sum(fs%divu_x(:,i,j,k)*FX(i-1:i,j,k)),sum(fs%divv_y(:,i,j,k)*FY(i,j-1:j,k)),sum(fs%divw_z(:,i,j,k)*FZ(i,j,k-1:k))],er)
-            !       end do
-            !    end do
-            ! end do
-            ! call fs%cfg%sync(dPgdr)
-
-            ! One way to estimate dP/dr and apply it in the er direction
-            FX=0.0_WP; FY=0.0_WP; FZ=0.0_WP; smag=0.0_WP
-            do k=fs%cfg%kmin_,fs%cfg%kmax_
-               do j=fs%cfg%jmin_,fs%cfg%jmax_
-                  do i=fs%cfg%imin_,fs%cfg%imax_
-                     ! For x-face
-                     x=cfg%x(i)-x0; y=cfg%ym(j)-y0; z=cfg%zm(k)-z0
-                     xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
-                     er=normalize(xr*t1+yr*t2)
-                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i-1,j,k).eq.0.0_WP) then
-                        FX(i,j,k)=FX(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))
-                        ! resU(i,j,k)=resU(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))
-                     else
-                        FX(i,j,k)=FX(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))*0.5_WP
-                        ! resU(i,j,k)=resU(i,j,k)-dot_product([1.0_WP, 0.0_WP, 0.0_WP],er)*sum(dPgdr(i-1:i,j,k))*0.5_WP
-                     end if
-
-                     ! For y-face
-                     x=cfg%xm(i)-x0; y=cfg%y(j)-y0; z=cfg%zm(k)-z0
-                     xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
-                     er=normalize(xr*t1+yr*t2)
-                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j-1,k).eq.0.0_WP) then
-                        FY(i,j,k)=FY(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))
-                        ! resV(i,j,k)=resV(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))
-                     else
-                        FY(i,j,k)=FY(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))*0.5_WP
-                        ! resV(i,j,k)=resV(i,j,k)-dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(dPgdr(i,j-1:j,k))*0.5_WP
-                     end if
-
-                     ! For z-face
-                     x=cfg%xm(i)-x0; y=cfg%ym(j)-y0; z=cfg%z(k)-z0
-                     xr=dot_product([x,y,z],t1); yr=dot_product([x,y,z],t2)
-                     er=normalize(xr*t1+yr*t2)
-                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j,k-1).eq.0.0_WP) then
-                        FZ(i,j,k)=FZ(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))
-                        ! resW(i,j,k)=resW(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))
-                     else 
-                        FZ(i,j,k)=FZ(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))*0.5_WP
-                        ! resW(i,j,k)=resW(i,j,k)-dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(dPgdr(i,j,k-1:k))*0.5_WP
-                     end if 
-                  end do
-               end do
-            end do
-            call cfg%sync(FX); call cfg%sync(FY); call cfg%sync(FZ)
-            ! Now work on a semi-divergence free squeeze velocity
-            do k=fs%cfg%kmin_,fs%cfg%kmax_
-               do j=fs%cfg%jmin_,fs%cfg%jmax_
-                  do i=fs%cfg%imin_,fs%cfg%imax_
-                     smag(i,j,k)=sum(fs%divp_x(:,i,j,k)*FX(i:i+1,j,k))+sum(fs%divp_y(:,i,j,k)*FY(i,j:j+1,k))+sum(fs%divp_z(:,i,j,k)*FZ(i,j,k:k+1))
-                  end do
-               end do
-            end do
-            call cfg%sync(smag)
-
-            do k=fs%cfg%kmin_,fs%cfg%kmax_
-               do j=fs%cfg%jmin_,fs%cfg%jmax_
-                  do i=fs%cfg%imin_,fs%cfg%imax_
-                        ! For x-face
-                     x=cfg%x(i)-x0; y=cfg%ym(j)-y0; z=cfg%zm(k)-z0
-                     zr=dot_product([x,y,z],t3)
-                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i-1,j,k).eq.0.0_WP) then
-                        FX(i,j,k)=FX(i,j,k)-zr*dot_product([1.0_WP, 0.0_WP, 0.0_WP],t3)*sum(smag(i-1:i,j,k))
-                     else
-                        FX(i,j,k)=FX(i,j,k)-zr*dot_product([1.0_WP, 0.0_WP, 0.0_WP],t3)*sum(smag(i-1:i,j,k))*0.5_WP
-                     end if
-
-                     ! For y-face
-                     x=cfg%xm(i)-x0; y=cfg%y(j)-y0; z=cfg%zm(k)-z0
-                     zr=dot_product([x,y,z],t3)
-                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j-1,k).eq.0.0_WP) then
-                        FY(i,j,k)=FY(i,j,k)-zr*dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(smag(i,j-1:j,k))
-                     else
-                        FY(i,j,k)=FY(i,j,k)-zr*dot_product([0.0_WP, 1.0_WP, 0.0_WP],er)*sum(smag(i,j-1:j,k))*0.5_WP
-                     end if
-
-                     ! For z-face
-                     x=cfg%xm(i)-x0; y=cfg%ym(j)-y0; z=cfg%z(k)-z0
-                     zr=dot_product([x,y,z],t3)
-                     if (Pg(i,j,k).eq.0.0_WP .or. Pg(i,j,k-1).eq.0.0_WP) then
-                        FZ(i,j,k)=FZ(i,j,k)-zr*dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(smag(i,j,k-1:k))
-                     else 
-                        FZ(i,j,k)=FZ(i,j,k)-zr*dot_product([0.0_WP, 0.0_WP, 1.0_WP],er)*sum(smag(i,j,k-1:k))*0.5_WP
-                     end if 
-                  end do
-               end do
-            end do
-
-            call cfg%sync(FX); call cfg%sync(FY); call cfg%sync(FZ)
-            resU=resU+FX
-            resV=resV+FY
-            resW=resW+Fz
-
-            do k=fs%cfg%kmin_,fs%cfg%kmax_
-               do j=fs%cfg%jmin_,fs%cfg%jmax_
-                  do i=fs%cfg%imin_,fs%cfg%imax_
-                     if (Pg(i,j,k).ne.0.0_WP .or. Pg(i-1,j,k).ne.0.0_WP) then
-                        Us(i,j,k)=Usold(i,j,k)+resU(i,j,k)*time%dt
-                     else
-                        Us(i,j,k)=0.0_WP
-                     end if
-
-                     ! if (mask_IB_y(i,j,k).eq.0) then
-                     if (Pg(i,j,k).ne.0.0_WP .or. Pg(i,j-1,k).ne.0.0_WP) then
-                        Vs(i,j,k)=Vsold(i,j,k)+resV(i,j,k)*time%dt
-                     else
-                        Vs(i,j,k)=0.0_WP
-                     end if
-
-                     ! if (mask_IB_z(i,j,k).eq.0) then
-                     if (Pg(i,j,k).ne.0.0_WP .or. Pg(i,j,k-1).ne.0.0_WP) then
-                        Ws(i,j,k)=Wsold(i,j,k)+resW(i,j,k)*time%dt
-                     else
-                        Ws(i,j,k)=0.0_WP
-                     end if
-                  end do 
-               end do 
-            end do
-            call cfg%sync(Us); call cfg%sync(Vs); call cfg%sync(Ws)
-         end block get_dmomdt
-
-         if (anew.lt.0.99_WP*amax) then
-            Us=0.0_WP
-            Vs=0.0_WP
-            Ws=0.0_WP
-         end if
-
-         ! Applying an IB-style forcing of 0 gas velocity away from the region
-         ! beta_IB=1.0_WP/time%dt
-         ! resU=resU-mask_IB_x*beta_IB*Usold
-         ! resV=resV-mask_IB_y*beta_IB*Vsold
-         ! resW=resW-mask_IB_z*beta_IB*Wsold
-         
-         ! Update slip velocity
-         ! Us=Usold+resU*time%dt
-         ! Vs=Vsold+resV*time%dt
-         ! Ws=Wsold+resW*time%dt
-         
-         ! Us=0.0_WP
-         ! Vs=0.0_WP
-         ! Ws=0.0_WP
-         ! resU=Us!*alpha_x
-         ! resV=Vs!*alpha_y
-         ! resW=Ws!*alpha_z
-
-         ! call fs%update_laplacian_slip(x0,y0,z0,t1,t2)
-         ! call fs%get_div_slip(resU,resV,resW,x0,y0,z0,t1,t2)
-         ! fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
-         ! fs%psolv%sol=0.0_WP
-         ! call fs%psolv%solve()
-         ! call fs%shift_p(fs%psolv%sol)
-         ! ! ! Correct velocity
-         ! call fs%get_pgrad_slip(fs%psolv%sol,resU,resV,resW,x0,y0,z0,t1,t2)
-         ! Us=Us-time%dt*resU
-         ! Vs=Vs-time%dt*resV
-         ! Ws=Ws-time%dt*resW
-      end do
-   end subroutine solveUs
 
    subroutine attempt_breakup
       implicit none
@@ -853,27 +513,11 @@ end subroutine get_gasP
          allocate(Us  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Us=0.0_WP 
          allocate(Vs  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Vs=0.0_WP 
          allocate(Ws  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Ws=0.0_WP 
-         allocate(Usold(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Usold=0.0_WP 
-         allocate(Vsold(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Vsold=0.0_WP 
-         allocate(Wsold(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Wsold=0.0_WP 
-         allocate(Pg  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Pg=0.0_WP
-         allocate(Pd  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));Pd=0.0_WP
-         allocate(smag  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));smag=0.0_WP 
          allocate(mask_IB  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));mask_IB=0
-         allocate(region_indicator(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));region_indicator=0
-         allocate(dPgdr  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));dPgdr  =0.0_WP
-         allocate(radialU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));radialU=0.0_WP
-         allocate(verticalU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));verticalU=0.0_WP
          allocate(thickness_old(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));thickness_old=0.0_WP
          allocate(thickness_new(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));thickness_new=0.0_WP
-         allocate(alpha_x(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(alpha_y(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(alpha_z(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(FX(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FX=0.0_WP
-         allocate(FY(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FY=0.0_WP
-         allocate(FZ(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));FZ=0.0_WP
          activated=.false.; breakup=.false.
-         amax=0.0_WP;anew=0.0_WP;aold=0.0_WP;init_dhdt=3.5_WP*cfg%min_meshsize
+         amax=0.0_WP;anew=0.0_WP;aold=0.0_WP
       end block allocate_work_arrays
       
       
@@ -890,6 +534,7 @@ end subroutine get_gasP
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
+         use mathtools, only: pi
          use mms_geom, only: cube_refine_vol
          use vfs_class, only: plicnet,elvira,VFhi,VFlo,r2p,r2pnet
          integer :: i,j,k,n,si,sj,sk
@@ -908,9 +553,25 @@ end subroutine get_gasP
          ! Initialize two droplets
          call param_read('Lx',Lx); call param_read('nx',nx)
          call param_read('Initial Location',init_dist); call param_read('Impact Parameter',ip)
+         call param_read('Mesh aligned angle',meshaligned_angle)
+         call param_read('Meshratio',mesh_ratio)
+         meshaligned_angle=meshaligned_angle/180*pi
          radius1=1.0_WP;radius2=1.0_WP
-         center1=[-1.1_WP,-ip,0.0_WP]; center2=[1.1_WP+Lx/nx,+ip,0.0_WP]
+         center1=init_dist*[-cos(meshaligned_angle),-sin(meshaligned_angle),0.0_WP]+ip*[sin(meshaligned_angle),-cos(meshaligned_angle),0.0_WP]
+         ! Case1
+         ! if (curr_case.eq.1) then
+         !    center2=(init_dist+3.0_WP*Lx/nx)*[cos(meshaligned_angle),sin(meshaligned_angle),0.0_WP]+ip*[-sin(meshaligned_angle),cos(meshaligned_angle),0.0_WP]
+         ! else if (curr_case .eq.2) then
+         ! ! Case2
+         !    center2=(init_dist+2.0_WP*Lx/nx)*[cos(meshaligned_angle),sin(meshaligned_angle),0.0_WP]+ip*[-sin(meshaligned_angle),cos(meshaligned_angle),0.0_WP]
+         ! end if
+         center2=(init_dist+(2.0_WP+mesh_ratio*0.1_WP)*Lx/nx)*[cos(meshaligned_angle),sin(meshaligned_angle),0.0_WP]+ip*[-sin(meshaligned_angle),cos(meshaligned_angle),0.0_WP]
+
+         ! center1=[-init_dist,-ip,0.0_WP]; center2=[init_dist+Lx/nx,+ip,0.0_WP]
+         ! center1=[-1.1_WP/sqrt(2.0_WP),-1.1_WP/sqrt(2.0_WP),0.0_WP]; center2=[1.1_WP/sqrt(2.0_WP),1.1_WP/sqrt(2.0_WP),0.0_WP]
          call param_read('Threshold 1', thickthd1); call param_read('Threshold 2', thickthd2)
+         call param_read('default',default)
+         call param_read('mulfact',mulfact)
          do k=cfg%kmino_,cfg%kmaxo_
             do j=cfg%jmino_,cfg%jmaxo_
                do i=cfg%imino_,cfg%imaxo_
@@ -1015,8 +676,12 @@ end subroutine get_gasP
          ! Setup the solver
          call fs%setup(pressure_solver=ps)!,implicit_solver=vs)
          ! Initial droplet velocity
-         vel1=[+1.0_WP,0.0_WP,0.0_WP]
-         vel2=[-1.0_WP,0.0_WP,0.0_WP]
+         ! vel1=[+1.0_WP,0.0_WP,0.0_WP]
+         ! vel2=[-1.0_WP,0.0_WP,0.0_WP]
+         ! vel1=[+1.0_WP/sqrt(2.0_WP),+1.0_WP/sqrt(2.0_WP),0.0_WP]
+         ! vel2=[-1.0_WP/sqrt(2.0_WP),-1.0_WP/sqrt(2.0_WP),0.0_WP]
+         vel1=[+cos(meshaligned_angle),+sin(meshaligned_angle),0.0_WP]
+         vel2=[-cos(meshaligned_angle),-sin(meshaligned_angle),0.0_WP]
          do k=fs%cfg%kmino_,fs%cfg%kmaxo_
             do j=fs%cfg%jmino_,fs%cfg%jmaxo_
                do i=fs%cfg%imino_,fs%cfg%imaxo_
@@ -1038,9 +703,6 @@ end subroutine get_gasP
          ! Calculate cell-centered velocities and divergence
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
-         ! Set slip vel to 0
-         ! Us=0.0_WP; Vs=0.0_WP; Ws=0.0_WP
-         ! Usold=0.0_WP; Vsold=0.0_WP; Wsold=0.0_WP
       end block create_and_initialize_flow_solver
       
       
@@ -1049,22 +711,12 @@ end subroutine get_gasP
          use irl_fortran_interface
          integer :: i,j,k,nplane,np
          ! Include an extra variable for number of planes
-         smesh=surfmesh(nvar=9,name='plic')
+         smesh=surfmesh(nvar=5,name='plic')
          smesh%varname(1)='nplane'
          smesh%varname(2)='curv'
-         smesh%varname(3)='radialU'
-         smesh%varname(4)='verticalU'
-         smesh%varname(5)='gasP'
-         smesh%varname(6)='thickness_old'
-         smesh%varname(7)='thickness_new'
-         smesh%varname(8)='Pd'
-         smesh%varname(9)='thin_sensor'
-         ! smesh%varname(3)='edge_sensor'
-         ! smesh%varname(4)='thin_sensor'
-         ! smesh%varname(5)='thickness'
-         ! smesh%varname(6)='norm_abs'
-         ! smesh%varname(7)='norm_sig'
-         ! smesh%varname(8)='ccl'
+         smesh%varname(3)='thin_sensor'
+         smesh%varname(4)='thickness_new'
+         smesh%varname(5)='thickness_old'
          ! Transfer polygons to smesh
          call vf%update_surfmesh(smesh)
          ! Also populate nplane variable
@@ -1077,26 +729,15 @@ end subroutine get_gasP
                      if (getNumberOfVertices(vf%interface_polygon(nplane,i,j,k)).gt.0) then
                         np=np+1; smesh%var(1,np)=real(getNumberOfPlanes(vf%liquid_gas_interface(i,j,k)),WP)
                         smesh%var(2,np)=vf%curv2p(nplane,i,j,k)
-                        smesh%var(3,np)=radialU(i,j,k)
-                        smesh%var(4,np)=verticalU(i,j,k)
-                        smesh%var(5,np)=Pg(i,j,k)
-                        smesh%var(6,np)=thickness_old(i,j,k)
-                        smesh%var(7,np)=thickness_new(i,j,k)
-                        smesh%var(8,np)=Pd(i,j,k)
-                        smesh%var(9,np)=vf%thin_sensor(i,j,k)
-                        ! smesh%var(3,np)=vf%edge_sensor(i,j,k)
-                        ! smesh%var(4,np)=vf%thin_sensor(i,j,k)
-                        ! smesh%var(5,np)=vf%thickness  (i,j,k)
-                        ! smesh%var(6,np)=vf%norm_pos(i,j,k)+vf%norm_neg(i,j,k)
-                        ! smesh%var(7,np)=vf%norm_pos(i,j,k)-vf%norm_neg(i,j,k)
-                        ! smesh%var(8,np)=real(ccl%id(i,j,k),WP)
+                        smesh%var(3,np)=vf%thin_sensor(i,j,k)
+                        smesh%var(4,np)=thickness_new(i,j,k)
+                        smesh%var(5,np)=thickness_old(i,j,k)
                      end if
                   end do
                end do
             end do
          end do
       end block create_smesh
-      
       
       ! Add Ensight output
       create_ensight: block
@@ -1108,23 +749,13 @@ end subroutine get_gasP
          ! Add variables to output
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
          call ens_out%add_vector('slipvel',resU,resV,resW)
-         call ens_out%add_vector('currvel',FX,FY,FZ)
-         ! call ens_out%add_vector('slipvel',Us,Vs,Ws)
          call ens_out%add_scalar('VOF',vf%VF)
-         call ens_out%add_scalar('Indicator',region_indicator)
-         call ens_out%add_scalar('pressure',fs%P)
-         call ens_out%add_scalar('Gpressure',Pg)
-         call ens_out%add_scalar('dPgdr',dPgdr)
-         call ens_out%add_scalar('smag',smag)
-         ! call ens_out%add_scalar('curvature',vf%curv)
-         ! call ens_out%add_scalar('radialU',radialU)
-         ! call ens_out%add_scalar('verticalU',verticalU)
+         call ens_out%add_scalar('Indicator',mask_IB)
          call ens_out%add_surface('vofplic',smesh)
          call ens_out%add_particle('part',pmesh)
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
-      
       
       ! Create a monitor file
       create_monitor: block
@@ -1166,7 +797,6 @@ end subroutine get_gasP
          call cflfile%write()
       end block create_monitor
       
-      
    end subroutine simulation_init
    
    
@@ -1183,10 +813,9 @@ end subroutine get_gasP
          fs%Vold=fs%V
          fs%Wold=fs%W
 
-         fs%U=fs%U+Us*alpha_x!(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-         fs%V=fs%V+Vs*alpha_y!(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-         fs%W=fs%W+Ws*alpha_z!(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-
+         fs%U=fs%U+Us
+         fs%V=fs%V+Vs
+         fs%W=fs%W+Ws
          ! Increment time
          call fs%get_cfl(time%dt,time%cfl)
          call time%adjust_dt()
@@ -1199,20 +828,18 @@ end subroutine get_gasP
          fs%V=fs%Vold
          fs%W=fs%Wold
          
-         
          ! Prepare old staggered density (at n)
          call fs%get_olddensity(vf=vf)
 
          ! ! Get the two thickness to integrate gas pressure field
          thickness_old=thickness_new
          call get_thickness(thickness_new)
-         if (.not. breakup) then
-            call get_gasP()
-            ! ! Based on the pressure, we can produce a grad Pg as a forcing for the slip velocity
-            call solveUs()
-            resU=fs%U+Us*alpha_x!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-            resV=fs%V+Vs*alpha_y!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
-            resW=fs%W+Ws*alpha_z!*(1.0_WP-vf%VF)*fs%rho_g/(vf%VF*fs%rho_l+(1.0_WP-vf%VF)*fs%rho_g)
+         ! if (.not. breakup) then
+         if (.not. default) then
+            call get_gasVel()
+            resU=fs%U+Us
+            resV=fs%V+Vs
+            resW=fs%W+Ws
             call vf%advance(dt=time%dt,U=resU,V=resV,W=resW)
          else
          ! VOF solver ste
@@ -1290,28 +917,28 @@ end subroutine get_gasP
             do k=cfg%kmino_,cfg%kmaxo_
                do j=cfg%jmino_,cfg%jmaxo_
                   do i=cfg%imino_,cfg%imaxo_-1
-                     resU(i,j,k)=sum(fs%itpu_x(:,i,j,k)*Us(i:i+1,j,k)*alpha_x(i:i+1,j,k))
+                     resU(i,j,k)=sum(fs%itpu_x(:,i,j,k)*Us(i:i+1,j,k))
                   end do
                end do
             end do
             do k=cfg%kmino_,cfg%kmaxo_
                do j=cfg%jmino_,cfg%jmaxo_-1
                   do i=cfg%imino_,cfg%imaxo_
-                     resV(i,j,k)=sum(fs%itpv_y(:,i,j,k)*Vs(i,j:j+1,k)*alpha_y(i,j:j+1,k))
+                     resV(i,j,k)=sum(fs%itpv_y(:,i,j,k)*Vs(i,j:j+1,k))
                   end do
                end do
             end do
             do k=cfg%kmino_,cfg%kmaxo_-1
                do j=cfg%jmino_,cfg%jmaxo_
                   do i=cfg%imino_,cfg%imaxo_
-                     resW(i,j,k)=sum(fs%itpw_z(:,i,j,k)*Ws(i,j,k:k+1)*alpha_z(i,j,k:k+1))
+                     resW(i,j,k)=sum(fs%itpw_z(:,i,j,k)*Ws(i,j,k:k+1))
                   end do
                end do
             end do
             ! Add last layer in each direction
-            if (.not.cfg%xper.and.cfg%iproc.eq.cfg%npx) resU(cfg%imaxo,:,:)=Us(cfg%imaxo,:,:)*alpha_x(cfg%imaxo,:,:)
-            if (.not.cfg%yper.and.cfg%jproc.eq.cfg%npy) resV(:,cfg%jmaxo,:)=Vs(:,cfg%jmaxo,:)*alpha_y(:,cfg%jmaxo,:)
-            if (.not.cfg%zper.and.cfg%kproc.eq.cfg%npz) resW(:,:,cfg%kmaxo)=Ws(:,:,cfg%kmaxo)*alpha_z(:,:,cfg%kmaxo)
+            if (.not.cfg%xper.and.cfg%iproc.eq.cfg%npx) resU(cfg%imaxo,:,:)=Us(cfg%imaxo,:,:)
+            if (.not.cfg%yper.and.cfg%jproc.eq.cfg%npy) resV(:,cfg%jmaxo,:)=Vs(:,cfg%jmaxo,:)
+            if (.not.cfg%zper.and.cfg%kproc.eq.cfg%npz) resW(:,:,cfg%kmaxo)=Ws(:,:,cfg%kmaxo)
             ! Sync it
             call cfg%sync(resU)
             call cfg%sync(resV)
@@ -1336,19 +963,9 @@ end subroutine get_gasP
                            if (getNumberOfVertices(vf%interface_polygon(nplane,i,j,k)).gt.0) then
                               np=np+1; smesh%var(1,np)=real(getNumberOfPlanes(vf%liquid_gas_interface(i,j,k)),WP)
                               smesh%var(2,np)=vf%curv2p(nplane,i,j,k)
-                              smesh%var(3,np)=radialU(i,j,k)
-                              smesh%var(4,np)=verticalU(i,j,k)
-                              smesh%var(5,np)=Pg(i,j,k)
-                              smesh%var(6,np)=thickness_old(i,j,k)
-                              smesh%var(7,np)=thickness_new(i,j,k)
-                              smesh%var(8,np)=Pd(i,j,k)
-                              smesh%var(9,np)=vf%thin_sensor(i,j,k)
-                              ! smesh%var(3,np)=vf%edge_sensor(i,j,k)
-                              ! smesh%var(4,np)=vf%thin_sensor(i,j,k)
-                              ! smesh%var(5,np)=vf%thickness  (i,j,k)
-                              ! smesh%var(6,np)=vf%norm_pos(i,j,k)+vf%norm_neg(i,j,k)
-                              ! smesh%var(7,np)=vf%norm_pos(i,j,k)-vf%norm_neg(i,j,k)
-                              ! smesh%var(8,np)=real(ccl%id(i,j,k),WP)
+                              smesh%var(3,np)=vf%thin_sensor(i,j,k)
+                              smesh%var(4,np)=thickness_new(i,j,k)
+                              smesh%var(5,np)=thickness_old(i,j,k)
                            end if
                         end do
                      end do
