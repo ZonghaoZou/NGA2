@@ -128,7 +128,7 @@ module atom_class
       procedure :: transfer_drops   !< Transfer drops to a Lagrangian representation
       procedure :: transfer_films   !< Transfer films to Lagrangian drops based on Jackiw and Ashgriz's model
       procedure :: transfer_ligs    !< Transfer ligaments to Lagrangian drops based on Kim and Moin's model
-      ! procedure :: record_stats
+      procedure :: record_stats
    end type atom
 
    
@@ -2347,6 +2347,8 @@ end subroutine transfer_ligs
          if (this%use_drop_transfer) call this%transfer_drops(lp)
       end block attempt_transfer
 
+      ! Recording stats
+      call this%record_stats()
       ! Remove VOF at edge of domain
       remove_vof: block
          use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM
