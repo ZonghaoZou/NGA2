@@ -55,6 +55,8 @@ module atom_class
       type(ensight)  :: ens_out  !< Ensight output for flow variables
       type(event)    :: ens_evt  !< Event trigger for Ensight output
       
+      ! Stats recording
+      type(event)    :: stat_evt
       !> Simulation monitor file
       type(monitor) :: mfile    !< General simulation monitoring
       type(monitor) :: cflfile  !< CFL monitoring
@@ -63,7 +65,10 @@ module atom_class
       real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
       real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
       real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
-      real(WP), dimension(:,:,:), allocatable :: thickness,struct_type
+      !> Record stats
+      real(WP), dimension(:), allocatable :: EPLmean,EPL2mean,Umean2em3,U2mean2em3,Umean6em3,U2mean6em3,Umean1em2,U2mean1em2
+      real(WP) :: timeint,stat_begin
+      ! real(WP), dimension(:,:,:), allocatable :: thickness,struct_type
 
       !> Iterator for VOF removal
       type(iterator) :: vof_removal_layer  !< Edge of domain where we actively remove VOF
@@ -123,13 +128,14 @@ module atom_class
       procedure :: transfer_drops   !< Transfer drops to a Lagrangian representation
       procedure :: transfer_films   !< Transfer films to Lagrangian drops based on Jackiw and Ashgriz's model
       procedure :: transfer_ligs    !< Transfer ligaments to Lagrangian drops based on Kim and Moin's model
+      ! procedure :: record_stats
    end type atom
 
    
    !> Hardcode inlet positions used in locator functions at x=-0.01
    ! real(WP), parameter, public :: dl=0.0025_WP   ! Liquid pipe diameter ~(inner+outer)/2
    ! real(WP), parameter, public :: dl=0.0025_WP   ! Liquid outer pipe diameter 
-   real(WP), parameter, public :: dl=0.003_WP   ! Liquid outer pipe diameter 
+   real(WP), parameter, public :: dl=0.0027_WP   ! Liquid outer pipe diameter 
    ! real(WP), parameter, public :: dg=0.0100_WP   ! Gas pipe diameter ~(inner+outer)/2
    ! 0.0206 doesn't seem right, it seems to be over estimating
    real(WP), parameter, public :: dg=0.0206_WP   ! Gas pipe diameter ~(inner+outer)/2
@@ -137,7 +143,106 @@ module atom_class
    real(WP), parameter, public :: rlo=0.0015_WP   ! Liquid pipe outer radius
    
 contains
-      !> Transfer droplet to Lagrangian representation
+
+!> Initialization of dispersion simulation
+subroutine record_stats(this)
+   use parallel,  only: MPI_REAL_WP
+   use string,   only: str_medium
+   use messager, only: die
+   use mpi_f08
+   implicit none
+   class(atom), intent(inout) :: this
+   character(len=str_medium) :: filename
+   integer:: ierr,t_output,i,j,k
+   real(WP) :: xloc1,xloc2,xloc3
+   real(WP), dimension(:), allocatable :: VFint,Uint1,Uint2,Uint3
+   if (this%time%t.lt.this%stat_begin) return
+   ! Array extends to the entire domain
+   allocate(VFint(this%cfg%imin:this%cfg%imax));VFint=0.0_WP
+   allocate(Uint1(this%cfg%jmin:this%cfg%jmax));Uint1=0.0_WP
+   allocate(Uint2(this%cfg%jmin:this%cfg%jmax));Uint2=0.0_WP
+   allocate(Uint3(this%cfg%jmin:this%cfg%jmax));Uint3=0.0_WP
+   ! Accumulate the data
+   xloc1=2.0e-3; xloc2=6.0e-3; xloc3=1.0e-2
+   do k=this%cfg%kmin_,this%cfg%kmax_
+      do j=this%cfg%jmin_,this%cfg%jmax_
+         do i=this%cfg%imin_,this%cfg%imax_
+            if (this%cfg%ym(j).ge.0.0_WP.and.this%cfg%ym(j-1).lt.0.0_WP) then
+               VFint(i)=VFint(i)+this%vf%VF(i,j,k)*this%cfg%dz(k)
+            end if
+            if (this%cfg%zm(k).ge.0.0_WP.and.this%cfg%zm(k-1).lt.0.0_WP)then
+               if (this%cfg%xm(i).ge.xloc1.and.this%cfg%xm(i-1).lt.xloc1) then
+                  Uint1(j)=this%fs%U(i,j,k)
+               end if 
+
+               if (this%cfg%xm(i).ge.xloc2.and.this%cfg%xm(i-1).lt.xloc2) then
+                  Uint2(j)=this%fs%U(i,j,k)
+               end if 
+
+               if (this%cfg%xm(i).ge.xloc3.and.this%cfg%xm(i-1).lt.xloc3) then
+                  Uint3(j)=this%fs%U(i,j,k)
+               end if 
+            end if
+         end do
+      end do
+   end do
+   call MPI_ALLREDUCE(MPI_IN_PLACE,VFint,size(VFint),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,Uint1,size(Uint1),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,Uint2,size(Uint2),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,Uint3,size(Uint3),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   this%EPLmean =this%EPLmean +this%time%dt*VFint
+   this%EPL2mean=this%EPL2mean+this%time%dt*VFint**2
+   this%Umean2em3 =this%Umean2em3 +this%time%dt*Uint1
+   this%U2mean2em3=this%U2mean2em3+this%time%dt*Uint1**2
+   this%Umean6em3 =this%Umean6em3 +this%time%dt*Uint2
+   this%U2mean6em3=this%U2mean6em3+this%time%dt*Uint2**2
+   this%Umean1em2 =this%Umean1em2 +this%time%dt*Uint3
+   this%U2mean1em2=this%U2mean1em2+this%time%dt*Uint3**2
+   this%timeint=this%timeint+this%time%dt
+   deallocate(VFint,Uint1,Uint2,Uint3)
+
+   ! If it is time to record stats
+   if (this%stat_evt%occurs().and.this%timeint.gt.0.0_WP) then
+      if (this%cfg%amRoot) then
+         t_output=int(this%time%t*1.0e4)
+
+         write(filename, '(A,I0,A)') 'stats/EPL_', t_output, '.csv'
+         open(unit=10, file=filename, status="replace", action="write")
+         do i=this%cfg%imin,this%cfg%imax
+            write(10, '(F20.12, ",", F20.12, ",", F20.12, ",", F20.12)') this%cfg%xm(i),this%EPLmean(i)/this%timeint,&
+            & sqrt(this%EPL2mean(i)/this%timeint-(this%EPLmean(i)/this%timeint)**2),this%EPL2mean(i)/this%timeint
+         end do
+         close(unit=10)
+
+         write(filename, '(A,I0,A)') 'stats/U2em3_', t_output, '.csv'
+         open(unit=10, file=filename, status="replace", action="write")
+         do j=this%cfg%jmin,this%cfg%jmax
+            write(10, '(F20.12, ",", F20.12, ",", F20.12, ",", F20.12)') this%cfg%ym(j),this%Umean2em3(j)/this%timeint,&
+            & sqrt(this%U2mean2em3(j)/this%timeint-(this%Umean2em3(j)/this%timeint)**2),this%U2mean2em3(j)/this%timeint
+         end do
+         close(unit=10)
+
+         write(filename, '(A,I0,A)') 'stats/U6em3_', t_output, '.csv'
+         open(unit=10, file=filename, status="replace", action="write")
+         do j=this%cfg%jmin,this%cfg%jmax
+            write(10, '(F20.12, ",", F20.12, ",", F20.12, ",", F20.12)') this%cfg%ym(j),this%Umean6em3(j)/this%timeint,&
+            & sqrt(this%U2mean6em3(j)/this%timeint-(this%Umean6em3(j)/this%timeint)**2),this%U2mean6em3(j)/this%timeint
+         end do
+         close(unit=10)
+
+         write(filename, '(A,I0,A)') 'stats/U1em2_', t_output, '.csv'
+         open(unit=10, file=filename, status="replace", action="write")
+         do j=this%cfg%jmin,this%cfg%jmax
+            write(10, '(F20.12, ",", F20.12, ",", F20.12, ",", F20.12)') this%cfg%ym(j),this%Umean1em2(j)/this%timeint,&
+            & sqrt(this%U2mean1em2(j)/this%timeint-(this%Umean1em2(j)/this%timeint)**2),this%U2mean1em2(j)/this%timeint
+         end do
+         close(unit=10)
+      end if
+
+   end if
+ end subroutine record_stats
+
+!> Transfer droplet to Lagrangian representation
 subroutine transfer_drops(this,lp_spray)
    use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_MAX,MPI_IN_PLACE
    use parallel,  only: MPI_REAL_WP
@@ -150,7 +255,7 @@ subroutine transfer_drops(this,lp_spray)
    real(WP), dimension(:,:)  , allocatable :: dvel
    real(WP), dimension(:,:,:), allocatable :: dmoi
    real(WP), dimension(:)    , allocatable :: drem
-   integer :: n,m,ierr,i,j,k,iunit
+   integer :: n,m,ierr,i,j,k,iunit,np_start
    real(WP) :: x,y,z,x0,y0,z0,diam,ecc,lmax,lmid,lmin
    character(len=str_medium) :: filename
    logical :: transfer
@@ -191,6 +296,9 @@ subroutine transfer_drops(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
       y=this%vf%cfg%ym(j)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
       z=this%vf%cfg%zm(k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
       ! Accumulate volume, position, and velocity
       dvol(n  )=dvol(n  )+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
       dpos(n,:)=dpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
@@ -224,6 +332,9 @@ subroutine transfer_drops(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
       y=this%vf%cfg%ym(j)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
       z=this%vf%cfg%zm(k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
       ! Accumulate moment of inertia
       dmoi(n,1,1)=dmoi(n,1,1)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(y**2+z**2)
       dmoi(n,2,2)=dmoi(n,2,2)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(z**2+x**2)
@@ -305,6 +416,7 @@ subroutine transfer_drops(this,lp_spray)
       
       ! Root creates a new Lagrangian drop
       if (this%vf%cfg%amRoot) then
+         np_start=this%lp%np_
          ! Increment particle counter
          this%lp%np_=this%lp%np_+1
          ! Make room for new drop
@@ -423,58 +535,101 @@ subroutine transfer_films(this,lp_spray)
    real(WP), dimension(:), allocatable :: fvol
    real(WP), dimension(:), allocatable :: fthc
    real(WP), dimension(:), allocatable :: frem
-   real(WP), dimension(:), allocatable :: fthc_avg
+   ! real(WP), dimension(:), allocatable :: fthc_avg
    real(WP), dimension(:), allocatable :: fcnt
+   real(WP), dimension(:), allocatable :: fcurv
+   real(WP), dimension(:), allocatable :: fcsa
+   real(WP), dimension(:), allocatable :: fthick_,fthick
    character(len=str_medium) :: filename
    real(WP), dimension(:), allocatable :: sort_ke
    integer, dimension(:), allocatable ::  sort_id,plist,dispels
    real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
    integer :: n,nn,m,i,j,k,ii,jj,kk,ncell_,tmp_id,l,totalnewp,np_start,np_old,count,ierr,ind,ip,iunit,rank,np_old_spray
-   real(WP)  :: tmp_ke,curv_sum,ncurv,Vt,Vl,Vd,alpha,beta,minthic
+   integer :: totalcell,n5
+   real(WP)  :: tmp_ke,Vt,Vl,Vd,alpha,beta,mySA,tmp_thic
    real(WP), dimension(3) :: nref,tref,sref
    logical :: sampled, frem_active
-   minthic=1.0e-6 
    ! Start by performing a CCL based on film criteria
    call this%ccl_film%build(make_label,same_label)
    if (this%ccl_film%nstruct.ge.1) then
    ! Allocate film stats arrays
    allocate(fvol(1:this%ccl_film%nstruct)); fvol=0.0_WP
-   allocate(fthc(1:this%ccl_film%nstruct)); fthc=HUGE(alpha)
+   allocate(fthc(1:this%ccl_film%nstruct)); fthc=HUGE(alpha)!5.0_WP*this%cfg%min_meshsize
    allocate(frem(1:this%ccl_film%nstruct)); frem=0.0_WP
-   allocate(fthc_avg(1:this%ccl_film%nstruct)); fthc_avg=0.0_WP
+   ! allocate(fthc_avg(1:this%ccl_film%nstruct)); fthc_avg=0.0_WP
    allocate(fcnt    (1:this%ccl_film%nstruct)); fcnt=0.0_WP
-
+   allocate(fcurv   (1:this%ccl_film%nstruct)); fcurv=0.0_WP
+   allocate(fcsa    (1:this%ccl_film%nstruct)); fcsa=0.0_WP
+   allocate(plist     (0:this%vf%cfg%nproc-1))
+   allocate(dispels(0:this%vf%cfg%nproc-1))
    ! Get local thickness of the film to determine if film should be convereted
    call this%vf%get_thickness()
-
    ! First pass to accumulate volume and get minimum thickness
    do n=1,this%ccl_film%nstruct
-   fcnt(n)=this%ccl_film%struct(n)%n_
-   ! Loop over cells in structure
-   do m=1,this%ccl_film%struct(n)%n_
-      ! Get cell indices
-      i=this%ccl_film%struct(n)%map(1,m)
-      j=this%ccl_film%struct(n)%map(2,m) 
-      k=this%ccl_film%struct(n)%map(3,m)
-      ! Accumulate volume
-      fvol(n)=fvol(n)+this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
-      ! Get minimum thickness
-      fthc(n)=min(fthc(n),this%vf%thickness(i,j,k))
-      ! Get average thickness
-      fthc_avg(n)=fthc_avg(n)+this%vf%thickness(i,j,k)
-      ! Check if film touches auto burst layer
-      if (i.ge.this%vf%cfg%imax-this%nlayer.or.&
-      &   j.le.this%vf%cfg%jmin+this%nlayer.or.&
-      &   j.ge.this%vf%cfg%jmax-this%nlayer.or.&
-      &   k.le.this%vf%cfg%kmin+this%nlayer.or.&
-      &   k.ge.this%vf%cfg%kmax-this%nlayer) frem(n)=1.0_WP
-   end do
+      fcnt(n)=this%ccl_film%struct(n)%n_
+      ! For each structure n, individually acquire all the thickness value
+      call MPI_AllGATHER(this%ccl_film%struct(n)%n_,1,MPI_INTEGER,plist,1,MPI_INTEGER,this%vf%cfg%comm,ierr)
+      totalcell=sum(plist)
+      allocate(fthick_(1:this%ccl_film%struct(n)%n_))
+      allocate(fthick(1:totalcell))
+      count=1
+      ! Loop over cells in structure
+      do m=1,this%ccl_film%struct(n)%n_
+         ! Get cell indices
+         i=this%ccl_film%struct(n)%map(1,m)
+         j=this%ccl_film%struct(n)%map(2,m) 
+         k=this%ccl_film%struct(n)%map(3,m)
+         ! Accumulate volume
+         fvol(n)=fvol(n)+this%vf%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+         ! Record all thickness
+         fthick_(count)=this%vf%thickness(i,j,k); count=count+1
+         ! Get minimum thickness
+         ! fthc(n)=min(fthc(n),this%vf%thickness(i,j,k))
+         ! ! Get average thickness
+         ! fthc_avg(n)=fthc_avg(n)+this%vf%thickness(i,j,k)
+         ! Sum curvatures
+         do l=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
+            if (getNumberOfVertices(this%vf%interface_polygon(l,i,j,k)).gt.0) then
+               mySA=abs(calculateVolume(this%vf%interface_polygon(n,i,j,k)))
+               fcurv(n)=fcurv(n)+abs(this%vf%curv2p(l,i,j,k))*mySA
+               fcsa(n)=fcsa(n)+mySA
+            end if
+         end do
+         ! Check if film touches auto burst layer
+         if (i.ge.this%vf%cfg%imax-this%nlayer.or.&
+         &   j.le.this%vf%cfg%jmin+this%nlayer.or.&
+         &   j.ge.this%vf%cfg%jmax-this%nlayer.or.&
+         &   k.le.this%vf%cfg%kmin+this%nlayer.or.&
+         &   k.ge.this%vf%cfg%kmax-this%nlayer) frem(n)=1.0_WP
+      end do
+      ! Calculate dispels
+      count = 0
+      do rank=0,this%vf%cfg%nproc-1
+         dispels(rank) = count
+         count = count + plist(rank)
+      end do
+      ! all processors get the global set of thickness
+      call MPI_ALLGATHERV(fthick_,this%ccl_film%struct(n)%n_,MPI_REAL_WP,fthick,plist,dispels,MPI_REAL_WP,this%vf%cfg%comm)
+      n5  = max(1, int(0.25_WP*totalcell))
+      do i = 1, n5
+         do j = i+1, totalcell
+             if (fthick(j) < fthick(i)) then
+                 tmp_thic = fthick(i)
+                 fthick(i) = fthick(j)
+                 fthick(j) = tmp_thic
+             end if
+         end do
+     end do
+     fthc(n)=fthick(n5)
+     deallocate(fthick_,fthick)
    end do
    call MPI_ALLREDUCE(MPI_IN_PLACE,fvol    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,fthc    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
+   ! call MPI_ALLREDUCE(MPI_IN_PLACE,fthc    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MIN,this%vf%cfg%comm,ierr)
    call MPI_ALLREDUCE(MPI_IN_PLACE,frem    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
-   call MPI_ALLREDUCE(MPI_IN_PLACE,fthc_avg,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+   ! call MPI_ALLREDUCE(MPI_IN_PLACE,fthc_avg,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
    call MPI_ALLREDUCE(MPI_IN_PLACE,fcnt    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fcurv   ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+   call MPI_ALLREDUCE(MPI_IN_PLACE,fcsa    ,1*this%ccl_film%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
    ! Zero out monitoring variables
    this%vof_tf_film=0.0_WP
    this%np_film=0
@@ -482,15 +637,18 @@ subroutine transfer_films(this,lp_spray)
    np_start=this%lp%np_; sampled=.false.
    ! Second pass to decide if the film has reached a minimum thickness to burst
    do n=1,this%ccl_film%nstruct
-   if (fthc_avg(n).gt.0.0_WP .and. fcnt(n).gt.0.0_WP) then
-      fthc_avg(n)=fthc_avg(n)/fcnt(n)
+   ! if (fthc_avg(n).gt.0.0_WP .and. fcnt(n).gt.0.0_WP .and. fcsa(n).gt.0.0_WP) then
+   if (fcurv(n).gt.0.0_WP .and. fcsa(n).gt.0.0_WP) then
+      ! fthc_avg(n)=fthc_avg(n)/fcnt(n)
+      fcurv(n)=fcurv(n)/fcsa(n)
    else
-      fthc_avg(n)=5.0_WP*this%cfg%min_meshsize
+      ! fthc_avg(n)=5.0_WP*this%cfg%min_meshsize
+      fcurv(n)=this%cfg%min_meshsize
    end if
    ! Min thickness below threshold and film volume greater than a threshold 
    frem_active = .false.
-   ! if (fthc(n).le.this%fmin .and. fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
-   if (fthc_avg(n).le.this%fmin .and.fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
+   if (fthc(n).le.this%fmin .and. fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
+   ! if (fthc_avg(n).le.this%fmin .and.fvol(n).gt.this%fnumcell*this%fmin*(this%vf%cfg%min_meshsize**2)) then
    ! Too close to the end of domain
    else if (frem(n).gt.0.0_WP) then
       frem_active = .true.
@@ -498,8 +656,8 @@ subroutine transfer_films(this,lp_spray)
       cycle
    end if
    ! output to confirm
-   ! if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", fthc(n), "and this is id:", n ,"vol is:", fvol(n)
-   if (this%vf%cfg%amRoot) print *, "This is a thin film with average thickness", fthc_avg(n), "and this is id:", n ,"vol is:", fvol(n)
+   if (this%vf%cfg%amRoot) print *, "This is a thin film with min_thickness", fthc(n), "and this is id:", n ,"vol is:", fvol(n),"cur for the bag",fcurv(n)
+   ! if (this%vf%cfg%amRoot) print *, "This is a thin film with average thickness", fthc_avg(n), "and this is id:", n ,"vol is:", fvol(n)
    ! Assume fd0 across the processor based on the total volume of the film
    if (.not.frem_active) then
       this%fd0 =(6.0_WP*Pi*fvol(n)/this%fbvol2dvol)**(1.0_WP/3.0_WP)
@@ -542,17 +700,7 @@ subroutine transfer_films(this,lp_spray)
          ! Accumulate 
          Vl=Vl+this%vf%VF(i,j,k)*this%vf%cfg%vol(i,j,k)
          if (.not.sampled) then
-            ! Get droplet information based on localized curvature
-            curv_sum=0.0_WP; ncurv=0.0_WP
-            do l=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
-               if (getNumberOfVertices(this%vf%interface_polygon(l,i,j,k)).gt.0) then
-                  curv_sum=curv_sum+abs(this%vf%curv2p(l,i,j,k))
-                  ncurv=ncurv+1.0_WP
-               end if
-            end do
-            ! call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP*ncurv/curv_sum)
-            ! call bag_droplet_gamma(this%fmin,2.0_WP*ncurv/curv_sum)
-            call bag_droplet_gamma(minthic,ncurv/curv_sum)
+            call bag_droplet_gamma(this%fmin,1.0_WP/fcurv(n))
             Vd = pi/6.0_WP*(min(random_gamma(alpha)*beta*this%fd0,2.0_WP*this%frp))**3
             sampled = .true.
          end if
@@ -687,7 +835,7 @@ subroutine transfer_films(this,lp_spray)
    end do
    ! Gather the number of newly generated particles from each processor due to film burst
    totalnewp = 0
-   allocate(plist(0:this%vf%cfg%nproc-1))
+   ! allocate(plist(0:this%vf%cfg%nproc-1))
    ! Get number of particle generated for each processor
    call MPI_AllGATHER(this%np_film,1,MPI_INTEGER,plist,1,MPI_INTEGER,this%vf%cfg%comm,ierr)
    totalnewp= sum(plist)
@@ -695,7 +843,7 @@ subroutine transfer_films(this,lp_spray)
    if (totalnewp .gt. 0) then
       allocate(pinfo_(1:9,1:this%np_film))
       allocate(pinfo(1:9,1:totalnewp))
-      allocate(dispels(0:this%vf%cfg%nproc-1))
+      ! allocate(dispels(0:this%vf%cfg%nproc-1))
       ! Get info
       do ip = np_start+1, this%lp%np_
          pinfo_(1,ip-np_start)=this%lp%p(ip)%d
@@ -720,6 +868,7 @@ subroutine transfer_films(this,lp_spray)
          open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
          if (ierr.ne.0) call die('[transfermodel write spray stats] Could not open file: '//trim(filename))
          do i = 1,totalnewp
+         ! write(iunit,'(f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,f24.16,1x,f24.16,1x,f24.16,1x,I2)')
          write(iunit,*) this%time%t,pinfo(1,i),pinfo(2,i),pinfo(3,i),pinfo(4,i),pinfo(5,i),pinfo(6,i),pinfo(7,i),pinfo(8,i),INT(pinfo(9,i))
          end do
          close(iunit)
@@ -735,7 +884,9 @@ subroutine transfer_films(this,lp_spray)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_film,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_film    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
    end if
-   deallocate(fvol,fthc,frem,fthc_avg,fcnt)
+   ! deallocate(fvol,fthc,frem,fthc_avg,fcnt)
+   deallocate(fvol,fthc,frem,fcnt)
+   ! deallocate(fvol,frem,fthc_avg,fcnt)
    end if 
 
    contains
@@ -807,7 +958,7 @@ subroutine transfer_ligs(this,lp_spray)
    real(WP), dimension(:)    , allocatable :: lrem
    real(WP), dimension(:)    , allocatable :: lSR
    real(WP), dimension(:)    , allocatable :: xmin,xmax,ymin,ymax,zmin,zmax
-   integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_old,count,ip,rank
+   integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_old,count,ip,rank!,np_start
    real(WP) :: x,y,z,x0,y0,z0,lmax,lmid,lmin
    character(len=str_medium) :: filename
    integer, dimension(:), allocatable ::  plist,dispels
@@ -839,8 +990,8 @@ subroutine transfer_ligs(this,lp_spray)
    allocate(struct_type(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));struct_type=0
    call get_liginfo()
 
-   this%thickness=thickness
-   this%struct_type=struct_type*1.0_WP
+   ! this%thickness=thickness
+   ! this%struct_type=struct_type*1.0_WP
    ! Start by performing a CCL based on ligament criteria
    call this%ccl_lig%build(make_label,same_label)
 
@@ -875,6 +1026,9 @@ subroutine transfer_ligs(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl_lig%struct(n)%per(1)*this%vf%cfg%xL
       y=this%vf%cfg%ym(j)-this%ccl_lig%struct(n)%per(2)*this%vf%cfg%yL
       z=this%vf%cfg%zm(k)-this%ccl_lig%struct(n)%per(3)*this%vf%cfg%zL
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL
       ! Accumulate volume and position. Get min thickness and ligament percentage
       lvol(n  )=lvol(n  )+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
       lpos(n,:)=lpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
@@ -928,6 +1082,9 @@ subroutine transfer_ligs(this,lp_spray)
       x=this%vf%cfg%xm(i)-this%ccl_lig%struct(n)%per(1)*this%vf%cfg%xL-x0
       y=this%vf%cfg%ym(j)-this%ccl_lig%struct(n)%per(2)*this%vf%cfg%yL-y0
       z=this%vf%cfg%zm(k)-this%ccl_lig%struct(n)%per(3)*this%vf%cfg%zL-z0
+      ! x=this%vf%Lbary(1,i,j,k)-this%ccl%struct(n)%per(1)*this%vf%cfg%xL-x0
+      ! y=this%vf%Lbary(2,i,j,k)-this%ccl%struct(n)%per(2)*this%vf%cfg%yL-y0
+      ! z=this%vf%Lbary(3,i,j,k)-this%ccl%struct(n)%per(3)*this%vf%cfg%zL-z0
       ! Accumulate moment of inertia
       lmoi(n,1,1)=lmoi(n,1,1)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(y**2+z**2)
       lmoi(n,2,2)=lmoi(n,2,2)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*(z**2+x**2)
@@ -984,6 +1141,7 @@ subroutine transfer_ligs(this,lp_spray)
    this%vof_tf_lig=0.0_WP
    this%np_lig=0
    !! Record initial droplets in each processor for future outputing purpose
+   ! np_start=this%lp%np_
    ! Perform transfer
    do n=1,this%ccl_lig%nstruct
       ! Assume a cylinder ligament
@@ -1069,6 +1227,7 @@ subroutine transfer_ligs(this,lp_spray)
             write(iunit,*)this%time%t,this%lp%p(this%lp%np_)%d,this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3),&
             &norm2([this%lp%p(this%lp%np_)%vel(1),this%lp%p(this%lp%np_)%vel(2),this%lp%p(this%lp%np_)%vel(3)]),this%lp%p(this%lp%np_)%pos(1),&
             &this%lp%p(this%lp%np_)%pos(2),this%lp%p(this%lp%np_)%pos(3),this%lp%p(this%lp%np_)%id  
+            ! print*,"I wrote one particle out of", nsat+nmain
          end do
          ! Close the file
          close(iunit)
@@ -1130,38 +1289,40 @@ subroutine transfer_ligs(this,lp_spray)
                   thickness(i,j,k) = 3.5_WP*this%cfg%min_meshsize
                end if
 
-               ! Calculate moi
-               tmpvol=0.0_WP; tmpxvol=0.0_WP; A=0.0_WP
-               ! First pass to accumulate volume, surface area, and position
-               do kk = k-nneigh_moi,k+nneigh_moi
-                  do jj = j-nneigh_moi,j+nneigh_moi
-                     do ii = i-nneigh_moi,i+nneigh_moi
-                        tmpvol = tmpvol + this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
-                        tmpxvol = tmpxvol + this%vf%Lbary(:,ii,jj,kk)*this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
+               if ((this%vf%VF(i,j,k).gt.VFlo).and.(thickness(i,j,k).lt.this%lmake*this%cfg%min_meshsize))then
+                  ! Calculate moi
+                  tmpvol=0.0_WP; tmpxvol=0.0_WP; A=0.0_WP
+                  ! First pass to accumulate volume, surface area, and position
+                  do kk = k-nneigh_moi,k+nneigh_moi
+                     do jj = j-nneigh_moi,j+nneigh_moi
+                        do ii = i-nneigh_moi,i+nneigh_moi
+                           tmpvol = tmpvol + this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
+                           tmpxvol = tmpxvol + this%vf%Lbary(:,ii,jj,kk)*this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
+                        end do
                      end do
                   end do
-               end do
-               ! Second pass to accumulate moment of inertia
-               tmpxvol = tmpxvol/tmpvol
-               do kk = k-nneigh_moi,k+nneigh_moi
-                  do jj = j-nneigh_moi,j+nneigh_moi
-                     do ii = i-nneigh_moi,i+nneigh_moi
-                        ! Location of film node
-                        tmpL = this%vf%Lbary(:,ii,jj,kk) - tmpxvol
-                        A(1,1)=A(1,1)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(2)**2+tmpL(3)**2)
-                        A(2,2)=A(2,2)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(3)**2)
-                        A(3,3)=A(3,3)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(2)**2)
-                        A(1,2)=A(1,2)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(2)
-                        A(1,3)=A(1,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(3)
-                        A(2,3)=A(2,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(2)*tmpL(3)   
+                  ! Second pass to accumulate moment of inertia
+                  tmpxvol = tmpxvol/tmpvol
+                  do kk = k-nneigh_moi,k+nneigh_moi
+                     do jj = j-nneigh_moi,j+nneigh_moi
+                        do ii = i-nneigh_moi,i+nneigh_moi
+                           ! Location of film node
+                           tmpL = this%vf%Lbary(:,ii,jj,kk) - tmpxvol
+                           A(1,1)=A(1,1)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(2)**2+tmpL(3)**2)
+                           A(2,2)=A(2,2)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(3)**2)
+                           A(3,3)=A(3,3)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(2)**2)
+                           A(1,2)=A(1,2)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(2)
+                           A(1,3)=A(1,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(3)
+                           A(2,3)=A(2,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(2)*tmpL(3)   
+                        end do
                      end do
                   end do
-               end do
-               ! Calculate local struct type
-               call dsyev('V','U',3,A,3,d,work,lwork,info)
-               d=max(0.0_WP,d)
-               if (d(3).gt.(this%lstratio*d(1))) struct_type(i,j,k)=struct_type(i,j,k)+1
-               if (d(3).gt.(this%lstratio*d(2))) struct_type(i,j,k)=struct_type(i,j,k)+1
+                  ! Calculate local struct type
+                  call dsyev('V','U',3,A,3,d,work,lwork,info)
+                  d=max(0.0_WP,d)
+                  if (d(3).gt.(this%lstratio*d(1))) struct_type(i,j,k)=struct_type(i,j,k)+1
+                  if (d(3).gt.(this%lstratio*d(2))) struct_type(i,j,k)=struct_type(i,j,k)+1
+               end if
             end do 
          end do 
       end do
@@ -1420,17 +1581,26 @@ end subroutine transfer_ligs
          allocate(this%Ui  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Vi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Wi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-         allocate(this%thickness  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-         allocate(this%struct_type  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%Umean2em3   (this%cfg%jmin:this%cfg%jmax));this%Umean2em3=0.0_WP
+         allocate(this%U2mean2em3  (this%cfg%jmin:this%cfg%jmax));this%U2mean2em3=0.0_WP
+         allocate(this%Umean6em3   (this%cfg%jmin:this%cfg%jmax));this%Umean6em3=0.0_WP
+         allocate(this%U2mean6em3  (this%cfg%jmin:this%cfg%jmax));this%U2mean6em3=0.0_WP
+         allocate(this%Umean1em2   (this%cfg%jmin:this%cfg%jmax));this%Umean1em2=0.0_WP
+         allocate(this%U2mean1em2  (this%cfg%jmin:this%cfg%jmax));this%U2mean1em2=0.0_WP
+         allocate(this%EPLmean (this%cfg%imin:this%cfg%imax));this%EPLmean=0.0_WP
+         allocate(this%EPL2mean(this%cfg%imin:this%cfg%imax));this%EPL2mean=0.0_WP
+         this%timeint=0.0_WP
+         ! allocate(this%thickness  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         ! allocate(this%struct_type  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       end block allocate_work_arrays
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
-         use vfs_class, only: elvira,r2p,remap,r2pnet
+         use vfs_class, only: elvira,r2p,remap,r2pnet,flux
          integer :: i,j,k
          real(WP) :: xloc,rad
          ! Create a VOF solver with LVIRA
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=flux,name='VOF')
          this%vf%thin_thld_min=0.0_WP
          this%vf%flotsam_thld=0.0_WP
          ! this%vf%maxcurv_times_mesh=1.0_WP
@@ -1519,7 +1689,7 @@ end subroutine transfer_ligs
          real(WP) :: Qgas,Qliq,myU
          real(WP), parameter :: SLPM2SI=1.66667E-5_WP
          ! Initialize density
-         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_sRHO(rho=this%resU)
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
          ! Zero initial field
          this%fs%U=0.0_WP; this%fs%V=0.0_WP; this%fs%W=0.0_WP
          ! Read in gas flow rate and convert to SI
@@ -1581,7 +1751,7 @@ end subroutine transfer_ligs
          this%fs%Wmid=this%fs%Wmid-this%resW/this%fs%sRHOZ**2
          call this%fs%get_U()
          ! Calculate cell-centered velocities and divergence
-         call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
+         call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
          call this%fs%get_div()
       end block initialize_velocity
 
@@ -1622,7 +1792,7 @@ end subroutine transfer_ligs
             this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             ! this%fmin=2.2e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             ! this%fmin=1.0e-8 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
-            this%fmin=2.5e-5 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            this%fmin=1.0e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%fnumcell=50.0_WP
             ! Zero out monitoring variables
             this%vof_tf_film=0.0_WP
@@ -1745,7 +1915,7 @@ end subroutine transfer_ligs
             ! Adjust MFR for global mass balance
             call this%fs%correct_mfr()
             ! Compute cell-centered velocity
-            call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
+            call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
             ! Compute divergence
             call this%fs%get_div()
             ! Also update time
@@ -1779,15 +1949,15 @@ end subroutine transfer_ligs
       create_smesh: block
          use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
          integer :: i,j,k,np,nplane
-         this%smesh=surfmesh(nvar=8,name='plic')
+         this%smesh=surfmesh(nvar=7,name='plic')
          this%smesh%varname(1)='nplane'
          this%smesh%varname(2)='thickness'
          this%smesh%varname(3)='ccl_film'
          this%smesh%varname(4)='norm_abs'
          this%smesh%varname(5)='norm_sig'
          this%smesh%varname(6)='ccl_lig'
-         this%smesh%varname(7)='thickness_unfilt'
-         this%smesh%varname(8)='thin_sensor'
+         this%smesh%varname(7)='thin_sensor'
+         ! this%smesh%varname(7)='thickness_unfilt'
          ! this%smesh%varname(8)='struct_type'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh(this%smesh)
@@ -1808,8 +1978,8 @@ end subroutine transfer_ligs
                         this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
                         this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
                         this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
-                        this%smesh%var(7,np)=this%thickness(i,j,k)
-                        this%smesh%var(8,np)=this%vf%thin_sensor(i,j,k)*1.0_WP
+                        this%smesh%var(7,np)=this%vf%thin_sensor(i,j,k)*1.0_WP
+                        ! this%smesh%var(7,np)=this%thickness(i,j,k)
                         ! this%smesh%var(8,np)=this%struct_type(i,j,k)
                      end if
                   end do
@@ -1852,7 +2022,16 @@ end subroutine transfer_ligs
          if (this%ens_evt%occurs()) call this%ens_out%write_data(this%time%t)
       end block create_ensight
       
-
+      create_stat: block
+         use filesys,  only: makedir,isdir
+         if (this%cfg%amRoot) then
+            if (.not.isdir('stats')) call makedir('stats')
+         end if
+         this%stat_evt=event(time=this%time,name='stat output')
+         call this%input%read('Stat output period',this%stat_evt%tper)
+         call this%input%read('Stat begin',this%stat_begin)
+      end block create_stat
+      
       ! Create a monitor file
       create_monitor: block
          ! Prepare some info about fields
@@ -1868,6 +2047,9 @@ end subroutine transfer_ligs
          call this%mfile%add_column(this%fs%Umax,'Umax')
          call this%mfile%add_column(this%fs%Vmax,'Vmax')
          call this%mfile%add_column(this%fs%Wmax,'Wmax')
+         call this%mfile%add_column(this%fs%Umidmax,'Umidmax')
+         call this%mfile%add_column(this%fs%Vmidmax,'Vmidmax')
+         call this%mfile%add_column(this%fs%Wmidmax,'Wmidmax')
          call this%mfile%add_column(this%fs%Pmax,'Pmax')
          call this%mfile%add_column(this%vf%VFmax,'VOF maximum')
          call this%mfile%add_column(this%vf%VFmin,'VOF minimum')
@@ -2024,6 +2206,7 @@ end subroutine transfer_ligs
 
    !> Take one time step
    subroutine step(this,lp)
+      use tpns_class, only: arithmetic_visc
       implicit none
       class(atom), intent(inout) :: this
       class(lpt), intent(inout) :: lp 
@@ -2052,13 +2235,13 @@ end subroutine transfer_ligs
       call this%vf%advance(dt=this%time%dt,U=this%fs%Umid,V=this%fs%Vmid,W=this%fs%Wmid)
       
       ! Update sqrt(face density) and momentum vector
-      this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_sRHO(rho=this%resU)
+      this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
       this%fs%rhoU=this%fs%rho_l*this%vf%UFl(1,:,:,:)+this%fs%rho_g*this%vf%UFg(1,:,:,:)
       this%fs%rhoV=this%fs%rho_l*this%vf%UFl(2,:,:,:)+this%fs%rho_g*this%vf%UFg(2,:,:,:)
       this%fs%rhoW=this%fs%rho_l*this%vf%UFl(3,:,:,:)+this%fs%rho_g*this%vf%UFg(3,:,:,:)
 
        ! Prepare new staggered viscosity (at n+1)
-      call this%fs%get_viscosity(vf=this%vf)
+      call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
       
       ! Turbulence modeling
       sgs_modeling: block
@@ -2125,7 +2308,7 @@ end subroutine transfer_ligs
          call this%fs%update_laplacian()
          call this%fs%correct_mfr()
          call this%fs%get_div()
-         call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
          this%fs%psolv%sol=0.0_WP
          call this%fs%psolv%solve()
@@ -2147,7 +2330,7 @@ end subroutine transfer_ligs
       end do
       
       ! Recompute interpolated velocity and divergence
-      call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
+      call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
       call this%fs%get_div()
       
       ! attempt transfter
@@ -2204,8 +2387,8 @@ end subroutine transfer_ligs
                            this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
                            this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
                            this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
-                           this%smesh%var(7,np)=this%thickness(i,j,k)
-                           this%smesh%var(8,np)=this%vf%thin_sensor(i,j,k)*1.0_WP
+                           this%smesh%var(7,np)=this%vf%thin_sensor(i,j,k)*1.0_WP
+                           ! this%smesh%var(7,np)=this%thickness(i,j,k)
                            ! this%smesh%var(8,np)=this%struct_type(i,j,k)
                         end if
                      end do

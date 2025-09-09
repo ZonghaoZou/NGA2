@@ -23,7 +23,7 @@ module nozzle_class
       !> Provide a datafile and an event tracker for saving restarts
       type(event)    :: save_evt
       type(pardata)  :: df
-      logical :: restarted
+      logical :: restarted,converged
       
       !> Input file for the simulation
       type(inputfile) :: input
@@ -322,6 +322,7 @@ contains
          ! Check if we are restarting
          call this%input%read('Restart from',timestamp,default='')
          this%restarted=.false.; if (len_trim(timestamp).gt.0) this%restarted=.true.
+         call this%input%read('Taken from Converged',this%converged,default=.false.)
          ! Read in the I/O partition
          call this%input%read('I/O partition',iopartition)
          ! Perform pardata initialization
@@ -333,16 +334,16 @@ contains
             if (this%cfg%amRoot) then
                if (.not.isdir('restart')) call makedir('restart')
             end if
-            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=4)
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=6)
             this%df%valname=['t ','dt']
-            this%df%varname=['U  ','V  ','W  ','P  ']
+            this%df%varname=['U  ','V  ','W  ','P  ','LM ','MM ']
          end if
       end block restart_and_save
       
       
       ! Revisit timetracker to adjust time and time step values if this is a restart
       update_timetracker: block
-         if (this%restarted) then
+         if (this%restarted.and.(.not.this%converged)) then
             call this%df%pull(name='t' ,val=this%time%t )
             call this%df%pull(name='dt',val=this%time%dt)
             this%time%told=this%time%t-this%time%dt
@@ -473,6 +474,10 @@ contains
       ! Create an LES model
       create_sgs: block
          this%sgs=sgsmodel(cfg=this%fs%cfg,umask=this%fs%umask,vmask=this%fs%vmask,wmask=this%fs%wmask)
+         ! if (this%restarted.and.(.not.this%converged)) then
+         !    call this%df%pull(name='LM',var=this%sgs%LM)
+         !    call this%df%pull(name='MM',var=this%sgs%MM)
+         ! end if
       end block create_sgs
       
       
@@ -637,7 +642,7 @@ contains
       
       ! Finally, see if it's time to save restart files
       if (this%save_evt%occurs()) then
-         if (this%cfg%amRoot) print *, " Starting nozzle writing"
+         ! if (this%cfg%amRoot) print *, " Starting nozzle writing"
          save_restart: block
             use string, only: str_medium
             character(len=str_medium) :: timestamp
@@ -650,9 +655,11 @@ contains
             call this%df%push(name='V' ,var=this%fs%V   )
             call this%df%push(name='W' ,var=this%fs%W   )
             call this%df%push(name='P' ,var=this%fs%P   )
+            ! call this%df%push(name='LM', var=this%sgs%LM)
+            ! call this%df%push(name='MM', var=this%sgs%MM)
             call this%df%write(fdata='restart/data_nozzle_'//trim(adjustl(timestamp)))
          end block save_restart
-         if (this%cfg%amRoot) print *, " Finishing nozzle writing"
+         ! if (this%cfg%amRoot) print *, " Finishing nozzle writing"
       end if
       
    end subroutine step
