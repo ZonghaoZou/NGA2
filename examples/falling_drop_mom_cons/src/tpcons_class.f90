@@ -29,7 +29,7 @@ module tpcons_class
    ! List of available averaging strategies for viscosity
    integer, parameter, public :: harmonic_visc=1     !< Harmonically-averaged viscosity
    integer, parameter, public :: arithmetic_visc=2   !< Arithmetically-averaged viscosity
-   integer, parameter, public :: setband=1
+   integer, parameter, public :: setband=0
    !> Boundary conditions for the two-phase solver
    type :: bcond
       type(bcond), pointer :: next                        !< Linked list of bconds
