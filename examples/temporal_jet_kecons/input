@@ -12,8 +12,8 @@ nz : 128
 # Fluid properties
 Reynolds number : 5000
 Weber number :    5000
-Viscosity ratio : 66.7
-Density ratio :   657.5
+Viscosity ratio : 20
+Density ratio :   20
 
 # Time integration
 Max timestep size : 2.5e-2
@@ -22,9 +22,12 @@ Max time :          100
 
 # Pressure solver
 Pressure tolerance : 1e-4
-Pressure iteration : 200
+Pressure iteration : 100
 
 # Other options
+Use HIT             : .true.
+Target Re_lambda    :    45
+Turbulence intensity: 0.019
 Use implicit solver : .true.
 Use SGS model :       .true.
 

@@ -1,5 +1,5 @@
 # Parallelization
-Partition :	8 1 1
+Partition :	6 1 1
 
 # Mesh definition
 Lx : 8
@@ -25,6 +25,9 @@ Pressure tolerance : 1e-4
 Pressure iteration : 100
 
 # Other options
+Use HIT             : .true.
+Target Re_lambda    :    45
+Turbulence intensity: 0.019
 Use implicit solver : .true.
 Use SGS model :       .true.
 

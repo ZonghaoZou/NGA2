@@ -4,10 +4,10 @@ NGA_HOME ?= ../..
 # Compilation parameters
 PRECISION = DOUBLE
 USE_MPI   = TRUE
+USE_FFTW  = TRUE
 USE_HYPRE = TRUE
 USE_LAPACK= TRUE
 USE_IRL   = TRUE
-USE_ODRPACK=FALSE
 PROFILE   = FALSE
 DEBUG     = FALSE
 COMP      = gnu
@@ -29,7 +29,7 @@ VPATH_LOCATIONS   += $(Ulocs)
 include $(NGA_HOME)/tools/GNUMake/Make.defs
 
 # Include NGA base code
-Bdirs   := core two_phase subgrid data solver config grid libraries
+Bdirs   := core two_phase subgrid data solver config grid libraries solver transform constant_density
 Bpack   += $(foreach dir, $(Bdirs), $(NGA_HOME)/src/$(dir)/Make.package)
 include $(Bpack)
 

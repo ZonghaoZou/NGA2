@@ -13,6 +13,7 @@ module simulation
    use surfmesh_class,    only: surfmesh
    use event_class,       only: event
    use monitor_class,     only: monitor
+   use hit_class,         only: hit
    use resource_tracker,  only: getRSS
    implicit none
    private
@@ -26,7 +27,8 @@ module simulation
    !> Implicit solver
    logical     :: use_implicit !< Is an implicit solver used?
    type(ddadi) :: vs           !< DDADI solver for velocity   
-   
+   !> HIT
+   type(hit)      :: turb 
    !> SGS modeling
    logical        :: use_sgs   !< Is an LES model used?
    type(sgsmodel) :: sgs       !< SGS model for eddy viscosity
@@ -131,7 +133,7 @@ contains
          use tpns_class,      only: slip
          ! Create flow solver
          call fs%initialize(cfg=cfg,name='Two-phase NS')
-         fs%theta=fs%theta+1.0e-1_WP
+         fs%theta=fs%theta+5.0e-2_WP
          ! Read in flow conditions
          fs%rho_l=1.0_WP
          call param_read('Density ratio'  ,fs%rho_g);  fs%rho_g =1.0_WP/fs%rho_g
@@ -167,25 +169,42 @@ contains
       initialize_velocity: block
          use random,    only: random_uniform
          use mathtools, only: Pi
+         use parallel, only: group
          integer :: i,j,k
-         real(WP) :: amp
+         real(WP) :: amp,dt
+         logical :: isHIT
+         call param_read('Use HIT', isHIT)
+         if (isHIT) then
+            ! Initialize HIT
+            call turb%init(group=group,xend=0.0_WP)
+            ! Run HIT until t/tau_eddy=20
+            dt=0.15_WP*turb%cfg%min_meshsize/turb%Urms_tgt !< Estimate maximum stable dt
+            do while (turb%time%t.lt.20.0_WP*turb%tau_tgt); call turb%step(dt); end do
+
+            do k=fs%cfg%kmin_,fs%cfg%kmax_; do j=fs%cfg%jmin_,fs%cfg%jmax_; do i=fs%cfg%imin_,fs%cfg%imax_
+               if (sqrt(fs%cfg%ym(j)**2+fs%cfg%zm(k)**2).lt.0.5_WP) then
+                  fs%U(i,j,k)=turb%fs%U(i,j,k); fs%V(i,j,k)=turb%fs%V(i,j,k); fs%W(i,j,k)=turb%fs%W(i,j,k)
+               end if
+            end do; end do; end do
+         else
+            ! Initialize with powerlaw profile in the liquid jet normalized to Ubulk=1.0
+            do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
+               fs%U(i,j,k)=max(0.0_WP,(1.0_WP-sqrt(fs%cfg%ym(j)**2+fs%cfg%zm(k)**2)/0.5_WP)**(1.0_WP/7.0_WP))
+            end do; end do; end do
+            resU=vf%VF*fs%U; call cfg%integrate(A=resU,integral=amp); fs%U=0.25_WP*fs%U*cfg%xL*Pi/amp
+            ! Add random disturbances
+            call param_read('Perturbation amplitude',amp,default=0.05_WP)
+            do k=fs%cfg%kmin_,fs%cfg%kmax_; do j=fs%cfg%jmin_,fs%cfg%jmax_; do i=fs%cfg%imin_,fs%cfg%imax_
+               if (sqrt(fs%cfg%ym(j)**2+fs%cfg%zm(k)**2).lt.0.5_WP) then
+                  fs%U(i,j,k)=fs%U(i,j,k)+random_uniform(lo=-amp,hi=+amp)
+                  fs%V(i,j,k)=            random_uniform(lo=-amp,hi=+amp)
+                  fs%W(i,j,k)=            random_uniform(lo=-amp,hi=+amp)
+               end if
+            end do; end do; end do
+         end if
+         call cfg%sync(fs%U); call cfg%sync(fs%V); call cfg%sync(fs%W)
          ! Initialize density
          resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
-         ! Initialize with powerlaw profile in the liquid jet normalized to Ubulk=1.0
-         do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_
-            fs%U(i,j,k)=max(0.0_WP,(1.0_WP-sqrt(fs%cfg%ym(j)**2+fs%cfg%zm(k)**2)/0.5_WP)**(1.0_WP/7.0_WP))
-         end do; end do; end do
-         resU=vf%VF*fs%U; call cfg%integrate(A=resU,integral=amp); fs%U=0.25_WP*fs%U*cfg%xL*Pi/amp
-         ! Add random disturbances
-         call param_read('Perturbation amplitude',amp,default=0.05_WP)
-         do k=fs%cfg%kmin_,fs%cfg%kmax_; do j=fs%cfg%jmin_,fs%cfg%jmax_; do i=fs%cfg%imin_,fs%cfg%imax_
-            if (sqrt(fs%cfg%ym(j)**2+fs%cfg%zm(k)**2).lt.0.5_WP) then
-               fs%U(i,j,k)=fs%U(i,j,k)+random_uniform(lo=-amp,hi=+amp)
-               fs%V(i,j,k)=            random_uniform(lo=-amp,hi=+amp)
-               fs%W(i,j,k)=            random_uniform(lo=-amp,hi=+amp)
-            end if
-         end do; end do; end do
-         call cfg%sync(fs%U); call cfg%sync(fs%V); call cfg%sync(fs%W)
          ! Apply all other boundary conditions
          call fs%apply_bcond(time%t,time%dt)
          ! Copy to Umid and make it solenoidal
