@@ -95,7 +95,7 @@ contains
             ! Initialize liquid volume to zero and set corresponding PLIC
             vf%VF(i,j,k)=0.0_WP; vf%Lbary(:,i,j,k)=[vf%cfg%xm(i),vf%cfg%ym(j),vf%cfg%zm(k)]; vf%Gbary(:,i,j,k)=[vf%cfg%xm(i),vf%cfg%ym(j),vf%cfg%zm(k)]
             call setNumberOfPlanes(vf%liquid_gas_interface(i,j,k),1); call setPlane(vf%liquid_gas_interface(i,j,k),0,[0.0_WP,0.0_WP,0.0_WP],sign(1.0_WP,vf%VF(i,j,k)-0.5_WP))
-            ! Not set volume moments for a liquid jet
+            ! Now set volume moments for a liquid jet
             call initialize_volume_moments(lo=[vf%cfg%x(i),vf%cfg%y(j),vf%cfg%z(k)],hi=[vf%cfg%x(i+1),vf%cfg%y(j+1),vf%cfg%z(k+1)],&
             &                              levelset=levelset_jet,time=0.0_WP,level=5,VFlo=VFlo,VF=vf%VF(i,j,k),BL=vf%Lbary(:,i,j,k),BG=vf%Gbary(:,i,j,k))
          end do; end do; end do
@@ -103,6 +103,8 @@ contains
          call vf%update_band()
          ! Perform interface reconstruction from VOF field
          call vf%build_interface()
+         ! Set simple full-liquid/full-gas interface planes in geometric overlap cells
+         call vf%set_full_bcond()
          ! Create discontinuous polygon mesh from IRL interface
          call vf%polygonalize_interface()
          ! Calculate distance from polygons
@@ -129,6 +131,7 @@ contains
          use tpns_class,      only: slip
          ! Create flow solver
          call fs%initialize(cfg=cfg,name='Two-phase NS')
+         fs%theta=fs%theta+1.0e-1_WP
          ! Read in flow conditions
          fs%rho_l=1.0_WP
          call param_read('Density ratio'  ,fs%rho_g);  fs%rho_g =1.0_WP/fs%rho_g
@@ -191,8 +194,8 @@ contains
          call fs%get_mfr()
          ! Adjust MFR for global mass balance
          call fs%correct_mfr()
-         ! Compute cell-centered velocity
-         call fs%interp_vel(Ui,Vi,Wi)
+         ! Update laplacian
+         call fs%update_laplacian()
          ! Compute divergence
          call fs%get_div()
          fs%psolv%rhs=-fs%cfg%vol*fs%div
@@ -391,7 +394,7 @@ contains
          
          ! Apply time-varying Dirichlet conditions
          ! This is where time-dpt Dirichlet would be enforced
-         
+         call vf%advance(dt=time%dt,U=fs%Umid,V=fs%Vmid,W=fs%Wmid)
          ! Update sqrt(face density) and momentum vector
          resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
          fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
@@ -408,7 +411,7 @@ contains
                use sgsmodel_class, only: vreman
                integer :: i,j,k
                resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF)
-               call fs%get_gradu(gradU)
+               call fs%get_gradUmid(gradU)
                call sgs%get_visc(type=vreman,dt=time%dtold,rho=resU,gradu=gradU)
                do k=fs%cfg%kmino_+1,fs%cfg%kmaxo_; do j=fs%cfg%jmino_+1,fs%cfg%jmaxo_; do i=fs%cfg%imino_+1,fs%cfg%imaxo_
                   fs%visc   (i,j,k)=fs%visc   (i,j,k)+sgs%visc(i,j,k)
