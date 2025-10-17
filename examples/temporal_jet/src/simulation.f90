@@ -13,7 +13,7 @@ module simulation
    use surfmesh_class,    only: surfmesh
    use event_class,       only: event
    use monitor_class,     only: monitor
-   use hit_class,         only: hit
+   use periodicpipe_class,only: periodicpipe
    use resource_tracker,  only: getRSS
    implicit none
    private
@@ -26,8 +26,8 @@ module simulation
    !> Implicit solver
    logical     :: use_implicit !< Is an implicit solver used?
    type(ddadi) :: vs           !< DDADI solver for velocity   
-   !> HIT
-   type(hit)      :: turb 
+   !> PIPE
+   type(periodicpipe) :: pipe
    !> SGS modeling
    logical        :: use_sgs   !< Is an LES model used?
    type(sgsmodel) :: sgs       !< SGS model for eddy viscosity
@@ -167,20 +167,15 @@ contains
          use parallel, only: group
          integer :: i,j,k
          real(WP) :: amp,dt
-         logical :: isHIT
-         call param_read('Use HIT', isHIT)
-         if (isHIT) then
-            ! Initialize HIT
-            call turb%init(group=group,xend=0.0_WP)
-            ! Run HIT until t/tau_eddy=20
-            dt=0.15_WP*turb%cfg%min_meshsize/turb%Urms_tgt !< Estimate maximum stable dt
-            do while (turb%time%t.lt.20.0_WP*turb%tau_tgt); call turb%step(dt); end do
-
-            do k=fs%cfg%kmin_,fs%cfg%kmax_; do j=fs%cfg%jmin_,fs%cfg%jmax_; do i=fs%cfg%imin_,fs%cfg%imax_
-               if (sqrt(fs%cfg%ym(j)**2+fs%cfg%zm(k)**2).lt.0.5_WP) then
-                  fs%U(i,j,k)=turb%fs%U(i,j,k); fs%V(i,j,k)=turb%fs%V(i,j,k); fs%W(i,j,k)=turb%fs%W(i,j,k)
-               end if
-            end do; end do; end do
+         logical :: isPipe
+         call param_read('Use Pipe Simulation', isPipe)
+         if (isPipe) then
+            ! Initialize PIPE
+            call pipe%init(group=group)
+            do while (pipe%time%t.le.pipe%time%tmax)
+               call pipe%step()
+            end do
+            fs%U=pipe%fs%U; fs%V=pipe%fs%V; fs%W=pipe%fs%W
          else
             ! Initialize with powerlaw profile in the liquid jet normalized to Ubulk=1.0
             do k=fs%cfg%kmino_,fs%cfg%kmaxo_; do j=fs%cfg%jmino_,fs%cfg%jmaxo_; do i=fs%cfg%imino_,fs%cfg%imaxo_

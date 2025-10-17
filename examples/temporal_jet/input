@@ -25,11 +25,25 @@ Pressure tolerance : 1e-4
 Pressure iteration : 100
 
 # Other options
-Use HIT             : .true.
-Target Re_lambda    :    45
-Turbulence intensity: 0.019
+Use Pipe Simulation : .true.
 Use implicit solver : .true.
 Use SGS model :       .true.
 
 # Ensight output
-Ensight output period : 1
+Ensight output period : 0.00001
+
+
+# Pipe info
+# Time integration
+[Pipe] I/O partition : 1 1 1
+[Pipe] Max timestep size : 0.02
+[Pipe] Max cfl number :    0.8
+[Pipe] Max time          : 100
+
+# Other options
+[Pipe] Use implicit solver : .false.
+[Pipe] Use SGS model :       .false.
+
+# Restart handling
+[Pipe] Restart output period : 20
+[Pipe] Restart from : 
