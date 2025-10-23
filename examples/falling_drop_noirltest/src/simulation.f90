@@ -101,6 +101,7 @@ contains
          call param_read('Falling Drop Activated',falling)
          call param_read('Surface tension Activated',STflag)
          call param_read('Implicit',Implicit)
+         call param_read('Momemtum Flux Type',vf%momflux_type)
          do k=vf%cfg%kmino_,vf%cfg%kmaxo_
             do j=vf%cfg%jmino_,vf%cfg%jmaxo_
                do i=vf%cfg%imino_,vf%cfg%imaxo_
@@ -158,6 +159,14 @@ contains
          use hypre_str_class, only: pcg_pfmg2
          real(WP) :: Re,Fr,We,r,m
          call param_read('Method type',type_method)
+         if (type_method.eq.2) then 
+            vf%oct_cut=.false.
+            vf%momflux_type=0
+         else if (type_method.eq.1.and.vf%momflux_type.eq.1) then 
+            vf%oct_cut=.false.
+         else
+            vf%oct_cut=.true.
+         end if
          ! Create flow solver
          call fs%initialize(cfg=cfg,name='Two-phase NS')
          ! Read in adimensional parameters

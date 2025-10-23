@@ -55,13 +55,96 @@ module vfs_class
    
    ! Cutting tables
    integer, dimension(4,8)    :: tet_map =reshape([ 7, 4, 3, 6, 6, 3, 2, 4, 6, 2, 1, 4, 7, 8, 4, 6, 6, 5, 8, 4, 6, 5, 4, 1, 5, 6, 8, 9, 6, 7, 8, 9],shape(tet_map))
-   integer, dimension(6,16)   :: cut_side=reshape([ 1,-1,-1,-1,-1,-1, 2, 1, 1, 1,-1,-1, 2, 1, 1, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 1, 1, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1,-1,-1, 2, 1, 1, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1,-1,-1, 2, 2, 2, 1,-1,-1, 2,-1,-1,-1,-1,-1],shape(cut_side))
-   integer, dimension(4,16)   :: cut_v1  =reshape([-1,-1,-1,-1, 1, 1, 1,-1, 2, 2, 2,-1, 1, 2, 1, 2, 3, 3, 3,-1, 1, 3, 1, 3, 2, 3, 2, 3, 4, 4, 4,-1, 4, 4, 4,-1, 1, 4, 1, 4, 2, 4, 2, 4, 3, 3, 3,-1, 3, 4, 3, 4, 2, 2, 2,-1, 1, 1, 1,-1,-1,-1,-1,-1],shape(cut_v1))
-   integer, dimension(4,16)   :: cut_v2  =reshape([-1,-1,-1,-1, 2, 3, 4,-1, 3, 4, 1,-1, 4, 4, 3, 3, 4, 1, 2,-1, 4, 4, 2, 2, 4, 4, 1, 1, 1, 2, 3,-1, 1, 2, 3,-1, 3, 3, 2, 2, 3, 3, 1, 1, 4, 1, 2,-1, 2, 2, 1, 1, 3, 4, 1,-1, 2, 3, 4,-1,-1,-1,-1,-1],shape(cut_v2))
-   integer, dimension(4,6,16) :: cut_vtet=reshape([ 1, 2, 3, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1, 5, 7, 6, 1, 6, 2, 3, 4, 4, 2, 5, 6, 5, 6, 7, 4,-1,-1,-1,-1,-1,-1,-1,-1, 7, 5, 6, 2, 1, 3, 4, 6, 1, 5, 3, 6, 5, 7, 6, 1,-1,-1,-1,-1,-1,-1,-1,-1, 5, 8, 6, 2, 5, 7, 8, 1, 5, 1, 8, 2, 5, 6, 8, 4, 5, 8, 7, 3, 5, 8, 3, 4, 6, 5, 7, 3, 2, 1, 4, 6, 6, 5, 4, 2, 6, 7, 5, 2,-1,-1,-1,-1,-1,-1,-1,-1, 5, 6, 8, 3, 5, 8, 7, 1, 5, 8, 1, 3, 5, 8, 6, 4, 5, 7, 8, 2, 5, 8, 4, 2, 8, 6, 5, 3, 5, 7, 8, 2, 8, 5, 2, 3, 8, 5, 6, 4, 5, 8, 7, 1, 5, 8, 1, 4, 1, 2, 3, 7, 1, 2, 7, 6, 5, 7, 6, 1, 5, 6, 7, 4,-1,-1,-1,-1,-1,-1,-1,-1, 5, 6, 7, 4, 1, 2, 3, 6, 5, 1, 3, 6, 5, 7, 6, 3,-1,-1,-1,-1,-1,-1,-1,-1, 5, 8, 6, 4, 5, 7, 8, 1, 5, 8, 4, 1, 5, 6, 8, 3, 5, 8, 7, 2, 5, 8, 2, 3, 8, 5, 6, 4, 5, 8, 7, 2, 8, 2, 5, 4, 8, 6, 5, 3, 5, 7, 8, 1, 5, 8, 3, 1, 1, 4, 2, 7, 4, 1, 6, 7, 6, 7, 5, 4, 6, 5, 7, 3,-1,-1,-1,-1,-1,-1,-1,-1, 8, 6, 5, 4, 5, 7, 8, 3, 8, 4, 5, 3, 8, 5, 6, 2, 5, 8, 7, 1, 5, 8, 1, 2, 3, 4, 1, 7, 7, 6, 3, 4, 7, 6, 5, 3, 7, 5, 6, 2,-1,-1,-1,-1,-1,-1,-1,-1, 7, 4, 2, 3, 2, 3, 6, 7, 5, 6, 7, 2, 5, 7, 6, 1,-1,-1,-1,-1,-1,-1,-1,-1, 1, 2, 3, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],shape(cut_vtet))
-   integer, dimension(16) :: cut_ntets=[1,4,4,6,4,6,6,4,4,6,6,4,6,4,4,1]
-   integer, dimension(16) :: cut_nvert=[0,3,3,4,3,4,4,3,3,4,4,3,4,3,3,0]
-   integer, dimension(16) :: cut_nntet=[1,2,2,4,2,4,4,4,2,4,4,4,4,4,4,2]
+   ! integer, dimension(6,16)   :: cut_side=reshape([ 1,-1,-1,-1,-1,-1, 2, 1, 1, 1,-1,-1, 2, 1, 1, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 1, 1, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1,-1,-1, 2, 1, 1, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1,-1,-1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1,-1,-1, 2, 2, 2, 1,-1,-1, 2,-1,-1,-1,-1,-1],shape(cut_side))
+   ! integer, dimension(4,16)   :: cut_v1  =reshape([-1,-1,-1,-1, 1, 1, 1,-1, 2, 2, 2,-1, 1, 2, 1, 2, 3, 3, 3,-1, 1, 3, 1, 3, 2, 3, 2, 3, 4, 4, 4,-1, 4, 4, 4,-1, 1, 4, 1, 4, 2, 4, 2, 4, 3, 3, 3,-1, 3, 4, 3, 4, 2, 2, 2,-1, 1, 1, 1,-1,-1,-1,-1,-1],shape(cut_v1))
+   ! integer, dimension(4,16)   :: cut_v2  =reshape([-1,-1,-1,-1, 2, 3, 4,-1, 3, 4, 1,-1, 4, 4, 3, 3, 4, 1, 2,-1, 4, 4, 2, 2, 4, 4, 1, 1, 1, 2, 3,-1, 1, 2, 3,-1, 3, 3, 2, 2, 3, 3, 1, 1, 4, 1, 2,-1, 2, 2, 1, 1, 3, 4, 1,-1, 2, 3, 4,-1,-1,-1,-1,-1],shape(cut_v2))
+   ! integer, dimension(4,6,16) :: cut_vtet=reshape([ 1, 2, 3, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1, 5, 7, 6, 1, 6, 2, 3, 4, 4, 2, 5, 6, 5, 6, 7, 4,-1,-1,-1,-1,-1,-1,-1,-1, 7, 5, 6, 2, 1, 3, 4, 6, 1, 5, 3, 6, 5, 7, 6, 1,-1,-1,-1,-1,-1,-1,-1,-1, 5, 8, 6, 2, 5, 7, 8, 1, 5, 1, 8, 2, 5, 6, 8, 4, 5, 8, 7, 3, 5, 8, 3, 4, 6, 5, 7, 3, 2, 1, 4, 6, 6, 5, 4, 2, 6, 7, 5, 2,-1,-1,-1,-1,-1,-1,-1,-1, 5, 6, 8, 3, 5, 8, 7, 1, 5, 8, 1, 3, 5, 8, 6, 4, 5, 7, 8, 2, 5, 8, 4, 2, 8, 6, 5, 3, 5, 7, 8, 2, 8, 5, 2, 3, 8, 5, 6, 4, 5, 8, 7, 1, 5, 8, 1, 4, 1, 2, 3, 7, 1, 2, 7, 6, 5, 7, 6, 1, 5, 6, 7, 4,-1,-1,-1,-1,-1,-1,-1,-1, 5, 6, 7, 4, 1, 2, 3, 6, 5, 1, 3, 6, 5, 7, 6, 3,-1,-1,-1,-1,-1,-1,-1,-1, 5, 8, 6, 4, 5, 7, 8, 1, 5, 8, 4, 1, 5, 6, 8, 3, 5, 8, 7, 2, 5, 8, 2, 3, 8, 5, 6, 4, 5, 8, 7, 2, 8, 2, 5, 4, 8, 6, 5, 3, 5, 7, 8, 1, 5, 8, 3, 1, 1, 4, 2, 7, 4, 1, 6, 7, 6, 7, 5, 4, 6, 5, 7, 3,-1,-1,-1,-1,-1,-1,-1,-1, 8, 6, 5, 4, 5, 7, 8, 3, 8, 4, 5, 3, 8, 5, 6, 2, 5, 8, 7, 1, 5, 8, 1, 2, 3, 4, 1, 7, 7, 6, 3, 4, 7, 6, 5, 3, 7, 5, 6, 2,-1,-1,-1,-1,-1,-1,-1,-1, 7, 4, 2, 3, 2, 3, 6, 7, 5, 6, 7, 2, 5, 7, 6, 1,-1,-1,-1,-1,-1,-1,-1,-1, 1, 2, 3, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],shape(cut_vtet))
+   ! integer, dimension(16) :: cut_ntets=[1,4,4,6,4,6,6,4,4,6,6,4,6,4,4,1]
+   ! integer, dimension(16) :: cut_nvert=[0,3,3,4,3,4,4,3,3,4,4,3,4,3,3,0]
+   ! integer, dimension(16) :: cut_nntet=[1,2,2,4,2,4,4,4,2,4,4,4,4,4,4,2]
+   ! Look-up tables for cutting tetrahedra ================================================================
+   ! Number of new vertices on cut plane ------------------------------------------------------------------
+   integer, dimension(    16) :: cut_nvert
+   data cut_nvert(1:16) / 0, 3, 3, 4, 3, 4, 4, 3, 3, 4, 4, 3, 4, 3, 3, 0/
+   ! Number of resulting tets -----------------------------------------------------------------------------
+   integer, dimension(    16) :: cut_ntets
+   data cut_ntets(1:16) / 1, 4, 4, 6, 4, 6, 6, 4, 4, 6, 6, 4, 6, 4, 4, 1/
+   ! Number of tets on negative side of the plane ---------------------------------------------------------
+   ! Index of first positive tet = # tets - # negative tets + 1
+   integer, dimension(    16) :: cut_nntet
+   data cut_nntet(1:16) / 1, 2, 2, 4, 2, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 2/
+   ! First point on intersection --------------------------------------------------------------------------
+   integer, dimension(4,  16) :: cut_v1
+   data cut_v1(1:4, 1) /-1,-1,-1,-1/
+   data cut_v1(1:4, 2) / 1, 1, 1,-1/
+   data cut_v1(1:4, 3) / 2, 2, 2,-1/
+   data cut_v1(1:4, 4) / 1, 2, 1, 2/
+   data cut_v1(1:4, 5) / 3, 3, 3,-1/
+   data cut_v1(1:4, 6) / 1, 3, 1, 3/
+   data cut_v1(1:4, 7) / 2, 3, 2, 3/
+   data cut_v1(1:4, 8) / 4, 4, 4,-1/
+   data cut_v1(1:4, 9) / 4, 4, 4,-1/
+   data cut_v1(1:4,10) / 1, 4, 1, 4/
+   data cut_v1(1:4,11) / 2, 4, 2, 4/
+   data cut_v1(1:4,12) / 3, 3, 3,-1/
+   data cut_v1(1:4,13) / 3, 4, 3, 4/
+   data cut_v1(1:4,14) / 2, 2, 2,-1/
+   data cut_v1(1:4,15) / 1, 1, 1,-1/
+   data cut_v1(1:4,16) /-1,-1,-1,-1/
+   ! Second point on intersection -------------------------------------------------------------------------
+   integer, dimension(4,  16) :: cut_v2
+   data cut_v2(1:4, 1) /-1,-1,-1,-1/
+   data cut_v2(1:4, 2) / 2, 3, 4,-1/
+   data cut_v2(1:4, 3) / 3, 4, 1,-1/
+   data cut_v2(1:4, 4) / 4, 4, 3, 3/
+   data cut_v2(1:4, 5) / 4, 1, 2,-1/
+   data cut_v2(1:4, 6) / 4, 4, 2, 2/
+   data cut_v2(1:4, 7) / 4, 4, 1, 1/
+   data cut_v2(1:4, 8) / 1, 2, 3,-1/
+   data cut_v2(1:4, 9) / 1, 2, 3,-1/
+   data cut_v2(1:4,10) / 3, 3, 2, 2/
+   data cut_v2(1:4,11) / 3, 3, 1, 1/
+   data cut_v2(1:4,12) / 4, 1, 2,-1/
+   data cut_v2(1:4,13) / 2, 2, 1, 1/
+   data cut_v2(1:4,14) / 3, 4, 1,-1/
+   data cut_v2(1:4,15) / 2, 3, 4,-1/
+   data cut_v2(1:4,16) /-1,-1,-1,-1/
+   ! Side of cut plane (used to update i,j,k) -------------------------------------------------------------
+   integer, dimension(6,  16) :: cut_side
+   data cut_side(1:6, 1) / 1,-1,-1,-1,-1,-1/
+   data cut_side(1:6, 2) / 2, 1, 1, 1,-1,-1/
+   data cut_side(1:6, 3) / 2, 1, 1, 1,-1,-1/
+   data cut_side(1:6, 4) / 2, 2, 2, 1, 1, 1/
+   data cut_side(1:6, 5) / 2, 1, 1, 1,-1,-1/
+   data cut_side(1:6, 6) / 2, 2, 2, 1, 1, 1/
+   data cut_side(1:6, 7) / 2, 2, 2, 1, 1, 1/
+   data cut_side(1:6, 8) / 2, 2, 2, 1,-1,-1/
+   data cut_side(1:6, 9) / 2, 1, 1, 1,-1,-1/
+   data cut_side(1:6,10) / 2, 2, 2, 1, 1, 1/
+   data cut_side(1:6,11) / 2, 2, 2, 1, 1, 1/
+   data cut_side(1:6,12) / 2, 2, 2, 1,-1,-1/
+   data cut_side(1:6,13) / 2, 2, 2, 1, 1, 1/
+   data cut_side(1:6,14) / 2, 2, 2, 1,-1,-1/
+   data cut_side(1:6,15) / 2, 2, 2, 1,-1,-1/
+   data cut_side(1:6,16) / 2,-1,-1,-1,-1,-1/
+   ! Vertices in each tet ---------------------------------------------------------------------------------
+   integer, dimension(4,6,16) :: cut_vtet
+   data cut_vtet(1:4,1:6, 1) / 1, 2, 3, 4, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6, 2) / 5, 7, 6, 1,  6, 2, 3, 4,  4, 2, 5, 6,  5, 6, 7, 4, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6, 3) / 7, 5, 6, 2,  1, 3, 4, 6,  1, 5, 3, 6,  5, 7, 6, 1, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6, 4) / 5, 8, 6, 2,  5, 7, 8, 1,  5, 1, 8, 2,  5, 6, 8, 4,  5, 8, 7, 3,  5, 8, 3, 4/
+   data cut_vtet(1:4,1:6, 5) / 6, 5, 7, 3,  2, 1, 4, 6,  6, 5, 4, 2,  6, 7, 5, 2, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6, 6) / 5, 6, 8, 3,  5, 8, 7, 1,  5, 8, 1, 3,  5, 8, 6, 4,  5, 7, 8, 2,  5, 8, 4, 2/
+   data cut_vtet(1:4,1:6, 7) / 8, 6, 5, 3,  5, 7, 8, 2,  8, 5, 2, 3,  8, 5, 6, 4,  5, 8, 7, 1,  5, 8, 1, 4/
+   data cut_vtet(1:4,1:6, 8) / 1, 2, 3, 7,  1, 2, 7, 6,  5, 7, 6, 1,  5, 6, 7, 4, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6, 9) / 5, 6, 7, 4,  1, 2, 3, 6,  5, 1, 3, 6,  5, 7, 6, 3, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6,10) / 5, 8, 6, 4,  5, 7, 8, 1,  5, 8, 4, 1,  5, 6, 8, 3,  5, 8, 7, 2,  5, 8, 2, 3/
+   data cut_vtet(1:4,1:6,11) / 8, 5, 6, 4,  5, 8, 7, 2,  8, 2, 5, 4,  8, 6, 5, 3,  5, 7, 8, 1,  5, 8, 3, 1/
+   data cut_vtet(1:4,1:6,12) / 1, 4, 2, 7,  4, 1, 6, 7,  6, 7, 5, 4,  6, 5, 7, 3, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6,13) / 8, 6, 5, 4,  5, 7, 8, 3,  8, 4, 5, 3,  8, 5, 6, 2,  5, 8, 7, 1,  5, 8, 1, 2/
+   data cut_vtet(1:4,1:6,14) / 3, 4, 1, 7,  7, 6, 3, 4,  7, 6, 5, 3,  7, 5, 6, 2, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6,15) / 7, 4, 2, 3,  2, 3, 6, 7,  5, 6, 7, 2,  5, 7, 6, 1, -1,-1,-1,-1, -1,-1,-1,-1/
+   data cut_vtet(1:4,1:6,16) / 1, 2, 3, 4, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1/
 
    !> Boundary conditions for the volume fraction solver
    type :: bcond
@@ -133,7 +216,10 @@ module vfs_class
       integer :: reconstruction_method                    !< Interface reconstruction method
       integer :: transport_method                         !< Interface transport method
       logical :: cons_correct=.true.                      !< Conservative correction (true by default)
-      
+
+      ! Cutting by Octants
+      logical :: oct_cut=.true.
+      integer :: momflux_type=1
       ! Flotsam removal parameter
       real(WP) :: flotsam_thld=0.0_WP                     !< Threshold VF parameter for flotsam removal (0.0=off by default)
 
@@ -219,6 +305,7 @@ module vfs_class
       procedure :: advance                                !< Advance VF to next step
       procedure :: advance_tmp                            !< Advance VF to next step
       procedure :: transport_flux                         !< Transport VF using geometric fluxing
+      procedure :: transport_flux_noirl
       procedure :: transport_flux_storage                 !< Transport VF using geometric fluxing with storage
       procedure :: transport_remap                        !< Transport VF using geometric cell remap
       procedure :: transport_remap_storage                !< Transport VF using geometric cell remap with storage
@@ -839,7 +926,7 @@ contains
       ! First perform transport
       select case (this%transport_method)
       case (flux)
-         call this%transport_flux(dt,U,V,W,rho_l,rho_g)
+         call this%transport_flux_noirl(dt,U,V,W,rho_l,rho_g)
       case (flux_storage)
          call this%transport_flux_storage(dt,U,V,W)
       case (remap)
@@ -1616,7 +1703,6 @@ contains
             real(WP), dimension(4) :: d
             real(WP), dimension(3,8) :: vert
             real(WP), dimension(3) :: a,b,c,bary
-            real(WP) :: vf_cell
             ! Zero out flux
             myflux=0.0_WP
             ! Quickly calculate the full liquid or gas cells
@@ -1683,6 +1769,522 @@ contains
 
    end subroutine transport_flux
 
+   !> Perform flux-based transport of VF based on U/V/W and dt
+   subroutine transport_flux_noirl(this,dt,U,V,W,rho_l,rho_g)
+      implicit none
+      class(vfs), intent(inout) :: this
+      real(WP), intent(inout) :: dt  !< Timestep size over which to advance
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: V     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: W     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), intent(in) :: rho_l,rho_g
+      
+      integer :: i,j,k,index,n,nn
+      real(WP) :: Lvolold,Gvolold
+      real(WP) :: Lvolinc,Gvolinc
+      real(WP) :: Lvolnew,Gvolnew
+      real(WP) :: my_fvol
+      real(WP), dimension(14)   :: SLflux
+      real(WP), dimension(8)    :: my_sign
+      integer,  dimension(3,4)  :: myijk
+      real(WP), dimension(3,4,8):: tets
+      real(WP), dimension(3,9)  :: face
+      real(WP), dimension(:,:,:,:), allocatable :: FX,FY,FZ
+      
+      this%MFX=0.0_WP; this%MFY=0.0_WP; this%MFZ=0.0_WP
+      allocate(FX(1:8,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FX=0.0_WP
+      allocate(FY(1:8,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FY=0.0_WP
+      allocate(FZ(1:8,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FZ=0.0_WP
+
+      ! Loop over the domain and compute fluxes using semi-Lagrangian algorithm
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               ! X flux
+               if (minval(abs(this%band(i-1:i,j,k))).le.advect_band) then
+                  ! Construct and project face
+                  face(:,1)=[this%cfg%x(i  ),this%cfg%y(j  ),this%cfg%z(k  )]; face(:,5)=this%project(face(:,1),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j  ,k  ).eq.1) face(:,5)=face(:,1)
+                  face(:,2)=[this%cfg%x(i  ),this%cfg%y(j  ),this%cfg%z(k+1)]; face(:,6)=this%project(face(:,2),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j  ,k+1).eq.1) face(:,6)=face(:,2)
+                  face(:,3)=[this%cfg%x(i  ),this%cfg%y(j+1),this%cfg%z(k+1)]; face(:,7)=this%project(face(:,3),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j+1,k+1).eq.1) face(:,7)=face(:,3)
+                  face(:,4)=[this%cfg%x(i  ),this%cfg%y(j+1),this%cfg%z(k  )]; face(:,8)=this%project(face(:,4),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j+1,k  ).eq.1) face(:,8)=face(:,4)
+                  ! Construct 6 base tets
+                  tets(:,1,1)=face(:,7); tets(:,2,1)=face(:,4); tets(:,3,1)=face(:,3); tets(:,4,1)=face(:,6)
+                  tets(:,1,2)=face(:,6); tets(:,2,2)=face(:,3); tets(:,3,2)=face(:,2); tets(:,4,2)=face(:,4)
+                  tets(:,1,3)=face(:,6); tets(:,2,3)=face(:,2); tets(:,3,3)=face(:,1); tets(:,4,3)=face(:,4)
+                  tets(:,1,4)=face(:,7); tets(:,2,4)=face(:,8); tets(:,3,4)=face(:,4); tets(:,4,4)=face(:,6)
+                  tets(:,1,5)=face(:,6); tets(:,2,5)=face(:,5); tets(:,3,5)=face(:,8); tets(:,4,5)=face(:,4)
+                  tets(:,1,6)=face(:,6); tets(:,2,6)=face(:,5); tets(:,3,6)=face(:,4); tets(:,4,6)=face(:,1)
+                  ! Add solenoidal correction
+                  if (this%cons_correct) then
+                     my_fvol=U(i,j,k)*dt*this%cfg%dy(j)*this%cfg%dz(k)
+                     do n=1,6; my_fvol=my_fvol-tetvol(tets(:,:,n)); end do
+                     tets(:,:,7:8)=correction_tets_x(face(:,5),face(:,6),face(:,7),face(:,8),my_fvol)
+                  end if
+                  do n=1,8
+                     my_sign(n)=tetsign(tets(:,:,n))
+                  end do
+                  ! Construct Fluxes
+                  SLflux=0.0_WP
+                  do n=1,8
+                     do nn=1,4; myijk(:,nn)=get_Pindices(tets(:,nn,n),[i,j,k]); end do
+                     SLflux=SLflux+my_sign(n)*cut_tet_P(tets(:,:,n),myijk)
+                  end do
+                  FX(:,i,j,k)=SLflux(1:8)
+                  this%UFl(1,i,j,k)=SLflux(1)/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+                  this%UFg(1,i,j,k)=SLflux(2)/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+                  this%MFX(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+               else 
+                  ! Simple superficial velocity
+                  if (maxval(this%band(i-1:i,j,k)).lt.0) then
+                     this%UFl(1,i,j,k)=0.0_WP
+                     this%UFg(1,i,j,k)=U(i,j,k)
+                  else if (minval(this%band(i-1:i,j,k)).gt.0) then
+                     this%UFl(1,i,j,k)=U(i,j,k)
+                     this%UFg(1,i,j,k)=0.0_WP
+                  end if
+               end if
+               
+               ! Y flux
+               if (minval(abs(this%band(i,j-1:j,k))).le.advect_band) then
+                  ! Construct and project face
+                  face(:,1)=[this%cfg%x(i+1),this%cfg%y(j  ),this%cfg%z(k+1)]; face(:,5)=this%project(face(:,1),i,j,k,-dt,U,V,W); if (this%vmask(i+1,j  ,k+1).eq.1) face(:,5)=face(:,1)
+                  face(:,2)=[this%cfg%x(i  ),this%cfg%y(j  ),this%cfg%z(k+1)]; face(:,6)=this%project(face(:,2),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j  ,k+1).eq.1) face(:,6)=face(:,2)
+                  face(:,3)=[this%cfg%x(i  ),this%cfg%y(j  ),this%cfg%z(k  )]; face(:,7)=this%project(face(:,3),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j  ,k  ).eq.1) face(:,7)=face(:,3)
+                  face(:,4)=[this%cfg%x(i+1),this%cfg%y(j  ),this%cfg%z(k  )]; face(:,8)=this%project(face(:,4),i,j,k,-dt,U,V,W); if (this%vmask(i+1,j  ,k  ).eq.1) face(:,8)=face(:,4)
+                  ! Construct 6 base tets
+                  tets(:,1,1)=face(:,7); tets(:,2,1)=face(:,4); tets(:,3,1)=face(:,3); tets(:,4,1)=face(:,6)
+                  tets(:,1,2)=face(:,6); tets(:,2,2)=face(:,3); tets(:,3,2)=face(:,2); tets(:,4,2)=face(:,4)
+                  tets(:,1,3)=face(:,6); tets(:,2,3)=face(:,2); tets(:,3,3)=face(:,1); tets(:,4,3)=face(:,4)
+                  tets(:,1,4)=face(:,7); tets(:,2,4)=face(:,8); tets(:,3,4)=face(:,4); tets(:,4,4)=face(:,6)
+                  tets(:,1,5)=face(:,6); tets(:,2,5)=face(:,5); tets(:,3,5)=face(:,8); tets(:,4,5)=face(:,4)
+                  tets(:,1,6)=face(:,6); tets(:,2,6)=face(:,5); tets(:,3,6)=face(:,4); tets(:,4,6)=face(:,1)
+                  ! Compute volume of additional tets required for divg-free flux
+                  if (this%cons_correct) then
+                     my_fvol=V(i,j,k)*dt*this%cfg%dx(i)*this%cfg%dz(k)
+                     do n=1,6; my_fvol=my_fvol-tetvol(tets(:,:,n)); end do
+                     tets(:,:,7:8)=correction_tets_y(face(:,5),face(:,6),face(:,7),face(:,8),my_fvol)
+                  end if
+                  do n=1,8
+                     my_sign(n)=tetsign(tets(:,:,n))
+                  end do
+                  ! Construct Fluxes
+                  SLflux=0.0_WP
+                  do n=1,8
+                     do nn=1,4; myijk(:,nn)=get_Pindices(tets(:,nn,n),[i,j,k]); end do
+                     SLflux=SLflux+my_sign(n)*cut_tet_P(tets(:,:,n),myijk)
+                  end do
+                  FY(:,i,j,k)=SLflux(1:8)
+                  this%UFl(2,i,j,k)=SLflux(1)/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
+                  this%UFg(2,i,j,k)=SLflux(2)/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
+                  this%MFY(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
+               else
+                  ! Simple superficial velocity
+                  if (maxval(this%band(i,j-1:j,k)).lt.0) then
+                     this%UFl(2,i,j,k)=0.0_WP
+                     this%UFg(2,i,j,k)=V(i,j,k)
+                  else if (minval(this%band(i,j-1:j,k)).gt.0) then
+                     this%UFl(2,i,j,k)=V(i,j,k)
+                     this%UFg(2,i,j,k)=0.0_WP
+                  end if
+               end if
+               
+               ! Z flux
+               if (minval(abs(this%band(i,j,k-1:k))).le.advect_band) then
+                  ! Construct and project face
+                  face(:,1)=[this%cfg%x(i+1),this%cfg%y(j  ),this%cfg%z(k  )]; face(:,5)=this%project(face(:,1),i,j,k,-dt,U,V,W); if (this%vmask(i+1,j  ,k  ).eq.1) face(:,5)=face(:,1)
+                  face(:,2)=[this%cfg%x(i  ),this%cfg%y(j  ),this%cfg%z(k  )]; face(:,6)=this%project(face(:,2),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j  ,k  ).eq.1) face(:,6)=face(:,2)
+                  face(:,3)=[this%cfg%x(i  ),this%cfg%y(j+1),this%cfg%z(k  )]; face(:,7)=this%project(face(:,3),i,j,k,-dt,U,V,W); if (this%vmask(i  ,j+1,k  ).eq.1) face(:,7)=face(:,3)
+                  face(:,4)=[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k  )]; face(:,8)=this%project(face(:,4),i,j,k,-dt,U,V,W); if (this%vmask(i+1,j+1,k  ).eq.1) face(:,8)=face(:,4)
+                  ! Construct 6 base tets
+                  tets(:,1,1)=face(:,7); tets(:,2,1)=face(:,4); tets(:,3,1)=face(:,3); tets(:,4,1)=face(:,6)
+                  tets(:,1,2)=face(:,6); tets(:,2,2)=face(:,3); tets(:,3,2)=face(:,2); tets(:,4,2)=face(:,4)
+                  tets(:,1,3)=face(:,6); tets(:,2,3)=face(:,2); tets(:,3,3)=face(:,1); tets(:,4,3)=face(:,4)
+                  tets(:,1,4)=face(:,7); tets(:,2,4)=face(:,8); tets(:,3,4)=face(:,4); tets(:,4,4)=face(:,6)
+                  tets(:,1,5)=face(:,6); tets(:,2,5)=face(:,5); tets(:,3,5)=face(:,8); tets(:,4,5)=face(:,4)
+                  tets(:,1,6)=face(:,6); tets(:,2,6)=face(:,5); tets(:,3,6)=face(:,4); tets(:,4,6)=face(:,1)
+                  ! Compute volume of additional tets required for divg-free flux
+                  if (this%cons_correct) then
+                     my_fvol=W(i,j,k)*dt*this%cfg%dx(i)*this%cfg%dy(j)
+                     do n=1,6; my_fvol=my_fvol-tetvol(tets(:,:,n)); end do
+                     tets(:,:,7:8)=correction_tets_z(face(:,5),face(:,6),face(:,7),face(:,8),my_fvol)
+                  end if
+                  do n=1,8
+                     my_sign(n)=tetsign(tets(:,:,n))
+                  end do
+                  ! Construct Fluxes
+                  SLflux=0.0_WP
+                  do n=1,8
+                     do nn=1,4; myijk(:,nn)=get_Pindices(tets(:,nn,n),[i,j,k]); end do
+                     SLflux=SLflux+my_sign(n)*cut_tet_P(tets(:,:,n),myijk)
+                  end do
+                  FZ(:,i,j,k)=SLflux(1:8)
+                  this%UFl(3,i,j,k)=SLflux(1)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
+                  this%UFg(3,i,j,k)=SLflux(2)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
+                  this%MFZ(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
+               else
+                  ! Simple superficial velocity
+                  if (maxval(this%band(i,j,k-1:k)).lt.0) then
+                     this%UFl(3,i,j,k)=0.0_WP
+                     this%UFg(3,i,j,k)=W(i,j,k)
+                  else if (minval(this%band(i,j,k-1:k)).gt.0) then
+                     this%UFl(3,i,j,k)=W(i,j,k)
+                     this%UFg(3,i,j,k)=0.0_WP
+                  end if
+               end if
+               
+            end do
+         end do
+      end do
+      ! Compute transported moments
+      do index=1,sum(this%band_count(0:advect_band))
+         i=this%band_map(1,index)
+         j=this%band_map(2,index)
+         k=this%band_map(3,index)
+         
+         ! Skip wall/bcond cells - bconds need to be provided elsewhere directly!
+         if (this%mask(i,j,k).ne.0) cycle
+         
+         ! Old liquid and gas volumes
+         Lvolold=        this%VFold(i,j,k) *this%cfg%vol(i,j,k)
+         Gvolold=(1.0_WP-this%VFold(i,j,k))*this%cfg%vol(i,j,k)
+         
+         ! Compute incoming liquid and gas volumes
+         Lvolinc=-FX(1,i+1,j,k)+FX(1,i,j,k)-FY(1,i,j+1,k)+FY(1,i,j,k)-FZ(1,i,j,k+1)+FZ(1,i,j,k)
+         Gvolinc=-FX(2,i+1,j,k)+FX(2,i,j,k)-FY(2,i,j+1,k)+FY(2,i,j,k)-FZ(2,i,j,k+1)+FZ(2,i,j,k)
+         
+         ! Compute new liquid and gas volumes
+         Lvolnew=Lvolold+Lvolinc
+         Gvolnew=Gvolold+Gvolinc
+         
+         ! Compute new liquid volume fraction
+         this%VF(i,j,k)=Lvolnew/(Lvolnew+Gvolnew)
+         
+         ! Only work on higher order moments if VF is in [VFlo,VFhi]
+         if (this%VF(i,j,k).lt.VFlo) then
+            this%VF(i,j,k)=0.0_WP
+         else if (this%VF(i,j,k).gt.VFhi) then
+            this%VF(i,j,k)=1.0_WP
+         else
+            ! Compute old phase barycenters
+            this%Lbary(:,i,j,k)=(this%Lbary(:,i,j,k)*Lvolold &
+            &                  -FX(3:5,i+1,j,k)+FX(3:5,i,j,k)-FY(3:5,i,j+1,k)+FY(3:5,i,j,k)-FZ(3:5,i,j,k+1)+FZ(3:5,i,j,k))/Lvolnew
+            this%Gbary(:,i,j,k)=(this%Gbary(:,i,j,k)*Gvolold &
+            &                  -FX(6:8,i+1,j,k)+FX(6:8,i,j,k)-FY(6:8,i,j+1,k)+FY(6:8,i,j,k)-FZ(6:8,i,j,k+1)+FZ(6:8,i,j,k))/Gvolnew
+            ! Project forward in time
+            this%Lbary(:,i,j,k)=this%project(this%Lbary(:,i,j,k),i,j,k,dt,U,V,W)
+            this%Gbary(:,i,j,k)=this%project(this%Gbary(:,i,j,k),i,j,k,dt,U,V,W)
+         end if
+      end do
+      
+      ! Synchronize VF and barycenter fields
+      call this%cfg%sync(this%VF)
+      call this%sync_and_clean_barycenters()
+      
+      ! Synchronize fluxing velocities
+      call this%cfg%sync(this%UFl)
+      call this%cfg%sync(this%UFg)
+
+      call this%cfg%sync(this%MFX)
+      call this%cfg%sync(this%MFY)
+      call this%cfg%sync(this%MFZ)
+
+      contains
+      function get_Pindices(Pnt,ijk_i) result(ijk_o)
+         implicit none
+         real(WP), dimension(3), intent(in) :: Pnt
+         integer,  dimension(3), intent(in) :: ijk_i
+         integer,  dimension(3)             :: ijk_o
+         ijk_o=ijk_i
+         do while (Pnt(1).gt.this%cfg%x(ijk_o(1)+1)); ijk_o(1)=ijk_o(1)+1; end do
+         do while (Pnt(1).lt.this%cfg%x(ijk_o(1)  )); ijk_o(1)=ijk_o(1)-1; end do
+         do while (Pnt(2).gt.this%cfg%y(ijk_o(2)+1)); ijk_o(2)=ijk_o(2)+1; end do
+         do while (Pnt(2).lt.this%cfg%y(ijk_o(2)  )); ijk_o(2)=ijk_o(2)-1; end do
+         do while (Pnt(3).gt.this%cfg%z(ijk_o(3)+1)); ijk_o(3)=ijk_o(3)+1; end do
+         do while (Pnt(3).lt.this%cfg%z(ijk_o(3)  )); ijk_o(3)=ijk_o(3)-1; end do
+      end function get_Pindices
+
+      function tetsign(mytet) result(s)
+         implicit none
+         real(WP) :: s
+         real(WP), dimension(3,4), intent(in) :: mytet
+         real(WP), dimension(3) :: a,b,c
+         a=mytet(:,2)-mytet(:,1)
+         b=mytet(:,3)-mytet(:,1)
+         c(1)=a(2)*b(3)-a(3)*b(2)
+         c(2)=a(3)*b(1)-a(1)*b(3)
+         c(3)=a(1)*b(2)-a(2)*b(1)
+         a=mytet(:,4)-(mytet(:,1)+mytet(:,2)+mytet(:,3))/3.0_WP
+         s=sign(1.0_WP,dot_product(a,c))
+         return
+       end function tetsign
+
+      function tetvol(mytet) result(vol)
+         implicit none
+         real(WP) :: vol
+         real(WP), dimension(3,4), intent(in) :: mytet
+         real(WP), dimension(3) :: a,b,c
+         a=mytet(:,1)-mytet(:,4)
+         b=mytet(:,2)-mytet(:,4)
+         c=mytet(:,3)-mytet(:,4)
+         vol=(-a(1)*(b(2)*c(3)-c(2)*b(3)) &
+            +a(2)*(b(1)*c(3)-c(1)*b(3)) &
+            -a(3)*(b(1)*c(2)-c(1)*b(2)) )/6.0_WP
+         return
+      end function tetvol
+      function correction_tets_x(a,b,c,d,vol) result(tets_o)
+         implicit none
+         real(WP), dimension(3), intent(in) :: a,b,c,d
+         real(WP), intent(in) :: vol
+         real(WP), dimension(3,4,2) :: tets_o
+         real(WP), dimension(3) :: e
+         e=0.25_WP*(a+b+c+d)
+         e(1)= (6.0_WP*vol + a(1)*b(2)*d(3) - a(1)*b(3)*d(2) - a(2)*b(1)*d(3) + a(2)*b(3)*d(1) + a(3)*b(1)*d(2) &
+            - a(3)*b(2)*d(1) - a(1)*b(2)*e(3) + a(1)*b(3)*e(2) + a(2)*b(1)*e(3) - a(3)*b(1)*e(2) + b(1)*c(2)*d(3) &
+            - b(1)*c(3)*d(2) - b(2)*c(1)*d(3) + b(2)*c(3)*d(1) + b(3)*c(1)*d(2) - b(3)*c(2)*d(1) + a(1)*d(2)*e(3) &
+            - a(1)*d(3)*e(2) - a(2)*d(1)*e(3) + a(3)*d(1)*e(2) - b(1)*c(2)*e(3) + b(1)*c(3)*e(2) + b(2)*c(1)*e(3) &
+            - b(3)*c(1)*e(2) - c(1)*d(2)*e(3) + c(1)*d(3)*e(2) + c(2)*d(1)*e(3) - c(3)*d(1)*e(2)) &
+            / (a(2)*b(3) - a(3)*b(2) - a(2)*d(3) + a(3)*d(2) + b(2)*c(3) - b(3)*c(2) + c(2)*d(3) - c(3)*d(2))
+         tets_o(:,1,1)=a; tets_o(:,2,1)=b; tets_o(:,3,1)=d; tets_o(:,4,1)=e;
+         tets_o(:,1,2)=b; tets_o(:,2,2)=c; tets_o(:,3,2)=d; tets_o(:,4,2)=e;
+      end function correction_tets_x    
+      function correction_tets_y(a,b,c,d,vol) result(tets_o)
+         implicit none
+         real(WP), dimension(3), intent(in) :: a,b,c,d
+         real(WP), intent(in) :: vol
+         real(WP), dimension(3,4,2) :: tets_o
+         real(WP), dimension(3) :: e
+         e=0.25_WP*(a+b+c+d)
+         e(2)=-(6.0_WP*vol + a(1)*b(2)*d(3) - a(1)*b(3)*d(2) - a(2)*b(1)*d(3) + a(2)*b(3)*d(1) + a(3)*b(1)*d(2) &
+            - a(3)*b(2)*d(1) - a(1)*b(2)*e(3) + a(2)*b(1)*e(3) - a(2)*b(3)*e(1) + a(3)*b(2)*e(1) + b(1)*c(2)*d(3) &
+            - b(1)*c(3)*d(2) - b(2)*c(1)*d(3) + b(2)*c(3)*d(1) + b(3)*c(1)*d(2) - b(3)*c(2)*d(1) + a(1)*d(2)*e(3) &
+            - a(2)*d(1)*e(3) + a(2)*d(3)*e(1) - a(3)*d(2)*e(1) - b(1)*c(2)*e(3) + b(2)*c(1)*e(3) - b(2)*c(3)*e(1) &
+            + b(3)*c(2)*e(1) - c(1)*d(2)*e(3) + c(2)*d(1)*e(3) - c(2)*d(3)*e(1) + c(3)*d(2)*e(1)) &
+            / (a(1)*b(3) - a(3)*b(1) - a(1)*d(3) + a(3)*d(1) + b(1)*c(3) - b(3)*c(1) + c(1)*d(3) - c(3)*d(1))
+         tets_o(:,1,1)=a; tets_o(:,2,1)=b; tets_o(:,3,1)=d; tets_o(:,4,1)=e;
+         tets_o(:,1,2)=b; tets_o(:,2,2)=c; tets_o(:,3,2)=d; tets_o(:,4,2)=e;
+      end function correction_tets_y
+      function correction_tets_z(a,b,c,d,vol) result(tets_o)
+         implicit none
+         real(WP), dimension(3), intent(in) :: a,b,c,d
+         real(WP), intent(in) :: vol
+         real(WP), dimension(3,4,2) :: tets_o
+         real(WP), dimension(3) :: e
+         e=0.25_WP*(a+b+c+d)
+         e((3))= (6.0_WP*vol + a(1)*b(2)*d(3) - a(1)*b(3)*d(2) - a(2)*b(1)*d(3) + a(2)*b(3)*d(1) + a(3)*b(1)*d(2) &
+            - a(3)*b(2)*d(1) + a(1)*b(3)*e(2) - a(2)*b(3)*e(1) - a(3)*b(1)*e(2) + a(3)*b(2)*e(1) + b(1)*c(2)*d(3) &
+            - b(1)*c(3)*d(2) - b(2)*c(1)*d(3) + b(2)*c(3)*d(1) + b(3)*c(1)*d(2) - b(3)*c(2)*d(1) - a(1)*d(3)*e(2) &
+            + a(2)*d(3)*e(1) + a(3)*d(1)*e(2) - a(3)*d(2)*e(1) + b(1)*c(3)*e(2) - b(2)*c(3)*e(1) - b(3)*c(1)*e(2) &
+            + b(3)*c(2)*e(1) + c(1)*d(3)*e(2) - c(2)*d(3)*e(1) - c(3)*d(1)*e(2) + c(3)*d(2)*e(1)) &
+            / (a(1)*b(2) - a(2)*b(1) - a(1)*d(2) + a(2)*d(1) + b(1)*c(2) - b(2)*c(1) + c(1)*d(2) - c(2)*d(1))
+         tets_o(:,1,1)=a; tets_o(:,2,1)=b; tets_o(:,3,1)=d; tets_o(:,4,1)=e;
+         tets_o(:,1,2)=b; tets_o(:,2,2)=c; tets_o(:,3,2)=d; tets_o(:,4,2)=e;
+      end function correction_tets_z
+
+      !> Recursive function that cuts a tet by computational mesh to compute fluxes.
+      recursive function cut_tet_P(mytet,myind) result(myflux)
+         implicit none
+         real(WP), dimension(3,4), intent(in) :: mytet
+         integer,  dimension(3,4), intent(in) :: myind
+         real(WP), dimension(14) :: myflux
+         integer :: dir,cut_ind,n1,n2,case,v1,v2
+         real(WP), dimension(4) :: d
+         real(WP), dimension(3,8) :: vert
+         integer,  dimension(3,8,2) :: vert_ind
+         real(WP) :: mu
+         real(WP), dimension(3,4) :: newtet
+         integer,  dimension(3,4) :: newind
+
+         if      (maxval(myind(1,:))-minval(myind(1,:)).gt.0) then ! Cut by x planes
+            dir=1; cut_ind=maxval(myind(1,:)); d(:)=mytet(1,:)-this%cfg%x(cut_ind)
+         else if (maxval(myind(2,:))-minval(myind(2,:)).gt.0) then ! Cut by y planes
+            dir=2; cut_ind=maxval(myind(2,:)); d(:)=mytet(2,:)-this%cfg%y(cut_ind)
+         else if (maxval(myind(3,:))-minval(myind(3,:)).gt.0) then ! Cut by z planes
+            dir=3; cut_ind=maxval(myind(3,:)); d(:)=mytet(3,:)-this%cfg%z(cut_ind)
+         else
+            if (this%oct_cut) then
+               myflux=cut_tet_O(mytet,myind(1,1),myind(2,1),myind(3,1))
+            else if(this%momflux_type.eq.0) then
+               myflux(1:8)=cut_tet_plic(mytet,myind(1,1),myind(2,1),myind(3,1))
+            else if(this%momflux_type.eq.1) then
+               myflux(1:8)=cut_tet_plic(mytet,myind(1,1),myind(2,1),myind(3,1))
+               myflux(9 )=rho_l*myflux(1)*(U(myind(1,1)+1,myind(2,1),myind(3,1))+U(myind(1,1),myind(2,1),myind(3,1)))*0.5_WP
+               myflux(10)=rho_l*myflux(1)*(V(myind(1,1),myind(2,1)+1,myind(3,1))+V(myind(1,1),myind(2,1),myind(3,1)))*0.5_WP
+               myflux(11)=rho_l*myflux(1)*(W(myind(1,1),myind(2,1),myind(3,1)+1)+W(myind(1,1),myind(2,1),myind(3,1)))*0.5_WP
+               myflux(12)=rho_g*myflux(2)*(U(myind(1,1)+1,myind(2,1),myind(3,1))+U(myind(1,1),myind(2,1),myind(3,1)))*0.5_WP
+               myflux(13)=rho_g*myflux(2)*(V(myind(1,1),myind(2,1)+1,myind(3,1))+V(myind(1,1),myind(2,1),myind(3,1)))*0.5_WP
+               myflux(14)=rho_g*myflux(2)*(W(myind(1,1),myind(2,1),myind(3,1)+1)+W(myind(1,1),myind(2,1),myind(3,1)))*0.5_WP
+            end if
+            return
+         end if
+         ! Find case of cut
+         case=1+int(0.5_WP+sign(0.5_WP,d(1)))+2*int(0.5_WP+sign(0.5_WP,d(2)))+4*int(0.5_WP+sign(0.5_WP,d(3)))+8*int(0.5_WP+sign(0.5_WP,d(4)))
+         ! Get vertices and indices of tet
+         do n1=1,4
+            vert    ( : ,n1  )=mytet(:,n1)
+            vert_ind( : ,n1,1)=myind(:,n1)
+            vert_ind( : ,n1,2)=myind(:,n1)
+            vert_ind(dir,n1,1)=min(vert_ind(dir,n1,1),cut_ind-1) ! Enforce boundedness
+            vert_ind(dir,n1,2)=max(vert_ind(dir,n1,1),cut_ind  )
+         end do
+         ! Create interpolated vertices on cut plane
+         do n1=1,cut_nvert(case)
+            v1=cut_v1(n1,case); v2=cut_v2(n1,case)
+            mu=min(1.0_WP,max(0.0_WP,-d(v1)/(sign(abs(d(v2)-d(v1))+epsilon(1.0_WP),d(v2)-d(v1)))))
+            vert(:,4+n1)=(1.0_WP-mu)*vert(:,v1)+mu*vert(:,v2)
+            ! Get index for interpolated vertex
+            vert_ind(:,4+n1,1)=get_Pindices(vert(:,4+n1),vert_ind(:,v1,1))
+            ! Enforce boundedness
+            vert_ind(:,4+n1,1)=max(vert_ind(:,4+n1,1),min(vert_ind(:,v1,1),vert_ind(:,v2,1)))
+            vert_ind(:,4+n1,1)=min(vert_ind(:,4+n1,1),max(vert_ind(:,v1,1),vert_ind(:,v2,1)))
+            ! Set +/- indices in cut direction
+            vert_ind(:,4+n1,2)=vert_ind(:,4+n1,1)
+            vert_ind(dir,4+n1,1)=cut_ind-1
+            vert_ind(dir,4+n1,2)=cut_ind
+         end do
+         ! Create new tets
+         myflux=0.0_WP
+         do n1=1,cut_ntets(case)
+            do n2=1,4
+               newtet(:,n2)=vert    (:,cut_vtet(n2,n1,case))
+               newind(:,n2)=vert_ind(:,cut_vtet(n2,n1,case),cut_side(n1,case))
+            end do
+            ! Check for zero-volume tet
+            if (abs(tetvol(newtet)).lt.this%vol_epsilon) cycle
+            ! Cut by next plane
+            myflux=myflux+cut_tet_P(newtet,newind)
+         end do
+      end function cut_tet_P
+
+      !> Manager file for the octant fluxes
+      recursive function cut_tet_O(mytet,i0,j0,k0) result(myflux)
+         implicit none
+         real(WP), dimension(3,4), intent(in) :: mytet
+         integer , intent(in)    :: i0,j0,k0
+         real(WP), dimension(14) :: myflux
+         integer :: oind
+         integer :: case,n1,n2,v1,v2
+         real(WP) :: xc,yc,zc,mu
+         integer, dimension(3)    :: bary
+         real(WP), dimension(4)   :: d
+         real(WP), dimension(3,8) :: vert
+         real(WP), dimension(3,4) :: newtet
+         real(WP), parameter :: thld = 1.0e-12_WP 
+         ! Cut into 8 octants
+         xc=this%cfg%x(i0)+0.5_WP*this%cfg%dx(i0)
+         yc=this%cfg%y(j0)+0.5_WP*this%cfg%dy(j0)
+         zc=this%cfg%z(k0)+0.5_WP*this%cfg%dz(k0)
+         if      (maxval(mytet(1,:))>xc+thld.and.minval(mytet(1,:))<xc-thld) then ! Cut by x-center plane
+            d(:)=mytet(1,:)-xc
+         else if (maxval(mytet(2,:))>yc+thld.and.minval(mytet(2,:))<yc-thld) then ! Cut by y-center plane
+            d(:)=mytet(2,:)-yc
+         else if (maxval(mytet(3,:))>zc+thld.and.minval(mytet(3,:))<zc-thld) then ! Cut by z-center plane
+            d(:)=mytet(3,:)-zc
+         else
+            ! Determine which octant it's in.
+            bary =0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4)); oind = 1
+            if (bary(1)>xc) oind = oind + 1
+            if (bary(2)>yc) oind = oind + 2
+            if (bary(3)>zc) oind = oind + 4
+            myflux(1:8)=cut_tet_plic(mytet, i0, j0, k0)
+            ! X momentum
+            if (oind.eq.1.or.oind.eq.3.or.oind.eq.5.or.oind.eq.7) then
+               myflux(9) =rho_l*myflux(1)*U(i0  ,j0,k0)
+               myflux(12)=rho_g*myflux(2)*U(i0  ,j0,k0)
+            else
+               myflux(9) =rho_l*myflux(1)*U(i0+1,j0,k0)
+               myflux(12)=rho_g*myflux(2)*U(i0+1,j0,k0)
+            end if
+            ! Y momentum
+            if (oind.eq.1.or.oind.eq.2.or.oind.eq.5.or.oind.eq.6) then
+               myflux(10)=rho_l*myflux(1)*V(i0  ,j0,k0)
+               myflux(13)=rho_g*myflux(2)*V(i0  ,j0,k0)
+            else
+               myflux(10)=rho_l*myflux(1)*V(i0,j0+1,k0)
+               myflux(13)=rho_g*myflux(2)*V(i0,j0+1,k0)
+            end if
+            ! Z momentum
+            if (oind.eq.1.or.oind.eq.2.or.oind.eq.3.or.oind.eq.4) then
+               myflux(11)=rho_l*myflux(1)*W(i0  ,j0,k0)
+               myflux(14)=rho_g*myflux(2)*W(i0  ,j0,k0)
+            else
+               myflux(11)=rho_l*myflux(1)*W(i0,j0,k0+1)
+               myflux(14)=rho_g*myflux(2)*W(i0,j0,k0+1)
+            end if
+            return
+         end if
+
+         ! Find case of cut
+         case=1+int(0.5_WP+sign(0.5_WP,d(1)))+2*int(0.5_WP+sign(0.5_WP,d(2)))+4*int(0.5_WP+sign(0.5_WP,d(3)))+8*int(0.5_WP+sign(0.5_WP,d(4)))
+         ! Get vertices and indices of tet
+         vert(:,1:4) = mytet(:,1:4)
+         do n1=1,cut_nvert(case)
+            v1=cut_v1(n1,case); v2=cut_v2(n1,case)
+            mu=min(1.0_WP,max(0.0_WP,-d(v1)/(sign(abs(d(v2)-d(v1))+epsilon(1.0_WP),d(v2)-d(v1)))))
+            vert(:,4+n1)=(1.0_WP-mu)*vert(:,v1)+mu*vert(:,v2)
+         end do
+         ! Create interpolated vertices on cut plane
+         myflux=0.0_WP
+         do n1=1,cut_ntets(case)
+            do n2=1,4
+               newtet(:,n2) = vert(:,cut_vtet(n2,n1,case))
+            end do
+            if (abs(tetvol(newtet)).lt.this%vol_epsilon) cycle
+            myflux=myflux+cut_tet_O(newtet,i0,j0,k0)
+         end do
+      end function cut_tet_O
+      !> Function that cuts a tet by the local PLIC interface
+      function cut_tet_plic(mytet,i0,j0,k0) result(myflux)
+         implicit none
+            real(WP), dimension(3,4), intent(in) :: mytet
+            integer , intent(in)    :: i0,j0,k0
+            real(WP), dimension(8) :: myflux
+            real(WP), dimension(4)  :: myplane
+            integer :: n1,case,v1,v2
+            real(WP) :: mu,my_vol
+            real(WP), dimension(4) :: d
+            real(WP), dimension(3,8) :: vert
+            real(WP), dimension(3) :: a,b,c,bary
+            ! Zero out flux
+            myflux=0.0_WP
+            ! Quickly calculate the full liquid or gas cells
+            if (this%VF(i0,j0,k0).lt.VFlo) then
+               my_vol=abs(tetvol(mytet)); bary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
+               myflux(2)=my_vol; myflux(6:8)=my_vol*bary   
+               return
+            else if (this%VF(i0,j0,k0).gt.VFhi) then
+               my_vol=abs(tetvol(mytet)); bary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
+               myflux(1)=my_vol; myflux(3:5)=my_vol*bary                                    
+               return
+            end if
+            myplane=getPlane(this%liquid_gas_interface(i0,j0,k0),0)
+            ! Cut by old PLIC
+            d=myplane(1)*mytet(1,:)+myplane(2)*mytet(2,:)+myplane(3)*mytet(3,:)-myplane(4)
+            ! Find cut case
+            case=1+int(0.5_WP+sign(0.5_WP,d(1)))+2*int(0.5_WP+sign(0.5_WP,d(2)))+4*int(0.5_WP+sign(0.5_WP,d(3)))+8*int(0.5_WP+sign(0.5_WP,d(4)))
+            ! Copy vertices
+            vert(:,1:4)=mytet(:,1:4)
+            ! Create interpolated vertices on cut plane
+            do n1=1,cut_nvert(case)
+               v1=cut_v1(n1,case); v2=cut_v2(n1,case)
+               mu=min(1.0_WP,max(0.0_WP,-d(v1)/(sign(abs(d(v2)-d(v1))+epsilon(1.0_WP),d(v2)-d(v1)))))
+               vert(:,4+n1)=(1.0_WP-mu)*vert(:,v1)+mu*vert(:,v2)
+            end do
+            
+            ! Analyze gas tets
+            do n1=1,cut_nntet(case)-1
+               my_vol=abs(tetvol(vert(:,cut_vtet(:,n1,case))))
+               bary=0.25_WP*(vert(:,cut_vtet(1,n1,case))+vert(:,cut_vtet(2,n1,case))+vert(:,cut_vtet(3,n1,case))+vert(:,cut_vtet(4,n1,case)))
+               myflux(2)=myflux(2)+my_vol; myflux(6:8)=myflux(6:8)+my_vol*bary                                         
+            end do
+            ! Analyze liquid tets
+            do n1=cut_ntets(case),cut_nntet(case),-1
+               my_vol=abs(tetvol(vert(:,cut_vtet(:,n1,case))))
+               bary=0.25_WP*(vert(:,cut_vtet(1,n1,case))+vert(:,cut_vtet(2,n1,case))+vert(:,cut_vtet(3,n1,case))+vert(:,cut_vtet(4,n1,case)))
+               myflux(1)=myflux(1)+my_vol; myflux(3:5)=myflux(3:5)+my_vol*bary
+            end do
+      end function cut_tet_plic
+
+   end subroutine transport_flux_noirl
    
    !> Perform flux-based transport of VF based on U/V/W and dt
    subroutine advance_tmp(this,dt,U,V,W,rho_l,rho_g)

@@ -5,9 +5,9 @@ Partition :	4 1 1
 Lx :	10
 Ly :	10
 Lz :	10
-nx :	64!128
-ny :	64!128
-nz :	64!128
+nx :	128!64!128
+ny :	128!64!128
+nz :	1!64!128
 
 # Case parameters
 Droplet center : 0 5 0
@@ -15,6 +15,7 @@ Pool depth : 4
 
 # Method type
 Method type : 1 ! 1 is the momentum flux, 2 is the centered
+Momemtum Flux Type : 1  ! 1 is simple velocity interpolation, 2 is the octant cutting
 Falling Drop Activated: .false.
 Surface tension Activated: .false.
 Implicit: .true.
@@ -33,7 +34,7 @@ Use SGS model : .false.!.true.
 # Time integration
 Max timestep size : 2e-2
 Max cfl number :    0.8
-Max time :          5
+Max time :          20
 
 # Pressure solver
 Pressure tolerance : 1e-5
