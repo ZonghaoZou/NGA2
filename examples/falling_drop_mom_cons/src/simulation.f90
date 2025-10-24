@@ -15,7 +15,7 @@ module simulation
    use monitor_class,     only: monitor
    implicit none
    private
-   public :: simulation_init,simulation_run,simulation_final,output_info
+   public :: simulation_init,simulation_run,simulation_final
    
    !> Flow solver objects
    type(hypre_str),   public :: ps     !< Structured Hypre linear solver for pressure
@@ -267,7 +267,6 @@ contains
          call ens_out%add_scalar('pressure',fs%P)
          call ens_out%add_scalar('curvature',vf%curv)
          call ens_out%add_scalar('band',vf%band)
-         call ens_out%add_scalar('indicator',fs%indicator)
          call ens_out%add_surface('plic',smesh)
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
@@ -341,49 +340,6 @@ contains
    end subroutine simulation_init
    
    
-   subroutine output_info
-      implicit none
-      integer :: i,j,k
-
-      do k=cfg%kmin_,cfg%kmax_
-         do j=cfg%jmin_,cfg%jmax_
-            do i=cfg%imin_,cfg%imax_
-               ! if (abs(fs%U(i,j,k)).lt.0.99999995_WP) then
-               !    fs%indicator(i,j,k)=1
-               !    print  *, "This is the U velocity location", i,j,k,fs%U(i,j,k)
-               ! end if
-
-               if (abs(fs%U(i,j,k)).gt.3.066) then
-                  fs%indicator(i,j,k)=1
-                  print  *, "This is the U velocity location", i,j,k,fs%U(i,j,k)
-               end if
-               if ((i.eq.56).and.(j.eq.63).and.(k.eq.1)) then
-                  ! fs%indicator(i,j,k)=1
-                  print  *, "This is the U velocity location", i,j,k,fs%U(i,j,k)
-                  print *, "U info", vf%MFX(1,i-1:i+1,j,k), fs%U(i-1:i+1,j,k)
-                  print *, "U info", vf%MFY(1,i-1:i,j,k),vf%MFY(1,i-1:i,j+1,k)
-                  print *, 'Band', vf%band(i-2:i+1,j,k)
-
-                  print  *, "This is the V velocity location", i,j,k,fs%V(i,j,k)
-                  print *, "V info", vf%MFY(2,i,j-1:j+1,k)
-                  print *, "V info", vf%MFX(2,i,j-1:j,k),vf%MFX(2,i+1,j-1:j,k)
-               end if
-
-               ! if ((i.eq.54).and.(j.eq.58).and.(k.eq.1)) then
-               !    print *, "U info", vf%MFX(1,i-1:i+1,j,k)
-               !    print *, "U info", vf%MFX(1,i-1:i,j:j+1,k)
-               ! end if
-
-            end do 
-         end do 
-      end do
-
-
-      
-      
-      
-
-   end subroutine output_info
    !> Perform an NGA2 simulation
    subroutine simulation_run
       use tpns_class, only: arithmetic_visc
@@ -405,13 +361,6 @@ contains
          fs%Vold=fs%V; fs%RHOYold=fs%RHOY
          fs%Wold=fs%W; fs%RHOZold=fs%RHOZ
          
-         ! vf%MFX=fs%RHOX*fs%U
-         ! vf%MFY=fs%RHOY*fs%V
-         ! vf%MFZ=fs%RHOZ*fs%W
-         ! VOF solver step
-         ! call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho_l=fs%rho_l,rho_g=fs%rho_g)
-         ! call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)!,rho_l=fs%rho_l,rho_g=fs%rho_g)
-         
          ! ! Remove VOF at edge of domain
          ! remove_vof: block
          !    use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
@@ -428,7 +377,7 @@ contains
          !    end do
          !    call MPI_ALLREDUCE(MPI_IN_PLACE,vof_removed,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
          !    call vf%clean_irl_and_band()
-         ! end block remove_vof
+         ! ! end block remove_vof
          call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W,rho_l=fs%rho_l,rho_g=fs%rho_g)
          ! Update face density and momentum vector
          resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_faceRHO(rho=resU)
@@ -459,8 +408,6 @@ contains
          !       end do
          !    end block sgs_modeling
          ! end if
-         fs%indicator=0.0_WP
-         ! call output_info()
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
           
@@ -504,7 +451,6 @@ contains
             fs%V=2.0_WP*fs%V-fs%Vold+resV
             fs%W=2.0_WP*fs%W-fs%Wold+resW
             
-            ! call output_info()
             ! Sync and apply boundary conditions
             call fs%apply_bcond(time%t,time%dt)
             
@@ -527,14 +473,11 @@ contains
             
             ! Increment sub-iteration counter =================================
             time%it=time%it+1
-            
          end do
          
          ! Recompute interpolated velocity and divergence
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
-
-         ! call output_info()
          
          ! Output to ensight
          if (ens_evt%occurs()) then

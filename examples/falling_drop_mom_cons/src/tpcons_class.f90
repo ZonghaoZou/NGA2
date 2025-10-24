@@ -130,8 +130,6 @@ module tpcons_class
       integer, dimension(:,:,:), allocatable :: vmask                     !< Integer array used for modifying V metrics
       integer, dimension(:,:,:), allocatable :: wmask                     !< Integer array used for modifying W metrics
       
-
-      real(WP), dimension(:,:,:), allocatable ::  indicator
       ! CFL numbers
       real(WP) :: CFLst                                                   !< Surface tension CFL
       real(WP) :: CFLc_x,CFLc_y,CFLc_z                                    !< Convective CFL numbers
@@ -210,8 +208,6 @@ contains
       allocate(this%visc_xy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%visc_xy=0.0_WP
       allocate(this%visc_yz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%visc_yz=0.0_WP
       allocate(this%visc_zx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%visc_zx=0.0_WP
-      
-      allocate(this%indicator(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%indicator=0.0_WP
 
       ! Mass conservation data around which to build momentum/energy conservation
       allocate(this%RHOX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%RHOX=0.0_WP
@@ -1142,13 +1138,6 @@ contains
                if (minval(abs(vf%bandold(i-1:i+1,j,k))).le.setband) then
                   if (type_method.eq.1) then
                      FX(i,j,k)=-sum(this%itpu_x(:,i,j,k)*vf%MFX(1,i:i+1,j,k))
-                     ! diff=sum(this%itpu_x(:,i,j,k)*vf%MFX(1,i:i+1,j,k))-sum(this%itpu_x(:,i,j,k)*this%rhoU(i:i+1,j,k))*sum(this%itpu_x(:,i,j,k)*this%U(i:i+1,j,k))
-                     ! diff=diff/(sum(this%itpu_x(:,i,j,k)*this%rhoU(i:i+1,j,k))*sum(this%itpu_x(:,i,j,k)*this%U(i:i+1,j,k)))
-                     ! if (abs(diff).gt.1.0e-1.and.k.eq.1) then
-
-                     !    ! print *, 'Diff FX',diff,i,j,k,vf%MFX(1,i,j,k),vf%MFX(1,i+1,j,k),this%rhoU(i,j,k),this%rhoU(i+1,j,k)!,this%U(i,j,k),this%V(i,j,k),this%V(i+1,j,k),this%V(i,j-1,k),this%V(i,j,k),this%V(i,j+1,k)
-                     !    this%indicator(i,j,k)=1.0_WP
-                     ! end if
                   else
                      FX(i,j,k)=-sum(this%itpu_x(:,i,j,k)*this%rhoU(i:i+1,j,k))*sum(this%itpu_x(:,i,j,k)*this%U(i:i+1,j,k))
                   end if
@@ -1208,12 +1197,6 @@ contains
                   else
                      FX(i,j,k)=-sum(this%itpu_y(:,i,j,k)*this%rhoU(i,j-1:j,k))*sum(this%itpv_x(:,i,j,k)*this%V(i-1:i,j,k))
                   end if
-                  ! diff=sum(this%itpu_y(:,i,j,k)*vf%MFX(2,i,j-1:j,k))-sum(this%itpu_y(:,i,j,k)*this%rhoU(i,j-1:j,k))*sum(this%itpv_x(:,i,j,k)*this%V(i-1:i,j,k))
-                  ! diff=diff/sum(this%itpu_y(:,i,j,k)*this%rhoU(i,j-1:j,k))*sum(this%itpv_x(:,i,j,k)*this%V(i-1:i,j,k))
-                  ! if (abs(diff).gt.1.0e-1.and.k.eq.1) then
-                  !    print *, 'Diff FX',diff,i,j,k,vf%MFX(2,i,j-1,k),vf%MFX(2,i,j,k),this%rhoU(i,j-1,k),this%rhoU(i,j,k),this%V(i-1,j,k),this%V(i,j,k)
-                  !    this%indicator(i,j,k)=1.0_WP
-                  ! end if
                else
                   FX(i,j,k)=-sum(this%itpu_y(:,i,j,k)*this%rhoU(i,j-1:j,k))*sum(this%itpv_x(:,i,j,k)*this%V(i-1:i,j,k))
                end if
@@ -1226,12 +1209,6 @@ contains
                   else
                      FY(i,j,k)=-sum(this%itpv_y(:,i,j,k)*this%rhoV(i,j:j+1,k))*sum(this%itpv_y(:,i,j,k)*this%V(i,j:j+1,k)) 
                   end if
-                  ! diff=sum(this%itpv_y(:,i,j,k)*vf%MFY(2,i,j:j+1,k))-sum(this%itpv_y(:,i,j,k)*this%rhoV(i,j:j+1,k))*sum(this%itpv_y(:,i,j,k)*this%V(i,j:j+1,k)) 
-                  ! diff=diff/(sum(this%itpv_y(:,i,j,k)*this%rhoV(i,j:j+1,k))*sum(this%itpv_y(:,i,j,k)*this%V(i,j:j+1,k)) )
-                  ! if (abs(diff).gt.1.0e-1.and.k.eq.1) then
-                  !    print *, 'Diff FY',diff,i,j,k,vf%MFY(2,i,j,k),vf%MFY(2,i,j+1,k),this%rhoV(i,j,k),this%rhoV(i,j+1,k),this%V(i-1,j,k),this%V(i,j,k),this%V(i+1,j,k),this%V(i,j-1,k),this%V(i,j,k),this%V(i,j+1,k)
-                  !    this%indicator(i,j,k)=1.0_WP
-                  ! end if
                else
                   FY(i,j,k)=-sum(this%itpv_y(:,i,j,k)*this%rhoV(i,j:j+1,k))*sum(this%itpv_y(:,i,j,k)*this%V(i,j:j+1,k)) 
                end if
@@ -1319,7 +1296,6 @@ contains
       end do
       ! Sync it
       call this%cfg%sync(drhoWdt)
-      call this%cfg%sync(this%indicator)
       
       ! Deallocate flux arrays
       deallocate(FX,FY,FZ)
