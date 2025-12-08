@@ -554,18 +554,17 @@ contains
             end do
          end do
       end do
-      
+
       do jj=1,8
          do ii=1,8
             do k=this%cfg%kmino_,this%cfg%kmaxo_
                do j=this%cfg%jmino_,this%cfg%jmaxo_
                   do i=this%cfg%imino_,this%cfg%imaxo_
-                     this%PINV(ii,jj)=this%PC_coeff(ii,i,j,k)*this%PC_coeff(jj,i,j,k)*this%cfg%vol(i,j,k)
+                     this%PINV(ii,jj)=this%PINV(ii,jj)+this%PC_coeff(ii,i,j,k)*this%PC_coeff(jj,i,j,k)*this%cfg%vol(i,j,k)
                   end do 
                end do 
             end do 
          end do 
-         print *, this%PINV(:,jj)
       end do
 
       ! Invert the coefficient matrix to get matrix multiplication factor for a
@@ -583,8 +582,9 @@ contains
          call dgetri(8,this%PINV,8,ipiv,work,lwork,info)
          deallocate(work)
       end block invert_Pcoeff
-
-      print *,this%PINV
+      ! do jj=1,8
+      !    print *,this%PINV(:,jj)
+      ! end do
    end subroutine init_metrics
    
    
@@ -1979,7 +1979,9 @@ contains
       end do
 
       a=-matmul(this%PINV,b)
-      print *, this%PINV
+      print *, a
+      print *, b
+      ! print *, this%PINV
       this%P=this%psolv%sol
       do ii=1,8
          this%P=this%P(:,:,:)+a(ii)*this%PC_coeff(ii,:,:,:)

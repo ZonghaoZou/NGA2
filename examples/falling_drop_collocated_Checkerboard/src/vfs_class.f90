@@ -56,6 +56,7 @@ module vfs_class
    !> Boundary conditions for the volume fraction solver
    type :: bcond
       type(bcond), pointer :: next                        !< Linked list of bconds
+
       character(len=str_medium) :: name='UNNAMED_BCOND'   !< Bcond name (default=UNNAMED_BCOND)
       integer :: type                                     !< Bcond type
       integer :: dir                                      !< Bcond direction (1 to 6)
@@ -89,6 +90,11 @@ module vfs_class
       ! Superficial fluxing velocities
       real(WP), dimension(:,:,:,:), allocatable :: UFl    !< Superficial liquid fluxing velocity
       real(WP), dimension(:,:,:,:), allocatable :: UFg    !< Superficial gas fluxing velocity
+
+      ! Momentum fluxes of each face
+      real(WP), dimension(:,:,:,:), allocatable :: MFX    !< Superficial liquid fluxing velocity
+      real(WP), dimension(:,:,:,:), allocatable :: MFY    !< Superficial liquid fluxing velocity
+      real(WP), dimension(:,:,:,:), allocatable :: MFZ    !< Superficial liquid fluxing velocity
       
       ! Subcell phasic volume fields
       real(WP), dimension(:,:,:,:,:,:), allocatable :: Lvol   !< Subcell liquid volume
@@ -107,6 +113,7 @@ module vfs_class
       
       ! Band strategy
       integer, dimension(:,:,:), allocatable :: band      !< Band to localize workload around the interface
+      integer, dimension(:,:,:), allocatable :: bandold   !< Band to localize workload around the interface
       integer, dimension(:,:),   allocatable :: band_map  !< Unstructured band mapping
       integer, dimension(0:nband) :: band_count           !< Number of cells per band value
       
@@ -288,6 +295,10 @@ contains
       allocate(this%UFl(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%UFl=0.0_WP
       allocate(this%UFg(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%UFg=0.0_WP
       
+      ! Momentum Fluxes
+      allocate(this%MFX(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%MFX=0.0_WP
+      allocate(this%MFY(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%MFY=0.0_WP
+      allocate(this%MFZ(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%MFZ=0.0_WP
       ! Set clipping distance
       this%Gclip=real(distance_band+1,WP)*this%cfg%min_meshsize
       
@@ -297,6 +308,7 @@ contains
       
       ! Prepare the band arrays
       allocate(this%band(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%band=0
+      allocate(this%bandold(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%bandold=0
       if (allocated(this%band_map)) deallocate(this%band_map)
       
       ! Set reconstruction method
@@ -811,7 +823,6 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: V     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: W     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      
       ! First perform transport
       select case (this%transport_method)
       case (flux)
@@ -1162,7 +1173,6 @@ contains
       
    end subroutine transport_remap_storage
    
-   
    !> Perform flux-based transport of VF based on U/V/W and dt
    subroutine transport_flux(this,dt,U,V,W)
       implicit none
@@ -1390,30 +1400,35 @@ contains
       call this%cfg%sync(this%UFg)
       
    end subroutine transport_flux
-   
+
    
    !> Perform flux-based transport of VF based on U/V/W and dt
-   subroutine advance_tmp(this,dt,U,V,W)
+   subroutine advance_tmp(this,dt,U,V,W,rho_l,rho_g)
       implicit none
       class(vfs), intent(inout) :: this
       real(WP), intent(inout) :: dt  !< Timestep size over which to advance
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: V     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: W     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      integer :: i,j,k,index
+      real(WP), intent(in) :: rho_l,rho_g
+      integer :: i,j,k,index,n
+      integer , dimension(3) :: ind
       real(IRL_double), dimension(3,9) :: face
       type(CapDod_type) :: flux_polyhedron
       real(WP) :: Lvolold,Gvolold
       real(WP) :: Lvolinc,Gvolinc
       real(WP) :: Lvolnew,Gvolnew
       real(WP) :: vol_now,crude_VF
-      real(WP), dimension(3) :: ctr_now
+      real(WP) :: lvol,gvol,tlvol,tgvol,Utmp,Vtmp,Wtmp
+      real(WP), dimension(3) :: ctr_now,lbar,gbar,lmom,gmom,tlbar,tgbar
       real(WP), dimension(3,2) :: bounding_pts
       integer, dimension(3,2) :: bb_indices
-      
+      type(SepVM_type) :: my_SepVM
+      type(TagAccVM_SepVM_type) :: detailed_face_flux
+      this%MFX=0.0_WP; this%MFY=0.0_WP; this%MFZ=0.0_WP
       ! Allocate
       call new(flux_polyhedron)
-      
+      call new(detailed_face_flux)
       ! Reset face fluxes to crude estimate (just needs to be valid for volume away from interface)
       do k=this%cfg%kmino_,this%cfg%kmaxo_
          do j=this%cfg%jmino_,this%cfg%jmaxo_
@@ -1449,23 +1464,34 @@ contains
                   call construct(flux_polyhedron,face)
                   ! Add solenoidal correction
                   if (this%cons_correct) call adjustCapToMatchVolume(flux_polyhedron,dt*U(i,j,k)*this%cfg%dy(j)*this%cfg%dz(k))
-                  ! Get bounds for flux polyhedron
-                  call getBoundingPts(flux_polyhedron,bounding_pts(:,1),bounding_pts(:,2))
-                  bb_indices(:,1)=this%cfg%get_ijk_local(bounding_pts(:,1),[i,j,k])
-                  bb_indices(:,2)=this%cfg%get_ijk_local(bounding_pts(:,2),[i,j,k])
-                  ! Crudely check phase information for flux polyhedron
-                  crude_VF=this%crude_phase_test(bb_indices)
-                  if (crude_VF.lt.0.0_WP) then
-                     ! Need full geometric flux
-                     call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),this%face_flux(1,i,j,k))
-                  else
-                     ! Simpler flux calculation
-                     vol_now=calculateVolume(flux_polyhedron); ctr_now=calculateCentroid(flux_polyhedron)
-                     call construct(this%face_flux(1,i,j,k),[crude_VF*vol_now,crude_VF*vol_now*ctr_now,(1.0_WP-crude_VF)*vol_now,(1.0_WP-crude_VF)*vol_now*ctr_now])
-                  end if
+
+                  lvol=0.0_WP; gvol=0.0_WP;lbar=0.0_WP; gbar=0.0_WP; lmom=0.0_WP; gmom=0.0_WP
+                  tlvol=0.0_WP;tgvol=0.0_WP;tlbar=0.0_WP;tgbar=0.0_WP
+                  ! Need full geometric flux
+                  call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),detailed_face_flux)
+                  ! Rebuild face flux from detailed face flux
+                  do n=0,getSize(detailed_face_flux)-1
+                     ! Get cell index
+                     ind=this%cfg%get_ijk_from_lexico(getTagForIndex(detailed_face_flux,n))
+                     ! Get separated volume moments
+                     call getSepVMAtIndex(detailed_face_flux,n,my_SepVM)
+                     ! Extract volume and interpolated momentum
+                     lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0); 
+                     gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1); 
+                     Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
+                     Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
+                     Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
+                     lmom=lmom+lvol*rho_l*[Utmp,Vtmp,Wtmp]
+                     gmom=gmom+gvol*rho_g*[Utmp,Vtmp,Wtmp]
+                     tlvol=tlvol+lvol;tgvol=tgvol+gvol
+                     tlbar=tlbar+lbar;tgbar=tgbar+gbar
+                  end do
+                  call construct(this%face_flux(1,i,j,k),[tlvol,tlbar,tgvol,tgbar])
+                  call clear(detailed_face_flux)
                   ! Store superficial liquid and gas fluxing velocities for momentum solver
                   this%UFl(1,i,j,k)=getVolumePtr(this%face_flux(1,i,j,k),0)/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
                   this%UFg(1,i,j,k)=getVolumePtr(this%face_flux(1,i,j,k),1)/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+                  this%MFX(:,i,j,k)=                            (lmom+gmom)/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
                else 
                   ! Simple superficial velocity
                   if (maxval(this%band(i-1:i,j,k)).lt.0) then
@@ -1490,23 +1516,33 @@ contains
                   call construct(flux_polyhedron,face)
                   ! Add solenoidal correction
                   if (this%cons_correct) call adjustCapToMatchVolume(flux_polyhedron,dt*V(i,j,k)*this%cfg%dx(i)*this%cfg%dz(k))
-                  ! Get bounds for flux polyhedron
-                  call getBoundingPts(flux_polyhedron,bounding_pts(:,1),bounding_pts(:,2))
-                  bb_indices(:,1)=this%cfg%get_ijk_local(bounding_pts(:,1),[i,j,k])
-                  bb_indices(:,2)=this%cfg%get_ijk_local(bounding_pts(:,2),[i,j,k])
-                  ! Crudely check phase information for flux polyhedron
-                  crude_VF=this%crude_phase_test(bb_indices)
-                  if (crude_VF.lt.0.0_WP) then
-                     ! Need full geometric flux
-                     call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),this%face_flux(2,i,j,k))
-                  else
-                     ! Simpler flux calculation
-                     vol_now=calculateVolume(flux_polyhedron); ctr_now=calculateCentroid(flux_polyhedron)
-                     call construct(this%face_flux(2,i,j,k),[crude_VF*vol_now,crude_VF*vol_now*ctr_now,(1.0_WP-crude_VF)*vol_now,(1.0_WP-crude_VF)*vol_now*ctr_now])
-                  end if
+                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lmom=0.0_WP; gmom=0.0_WP
+                  tlvol=0.0_WP;tgvol=0.0_WP;tlbar=0.0_WP;tgbar=0.0_WP
+                  ! Need full geometric flux
+                  call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),detailed_face_flux)
+                  ! Traverse current detailed face flux and increment fluxes
+                  do n=0,getSize(detailed_face_flux)-1
+                     ! Get cell index
+                     ind=this%cfg%get_ijk_from_lexico(getTagForIndex(detailed_face_flux,n))
+                     ! Get separated volume moments
+                     call getSepVMAtIndex(detailed_face_flux,n,my_SepVM)
+                     ! Extract volume and interpolated momentum
+                     lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0)
+                     gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1)
+                     Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
+                     Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
+                     Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
+                     lmom=lmom+lvol*rho_l*[Utmp,Vtmp,Wtmp]
+                     gmom=gmom+gvol*rho_g*[Utmp,Vtmp,Wtmp]
+                     tlvol=tlvol+lvol;tgvol=tgvol+gvol
+                     tlbar=tlbar+lbar;tgbar=tgbar+gbar
+                  end do
+                  call construct(this%face_flux(2,i,j,k),[tlvol,tlbar,tgvol,tgbar])
+                  call clear(detailed_face_flux)
                   ! Store superficial liquid and gas fluxing velocities for momentum solver
                   this%UFl(2,i,j,k)=getVolumePtr(this%face_flux(2,i,j,k),0)/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
                   this%UFg(2,i,j,k)=getVolumePtr(this%face_flux(2,i,j,k),1)/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
+                  this%MFY(:,i,j,k)=                            (lmom+gmom)/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
                else
                   ! Simple superficial velocity
                   if (maxval(this%band(i,j-1:j,k)).lt.0) then
@@ -1531,23 +1567,33 @@ contains
                   call construct(flux_polyhedron,face)
                   ! Add solenoidal correction
                   if (this%cons_correct) call adjustCapToMatchVolume(flux_polyhedron,dt*W(i,j,k)*this%cfg%dx(i)*this%cfg%dy(j))
-                  ! Get bounds for flux polyhedron
-                  call getBoundingPts(flux_polyhedron,bounding_pts(:,1),bounding_pts(:,2))
-                  bb_indices(:,1)=this%cfg%get_ijk_local(bounding_pts(:,1),[i,j,k])
-                  bb_indices(:,2)=this%cfg%get_ijk_local(bounding_pts(:,2),[i,j,k])
-                  ! Crudely check phase information for flux polyhedron
-                  crude_VF=this%crude_phase_test(bb_indices)
-                  if (crude_VF.lt.0.0_WP) then
-                     ! Need full geometric flux
-                     call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),this%face_flux(3,i,j,k))
-                  else
-                     ! Simpler flux calculation
-                     vol_now=calculateVolume(flux_polyhedron); ctr_now=calculateCentroid(flux_polyhedron)
-                     call construct(this%face_flux(3,i,j,k),[crude_VF*vol_now,crude_VF*vol_now*ctr_now,(1.0_WP-crude_VF)*vol_now,(1.0_WP-crude_VF)*vol_now*ctr_now])
-                  end if
+                  lvol=0.0_WP; gvol=0.0_WP; lbar=0.0_WP; gbar=0.0_WP; lmom=0.0_WP; gmom=0.0_WP
+                  tlvol=0.0_WP;tgvol=0.0_WP;tlbar=0.0_WP;tgbar=0.0_WP
+                  ! Need full geometric flux
+                  call getMoments(flux_polyhedron,this%localized_separator_link(i,j,k),detailed_face_flux)
+                  ! Traverse current detailed face flux and increment fluxes
+                  do n=0,getSize(detailed_face_flux)-1
+                     ! Get cell index
+                     ind=this%cfg%get_ijk_from_lexico(getTagForIndex(detailed_face_flux,n))
+                     ! Get separated volume moments
+                     call getSepVMAtIndex(detailed_face_flux,n,my_SepVM)
+                     ! Extract volume and interpolated momentum
+                     lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0)
+                     gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1)
+                     Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
+                     Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
+                     Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
+                     lmom=lmom+lvol*rho_l*[Utmp,Vtmp,Wtmp]
+                     gmom=gmom+gvol*rho_g*[Utmp,Vtmp,Wtmp]
+                     tlvol=tlvol+lvol;tgvol=tgvol+gvol
+                     tlbar=tlbar+lbar;tgbar=tgbar+gbar
+                  end do
+                  call construct(this%face_flux(3,i,j,k),[tlvol,tlbar,tgvol,tgbar])
+                  call clear(detailed_face_flux)
                   ! Store superficial liquid and gas fluxing velocities for momentum solver
                   this%UFl(3,i,j,k)=getVolumePtr(this%face_flux(3,i,j,k),0)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
                   this%UFg(3,i,j,k)=getVolumePtr(this%face_flux(3,i,j,k),1)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
+                  this%MFZ(:,i,j,k)=                            (lmom+gmom)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
                else
                   ! Simple superficial velocity
                   if (maxval(this%band(i,j,k-1:k)).lt.0) then
@@ -1562,7 +1608,6 @@ contains
             end do
          end do
       end do
-      
       ! Compute transported moments
       do index=1,sum(this%band_count(0:advect_band))
          i=this%band_map(1,index)
@@ -1596,17 +1641,19 @@ contains
             this%VF(i,j,k)=0.0_WP
          else if (this%VF(i,j,k).gt.VFhi) then
             this%VF(i,j,k)=1.0_WP
-         else
          end if
       end do
       
-      ! Synchronize VF
+      ! Synchronize VF and barycenter fields
       call this%cfg%sync(this%VF)
       
       ! Synchronize fluxing velocities
       call this%cfg%sync(this%UFl)
       call this%cfg%sync(this%UFg)
-      
+
+      call this%cfg%sync(this%MFX)
+      call this%cfg%sync(this%MFY)
+      call this%cfg%sync(this%MFZ)
    end subroutine advance_tmp
    
    
@@ -4303,6 +4350,7 @@ contains
                !if (dot_product(sn,sn).gt.10.0_WP*tiny(1.0_WP)) this%curv(i,j,k)=dot_product(csn,sn)/dot_product(sn,sn)
                ! Surface-averaged curvature
                if (sum(mysurf).gt.0.0_WP) this%curv(i,j,k)=sum(mysurf*mycurv)/sum(mysurf)
+               ! if (sum(mysurf).gt.0.0_WP) this%curv(i,j,k)=2.0_WP
                ! Curvature of largest surface
                !if (mysurf(maxloc(mysurf,1)).gt.0.0_WP) this%curv(i,j,k)=mycurv(maxloc(mysurf,1))
                ! Largest curvature
@@ -4315,6 +4363,7 @@ contains
                !end if
                ! Clip curvature - may not be needed if we select polygons carefully
                this%curv(i,j,k)=max(min(this%curv(i,j,k),this%maxcurv_times_mesh/this%cfg%meshsize(i,j,k)),-this%maxcurv_times_mesh/this%cfg%meshsize(i,j,k))
+               ! this%curv(i,j,k)=2.0_WP 
                ! Also store 2-plane curvature if needed
                if (this%two_planes) this%curv2p(:,i,j,k)=max(min(mycurv,this%maxcurv_times_mesh/this%cfg%meshsize(i,j,k)),-this%maxcurv_times_mesh/this%cfg%meshsize(i,j,k))
                ! Model edge curvature at 1/thickness
