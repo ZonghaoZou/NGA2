@@ -1,0 +1,43 @@
+# Parallelization
+Partition :	1 1 1
+
+# Mesh definition
+Lx :	10
+Ly :	10
+Lz :	10
+nx :	128!64!128
+ny :	128!64!128
+nz :	1!64!128
+
+# Case parameters
+Droplet center : 0 5 0
+Pool depth : 4
+
+# Method type
+Method type : 1 ! 1 is the momentum flux, 2 is the centered
+Falling Drop Activated: .false.
+Surface tension Activated: .false.
+Implicit: .true.
+
+
+# Fluid properties      | (1) Jet  | (2) No jet
+Froude number :    146  !     146  !         90
+Weber number :     87   !      87  !         43
+Reynolds number :  3180 !    3180  !       2110
+Density ratio :    816
+Viscosity ratio :  64
+
+# SGS modeling
+Use SGS model : .false.!.true.
+
+# Time integration
+Max timestep size : 2e-2
+Max cfl number :    0.8
+Max time :          120
+
+# Pressure solver
+Pressure tolerance : 1e-5
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 2e-10
