@@ -23,7 +23,7 @@ module nozzle_class
       !> Provide a datafile and an event tracker for saving restarts
       type(event)    :: save_evt
       type(pardata)  :: df
-      logical :: restarted
+      logical :: restarted,converged
       
       !> Input file for the simulation
       type(inputfile) :: input
@@ -43,11 +43,16 @@ module nozzle_class
       !> Ensight postprocessing
       type(ensight) :: ens_out  !< Ensight output for flow variables
       type(event)   :: ens_evt  !< Event trigger for Ensight output
-      
+      ! Stats recording
+      type(event)    :: stat_evt
       !> Simulation monitor file
       type(monitor) :: mfile    !< General simulation monitoring
       type(monitor) :: cflfile  !< CFL monitoring
       
+      !> Record stats
+      real(WP), dimension(:), allocatable :: Umean2em3,U2mean2em3
+      real(WP) :: timeint,stat_begin
+
       !> Work arrays
       real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
       real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
@@ -65,6 +70,7 @@ module nozzle_class
       procedure :: init                            !< Initialize nozzle simulation
       procedure :: step                            !< Advance nozzle simulation by one time step
       procedure :: final                           !< Finalize nozzle simulation
+      ! procedure :: record_stats
    end type nozzle
    
 
@@ -322,6 +328,7 @@ contains
          ! Check if we are restarting
          call this%input%read('Restart from',timestamp,default='')
          this%restarted=.false.; if (len_trim(timestamp).gt.0) this%restarted=.true.
+         call this%input%read('Taken from Converged',this%converged,default=.false.)
          ! Read in the I/O partition
          call this%input%read('I/O partition',iopartition)
          ! Perform pardata initialization
@@ -342,7 +349,7 @@ contains
       
       ! Revisit timetracker to adjust time and time step values if this is a restart
       update_timetracker: block
-         if (this%restarted) then
+         if (this%restarted.and.(.not.this%converged)) then
             call this%df%pull(name='t' ,val=this%time%t )
             call this%df%pull(name='dt',val=this%time%dt)
             this%time%told=this%time%t-this%time%dt
@@ -363,6 +370,8 @@ contains
          allocate(this%Vib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Wib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%srcM(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%Umean2em3   (this%cfg%jmin:this%cfg%jmax));this%Umean2em3=0.0_WP
+         allocate(this%U2mean2em3  (this%cfg%jmin:this%cfg%jmax));this%U2mean2em3=0.0_WP
       end block allocate_work_arrays
       
       
@@ -493,6 +502,16 @@ contains
          if (this%ens_evt%occurs()) call this%ens_out%write_data(this%time%t)
       end block create_ensight
       
+
+      ! create_stat: block
+      !    use filesys,  only: makedir,isdir
+      !    if (this%cfg%amRoot) then
+      !       if (.not.isdir('stats')) call makedir('stats')
+      !    end if
+      !    this%stat_evt=event(time=this%time,name='stat output')
+      !    call this%input%read('Stat output period',this%stat_evt%tper)
+      !    call this%input%read('Stat begin',this%stat_begin)
+      ! end block create_stat
 
       ! Create a monitor file
       create_monitor: block
@@ -639,9 +658,11 @@ contains
       call this%mfile%write()
       call this%cflfile%write()
       
+      ! ! Record stats to see if nozzle has converged
+      ! call this%record_stats()
       ! Finally, see if it's time to save restart files
       if (this%save_evt%occurs()) then
-         if (this%cfg%amRoot) print *, " Starting nozzle writing"
+         ! if (this%cfg%amRoot) print *, " Starting nozzle writing"
          save_restart: block
             use string, only: str_medium
             character(len=str_medium) :: timestamp
@@ -658,7 +679,7 @@ contains
             call this%df%push(name='MM', var=this%sgs%MM)
             call this%df%write(fdata='restart/data_nozzle_'//trim(adjustl(timestamp)))
          end block save_restart
-         if (this%cfg%amRoot) print *, " Finishing nozzle writing"
+         ! if (this%cfg%amRoot) print *, " Finishing nozzle writing"
       end if
       
    end subroutine step
@@ -675,6 +696,57 @@ contains
       
    end subroutine final
    
+   ! subroutine record_stats(this)
+   !    use parallel,  only: MPI_REAL_WP
+   !    use string,   only: str_medium
+   !    use messager, only: die
+   !    use mpi_f08
+   !    implicit none
+   !    class(nozzle), intent(inout) :: this
+   !    character(len=str_medium) :: filename
+   !    integer:: ierr,t_output,i,j,k
+   !    real(WP) :: xloc1
+   !    real(WP), dimension(:), allocatable :: Uint1
+   !    if (this%time%t.lt.this%stat_begin) return
+   !    ! Array extends to the entire domain
+   !    allocate(Uint1(this%cfg%jmin:this%cfg%jmax));Uint1=0.0_WP
+   !    ! Accumulate the data
+   !    xloc1=-0.0003_WP
+   !    do k=this%cfg%kmin_,this%cfg%kmax_
+   !       do j=this%cfg%jmin_,this%cfg%jmax_
+   !          do i=this%cfg%imin_,this%cfg%imax_
+   !             if (this%cfg%zm(k).ge.0.0_WP.and.this%cfg%zm(k-1).lt.0.0_WP)then
+   !                if (this%cfg%xm(i).ge.xloc1.and.this%cfg%xm(i-1).lt.xloc1) then
+   !                   Uint1(j)=this%fs%U(i,j,k)
+   !                end if 
+   !             end if
+   !          end do
+   !       end do
+   !    end do
+   !    call MPI_ALLREDUCE(MPI_IN_PLACE,Uint1,size(Uint1),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   !    this%Umean2em3 =this%Umean2em3 +this%time%dt*Uint1
+   !    this%U2mean2em3=this%U2mean2em3+this%time%dt*Uint1**2
+   !    this%timeint=this%timeint+this%time%dt
+   !    deallocate(Uint1)
+   
+   !    ! If it is time to record stats
+   !    if (this%stat_evt%occurs().and.this%timeint.gt.0.0_WP) then
+   !       if (this%cfg%amRoot) then
+   !          t_output=int(this%time%t*1.0e4)
+   
+   !          write(filename, '(A,I0,A)') 'stats/Uoutlet_', t_output, '.csv'
+   !          open(unit=10, file=filename, status="replace", action="write")
+   !          do j=this%cfg%jmin,this%cfg%jmax
+   !             write(10, '(F20.12, ",", F20.12, ",", F20.12, ",", F20.12)') this%cfg%ym(j),this%Umean2em3(j)/this%timeint,&
+   !             & sqrt(max(0.0_WP,this%U2mean2em3(j)/this%timeint-(this%Umean2em3(j)/this%timeint)**2)),this%U2mean2em3(j)/this%timeint
+   !          end do
+   !          close(unit=10)
+   
+   !       end if
+   
+   !    end if
+   !  end subroutine record_stats
+
    
    !> Function that localizes the right domain boundary
    function right_boundary(pg,i,j,k) result(isIn)
