@@ -101,10 +101,6 @@ module tpcons_class
       real(WP), dimension(:,:,:), allocatable :: dPjy     !< dPressure jump to add to -ddP/dy
       real(WP), dimension(:,:,:), allocatable :: dPjz     !< dPressure jump to add to -ddP/dz
 
-      real(WP), dimension(:,:,:), allocatable :: PX       !< Pressure array
-      real(WP), dimension(:,:,:), allocatable :: PY       !< Pressure array
-      real(WP), dimension(:,:,:), allocatable :: PZ       !< Pressure array
-
       ! Old flow variables
       real(WP), dimension(:,:,:), allocatable :: Uold     !< Uold velocity array
       real(WP), dimension(:,:,:), allocatable :: Vold     !< Vold velocity array
@@ -232,10 +228,7 @@ contains
       allocate(this%rhoU(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%rhoU=0.0_WP
       allocate(this%rhoV(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%rhoV=0.0_WP
       allocate(this%rhoW(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%rhoW=0.0_WP
-      
-      allocate(this%PX  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%PX=0.0_WP
-      allocate(this%PY  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%PY=0.0_WP
-      allocate(this%PZ  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%PZ=0.0_WP
+
       ! Allocate flow divergence
       allocate(this%div(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%div=0.0_WP
       
@@ -1140,7 +1133,7 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: drhoWdt !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k,ii,jj,kk
       real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
-      ! real(WP), dimension(:,:,:),allocatable ::PX,PY,PZ
+      ! real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
       ! ! Allocate flux arrays
       ! allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
       ! allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
@@ -1159,7 +1152,7 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
-               FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%U(i-1:i,j,k))
+               FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%U(i-1:i,j,k))!-PX(i,j,k)
                FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%U(i,j-1:j,k)) 
                FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%U(i,j,k-1:k))
             end do 
@@ -1184,7 +1177,7 @@ contains
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
                FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%V(i-1:i,j,k))
-               FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%V(i,j-1:j,k))
+               FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%V(i,j-1:j,k))!-PY(i,j,k)
                FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%V(i,j,k-1:k))
             end do 
          end do 
@@ -1209,7 +1202,7 @@ contains
             do i=this%cfg%imin_,this%cfg%imax_+1
                FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%W(i-1:i,j,k))
                FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%W(i,j-1:j,k)) 
-               FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%W(i,j,k-1:k))
+               FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%W(i,j,k-1:k))!-PZ(i,j,k)
             end do 
          end do 
       end do
@@ -1827,7 +1820,7 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgrady !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgradz !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k
-      real(WP), dimension(:,:,:),allocatable ::PX,PY,PZ
+      real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
       ! Allocate flux arrays
       allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
       allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
@@ -1840,9 +1833,9 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               Pgradx(i,j,k)=sum(this%divp_x(:,i,j,k)*this%PX(i:i+1,j,k))
-               Pgrady(i,j,k)=sum(this%divp_y(:,i,j,k)*this%PY(i,j:j+1,k))
-               Pgradz(i,j,k)=sum(this%divp_z(:,i,j,k)*this%PZ(i,j,k:k+1))
+               Pgradx(i,j,k)=sum(this%divp_x(:,i,j,k)*PX(i:i+1,j,k))
+               Pgrady(i,j,k)=sum(this%divp_y(:,i,j,k)*PY(i,j:j+1,k))
+               Pgradz(i,j,k)=sum(this%divp_z(:,i,j,k)*PZ(i,j,k:k+1))
             end do
          end do
       end do
@@ -2941,6 +2934,8 @@ contains
                   PX(i,j,k)=2.0_WP*sum(this%itpr_x(:,i,j,k)*P(i-1:i,j,k))&
                        -sum(this%itpr_x(:,i,j,k)*rho_f*P(i-1:i,j,k)) / &
                        (sum(this%itpr_x(:,i,j,k)*rho_f) + tiny(1.0_WP))
+                  ! PX(i,j,k)=sum(this%itpr_x(:,i,j,k)*rho_f*P(i-1:i,j,k))/sum(this%itpr_x(:,i,j,k)*rho_f)
+                  ! PX(i,j,k)=sum(rho_f*P(i-1:i,j,k))/sum(rho_f)
                end if
                ! Update face pressure and density in Y
                rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
@@ -2953,6 +2948,8 @@ contains
                   PY(i,j,k)=2.0_WP*sum(this%itpr_y(:,i,j,k)*P(i,j-1:j,k))&
                        -sum(this%itpr_y(:,i,j,k)*rho_f*P(i,j-1:j,k)) / &
                        (sum(this%itpr_y(:,i,j,k)*rho_f) + tiny(1.0_WP))
+                  ! PY(i,j,k)=sum(this%itpr_y(:,i,j,k)*rho_f*P(i,j-1:j,k))/sum(this%itpr_y(:,i,j,k)*rho_f)
+                  ! PY(i,j,k)=sum(rho_f*P(i,j-1:j,k))/sum(rho_f)
                end if
                ! Update face pressure and density in Z
                rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
@@ -2965,6 +2962,8 @@ contains
                   PZ(i,j,k)=2.0_WP*sum(this%itpr_z(:,i,j,k)*P(i,j,k-1:k))&
                        -sum(this%itpr_z(:,i,j,k)*rho_f*P(i,j,k-1:k)) / &
                        (sum(this%itpr_z(:,i,j,k)*rho_f) + tiny(1.0_WP))
+                  ! PZ(i,j,k)=sum(this%itpr_z(:,i,j,k)*rho_f*P(i,j,k-1:k))/sum(this%itpr_z(:,i,j,k)*rho_f)
+                  ! PZ(i,j,k)=sum(rho_f*P(i,j,k-1:k))/sum(rho_f)
                end if
                
             end do
