@@ -229,8 +229,8 @@ contains
          else
             fs%V=-1.0_WP
             fs%U=3.0_WP
-            fs%Vf=fs%V
-            fs%Uf=fs%U
+            ! fs%Vf=fs%V
+            ! fs%Uf=fs%U
             ! fs%U=1.0_WP
          end if
          ! Calculate cell-centered velocities and divergence
@@ -370,7 +370,7 @@ contains
          fs%rhoW=fs%rho_l*vf%UFl(3,:,:,:)+fs%rho_g*vf%UFg(3,:,:,:)
          
          ! Prepare new staggered viscosity (at n+1)
-         call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
+         ! call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
          
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
@@ -381,7 +381,7 @@ contains
             fs%W=0.5_WP*(fs%W+fs%Wold)
             
             ! Explicit calculation of drho*u/dt from NS
-            call fs%get_dmomdt(resU,resV,resW)
+            call fs%get_dmomdt(vf,resU,resV,resW)
             
             ! Add momentum source terms
             call fs%addsrc_gravity(resU,resV,resW)
@@ -420,7 +420,8 @@ contains
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
 
-            call fs%get_pgrad_collocated(vf,resU,resV,resW)
+            
+            call fs%get_pgrad_collocated(vf,fs%psolv%sol,resU,resV,resW)
             fs%U=fs%U-time%dt*resU/fs%rho
             fs%V=fs%V-time%dt*resV/fs%rho
             fs%W=fs%W-time%dt*resW/fs%rho
