@@ -179,8 +179,10 @@ contains
             fs%sigma=We**(-1.0_WP)
             fs%rho_l=1.0_WP
             fs%rho_g=fs%rho_l/r
-            fs%visc_l=0.0_WP
-            fs%visc_g=0.0_WP
+            ! fs%visc_l=0.0_WP
+            ! fs%visc_g=0.0_WP
+            fs%visc_l=Re**(-1.0_WP)
+            fs%visc_g=fs%visc_l/m
          end if
          ! Configure pressure solver
          ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg,nst=7)
@@ -222,7 +224,7 @@ contains
             ! fs%psolv%sol=0.0_WP
             ! call fs%psolv%solve()
             ! call fs%shift_p(fs%psolv%sol)
-            ! call fs%get_pgrad_collocated(fs%psolv%sol,resU,resV,resW)
+            ! call fs%get_pgrad_cellcenter(fs%psolv%sol,resU,resV,resW)
             ! fs%U=fs%U-resU/fs%rho
             ! fs%V=fs%V-resV/fs%rho
             ! fs%W=fs%W-resW/fs%rho
@@ -370,7 +372,7 @@ contains
          fs%rhoW=fs%rho_l*vf%UFl(3,:,:,:)+fs%rho_g*vf%UFg(3,:,:,:)
          
          ! Prepare new staggered viscosity (at n+1)
-         ! call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
+         call fs%get_viscosity(vf=vf)
          
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
@@ -398,8 +400,10 @@ contains
             fs%U=2.0_WP*fs%U-fs%Uold+resU
             fs%V=2.0_WP*fs%V-fs%Vold+resV
             fs%W=2.0_WP*fs%W-fs%Wold+resW
-            
-            
+
+            ! Update viscosity explictly
+            call fs%viscosity_explict(vf,time%dt)
+
             ! Sync and apply boundary conditions
             call fs%apply_bcond(time%t,time%dt)
             ! Solve Poisson equation
@@ -420,8 +424,8 @@ contains
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
 
-            
-            call fs%get_pgrad_collocated(vf,fs%psolv%sol,resU,resV,resW)
+            call fs%get_pgrad_cellcenter(vf,fs%psolv%sol,resU,resV,resW)
+            call fs%get_STjump_cellcenter(vf,resU,resV,resW,2)
             fs%U=fs%U-time%dt*resU/fs%rho
             fs%V=fs%V-time%dt*resV/fs%rho
             fs%W=fs%W-time%dt*resW/fs%rho
