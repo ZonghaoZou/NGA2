@@ -179,10 +179,10 @@ contains
             fs%sigma=We**(-1.0_WP)
             fs%rho_l=1.0_WP
             fs%rho_g=fs%rho_l/r
-            ! fs%visc_l=0.0_WP
-            ! fs%visc_g=0.0_WP
-            fs%visc_l=Re**(-1.0_WP)
-            fs%visc_g=fs%visc_l/m
+            fs%visc_l=0.0_WP
+            fs%visc_g=0.0_WP
+            ! fs%visc_l=Re**(-1.0_WP)
+            ! fs%visc_g=fs%visc_l/m
          end if
          ! Configure pressure solver
          ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg,nst=7)
@@ -206,28 +206,43 @@ contains
          fs%rho=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_faceRHO(vf=vf,rho=fs%rho)
          if (falling) then
             ! ! Initialize velocity
-            ! do k=cfg%kmin_,cfg%kmax_
-            !    do j=cfg%jmin_,cfg%jmax_
-            !       do i=cfg%imin_,cfg%imax_
-            !          if (cfg%ym(j).gt.depth.and.vf%VF(i,j,k).gt.VFlo) fs%V(i,j,k)=-1.0_WP
-            !       end do
-            !    end do
-            ! end do
+            do k=cfg%kmin_,cfg%kmax_
+               do j=cfg%jmin_,cfg%jmax_
+                  do i=cfg%imin_,cfg%imax_
+                     if (cfg%ym(j).gt.depth.and.vf%VF(i,j,k).gt.VFlo) fs%V(i,j,k)=-1.0_WP
+                  end do
+               end do
+            end do
             
-            ! ! Apply all other boundary conditions
-            ! call fs%apply_bcond(time%t,time%dt)
-            ! ! Make it solenoidal
-            ! call fs%correct_mfr()
-            ! call fs%update_laplacian()
-            ! call fs%get_div()
-            ! fs%psolv%rhs=-fs%cfg%vol*fs%div
-            ! fs%psolv%sol=0.0_WP
-            ! call fs%psolv%solve()
-            ! call fs%shift_p(fs%psolv%sol)
-            ! call fs%get_pgrad_cellcenter(fs%psolv%sol,resU,resV,resW)
-            ! fs%U=fs%U-resU/fs%rho
-            ! fs%V=fs%V-resV/fs%rho
-            ! fs%W=fs%W-resW/fs%rho
+            ! Apply all other boundary conditions
+            call fs%apply_bcond(time%t,time%dt)
+            ! Solve Poisson equation
+            call fs%update_laplacian()
+            call fs%correct_mfr()
+            call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
+            call fs%get_div()
+            fs%psolv%rhs=-fs%cfg%vol*fs%div
+            fs%psolv%sol=0.0_WP
+            call fs%psolv%solve()
+            call fs%shift_p(fs%psolv%sol)
+            call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
+            fs%P=fs%psolv%sol
+
+            fs%Uf=fs%Uf-time%dt*resU/fs%RHOX
+            fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
+            fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
+            ! call output_info()
+            call fs%get_pgrad_cellcenter(vf,fs%psolv%sol,resU,resV,resW)
+
+            fs%U=fs%U-resU/fs%rho
+            fs%V=fs%V-resV/fs%rho
+            fs%W=fs%W-resW/fs%rho
+
+            ! call output_info()
+            ! fs%V=0.0_WP
+            ! fs%U=0.0_WP
+            ! fs%Vf=0.0_WP
+            ! fs%Uf=0.0_WP
          else
             fs%V=-1.0_WP
             fs%U=3.0_WP
@@ -476,12 +491,14 @@ contains
       do k=cfg%kmin_,cfg%kmax_
          do j=cfg%jmin_,cfg%jmax_
             do i=cfg%imin_,cfg%imax_
-               ! if (abs(fs%U(i,j,k)).gt.40.0_WP) then
-               if (i.eq.58.and.j.eq.63.and.k.eq.1) then
-                  print *, 'index',i,j,k, 'updated U',2.0_WP*fs%U(i,j,k)-fs%Uold(i,j,k)+resU(i,j,k)
-                  print *, 'rho old', fs%rhoold(i,j,k), 'rho new', fs%rho(i,j,k), 'liquid density',fs%rho_l, 'gas density', fs%rho_g
-                  print *, 'Superficial fluxes l', vf%UFl(1,i+1,j,k), 'Superficial fluxes g', vf%UFg(1,i,j,k)
-                  print *,  'Velocity', fs%U(i-1:i+1,j,k)
+               ! if (abs(fs%V(i,j,k)).gt.30.0_WP) then
+               if (i.eq.1.and.j.eq.128.and.k.eq.1) then
+                  print *, 'Large velocity at',i,j,k,'V=',fs%V(i,j,k), 'residual=',resV(i,j,k)
+               ! if (i.eq.58.and.j.eq.63.and.k.eq.1) then
+               !    print *, 'index',i,j,k, 'updated U',2.0_WP*fs%U(i,j,k)-fs%Uold(i,j,k)+resU(i,j,k)
+               !    print *, 'rho old', fs%rhoold(i,j,k), 'rho new', fs%rho(i,j,k), 'liquid density',fs%rho_l, 'gas density', fs%rho_g
+               !    print *, 'Superficial fluxes l', vf%UFl(1,i+1,j,k), 'Superficial fluxes g', vf%UFg(1,i,j,k)
+               !    print *,  'Velocity', fs%U(i-1:i+1,j,k)
                end if
             end do 
          end do 

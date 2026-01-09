@@ -357,7 +357,7 @@ contains
             end do
          end do
       end do
-      
+
       ! Allocate finite difference viscosity interpolation coefficients
       allocate(this%itp_xy(-1:0,-1:0,this%cfg%imino_+1:this%cfg%imaxo_,this%cfg%jmino_+1:this%cfg%jmaxo_,this%cfg%kmino_+1:this%cfg%kmaxo_)) !< Edge-centered (xy)
       allocate(this%itp_yz(-1:0,-1:0,this%cfg%imino_+1:this%cfg%imaxo_,this%cfg%jmino_+1:this%cfg%jmaxo_,this%cfg%kmino_+1:this%cfg%kmaxo_)) !< Edge-centered (yz)
@@ -561,14 +561,14 @@ contains
         do j=this%cfg%jmin_,this%cfg%jmax_+1
            do i=this%cfg%imin_,this%cfg%imax_+1
               ! Linear interpolation in x
-              if (this%cfg%VF(i,j,k).eq.0.0_WP.and.this%cfg%VF(i-1,j,k).gt.0.0_WP) this%itpr_x(:,i,j,k)=[1.0_WP,0.0_WP]
-              if (this%cfg%VF(i,j,k).gt.0.0_WP.and.this%cfg%VF(i-1,j,k).eq.0.0_WP) this%itpr_x(:,i,j,k)=[0.0_WP,1.0_WP]
-              ! Linear interpolation in y
-              if (this%cfg%VF(i,j,k).eq.0.0_WP.and.this%cfg%VF(i,j-1,k).gt.0.0_WP) this%itpr_y(:,i,j,k)=[1.0_WP,0.0_WP]
-              if (this%cfg%VF(i,j,k).gt.0.0_WP.and.this%cfg%VF(i,j-1,k).eq.0.0_WP) this%itpr_y(:,i,j,k)=[0.0_WP,1.0_WP]
+              if (this%mask(i,j,k).eq.0.and.this%mask(i-1,j,k).gt.0) this%itpr_x(:,i,j,k)=[0.0_WP,1.0_WP]
+              if (this%mask(i,j,k).gt.0.and.this%mask(i-1,j,k).eq.0) this%itpr_x(:,i,j,k)=[1.0_WP,0.0_WP]
+              ! Linear interpolation in y               
+              if (this%mask(i,j,k).eq.0.and.this%mask(i,j-1,k).gt.0) this%itpr_y(:,i,j,k)=[0.0_WP,1.0_WP]
+              if (this%mask(i,j,k).gt.0.and.this%mask(i,j-1,k).eq.0) this%itpr_y(:,i,j,k)=[1.0_WP,0.0_WP]
               ! Linear interpolation in z
-              if (this%cfg%VF(i,j,k).eq.0.0_WP.and.this%cfg%VF(i,j,k-1).gt.0.0_WP) this%itpr_z(:,i,j,k)=[1.0_WP,0.0_WP]
-              if (this%cfg%VF(i,j,k).gt.0.0_WP.and.this%cfg%VF(i,j,k-1).eq.0.0_WP) this%itpr_z(:,i,j,k)=[0.0_WP,1.0_WP]
+              if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k-1).gt.0) this%itpr_z(:,i,j,k)=[0.0_WP,1.0_WP]
+              if (this%mask(i,j,k).gt.0.and.this%mask(i,j,k-1).eq.0) this%itpr_z(:,i,j,k)=[1.0_WP,0.0_WP]
            end do
         end do
       end do
@@ -1833,6 +1833,7 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
+               if (this%mask(i,j,k).gt.0) cycle
                Pgradx(i,j,k)=sum(this%divp_x(:,i,j,k)*PX(i:i+1,j,k))
                Pgrady(i,j,k)=sum(this%divp_y(:,i,j,k)*PY(i,j:j+1,k))
                Pgradz(i,j,k)=sum(this%divp_z(:,i,j,k)*PZ(i,j,k:k+1))
@@ -2899,27 +2900,27 @@ contains
             do i=this%cfg%imin_,this%cfg%imax_+1
                ! Update face pressure and density in X
                rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(0,:,:,i  ,j,k)+vf%Lvol(0,:,:,i  ,j,k))
-               if (vol_r.gt.0.0_WP) rho_f(1)=(sum(vf%Gvol(0,:,:,i  ,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i  ,j,k))*this%rho_l)
+               if (vol_r.gt.0.0_WP.and.this%mask(i  ,j,k).eq.0) rho_f(1)=(sum(vf%Gvol(0,:,:,i  ,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i  ,j,k))*this%rho_l)
                rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(1,:,:,i-1,j,k)+vf%Lvol(1,:,:,i-1,j,k))
-               if (vol_l.gt.0.0_WP) rho_f(0)=(sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l)
+               if (vol_l.gt.0.0_WP.and.this%mask(i-1,j,k).eq.0) rho_f(0)=(sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l)
                if (sum(rho_f).gt.0.0_WP) then
                   PX(i,j,k)=2.0_WP*sum(this%itpr_x(:,i,j,k)*P(i-1:i,j,k))&
                        -sum(this%itpr_x(:,i,j,k)*rho_f*P(i-1:i,j,k))/(sum(this%itpr_x(:,i,j,k)*rho_f) + tiny(1.0_WP))
                end if
                ! Update face pressure and density in Y
                rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
-               if (vol_r.gt.0.0_WP) rho_f(1)=(sum(vf%Gvol(:,0,:,i,j  ,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j  ,k))*this%rho_l)
+               if (vol_r.gt.0.0_WP.and.this%mask(i,j  ,k).eq.0) rho_f(1)=(sum(vf%Gvol(:,0,:,i,j  ,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j  ,k))*this%rho_l)
                rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,1,:,i,j-1,k)+vf%Lvol(:,1,:,i,j-1,k))
-               if (vol_l.gt.0.0_WP) rho_f(0)=(sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l)
+               if (vol_l.gt.0.0_WP.and.this%mask(i,j-1,k).eq.0) rho_f(0)=(sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l)
                if (sum(rho_f).gt.0.0_WP) then
                   PY(i,j,k)=2.0_WP*sum(this%itpr_y(:,i,j,k)*P(i,j-1:j,k))&
                        -sum(this%itpr_y(:,i,j,k)*rho_f*P(i,j-1:j,k))/(sum(this%itpr_y(:,i,j,k)*rho_f) + tiny(1.0_WP))
                end if
                ! Update face pressure and density in Z
                rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
-               if (vol_r.gt.0.0_WP) rho_f(1)=(sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l)
+               if (vol_r.gt.0.0_WP.and.this%mask(i,j,k  ).eq.0) rho_f(1)=(sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l)
                rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,:,1,i,j,k-1)+vf%Lvol(:,:,1,i,j,k-1))
-               if (vol_l.gt.0.0_WP) rho_f(0)=(sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l)
+               if (vol_l.gt.0.0_WP.and.this%mask(i,j,k-1).eq.0) rho_f(0)=(sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l)
                if (sum(rho_f).gt.0.0_WP) then
                   PZ(i,j,k)=2.0_WP*sum(this%itpr_z(:,i,j,k)*P(i,j,k-1:k))&
                        -sum(this%itpr_z(:,i,j,k)*rho_f*P(i,j,k-1:k))/(sum(this%itpr_z(:,i,j,k)*rho_f) + tiny(1.0_WP))
@@ -2928,6 +2929,56 @@ contains
             end do
          end do
       end do
+
+      ! do k=this%cfg%kmin_,this%cfg%kmax_+1
+      !    do j=this%cfg%jmin_,this%cfg%jmax_+1
+      !       do i=this%cfg%imin_,this%cfg%imax_+1
+      !           ! Update face pressure and density in X
+      !           rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(0,:,:,i  ,j,k)+vf%Lvol(0,:,:,i  ,j,k))
+      !           if (vol_r.gt.0.0_WP.and.this%mask(i  ,j,k).eq.0) &
+      !                rho_f(1)=(sum(vf%Gvol(0,:,:,i  ,j,k))*this%rho_g&
+      !                         +sum(vf%Lvol(0,:,:,i  ,j,k))*this%rho_l)
+      !           rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(1,:,:,i-1,j,k)+vf%Lvol(1,:,:,i-1,j,k))
+      !           if (vol_l.gt.0.0_WP.and.this%mask(i-1,j,k).eq.0) &
+      !                rho_f(0)=(sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g&
+      !                         +sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l)
+      !           if (sum(rho_f).gt.0.0_WP) then
+      !              PX(i,j,k)=2.0_WP*sum(this%itpr_x(:,i,j,k)*DP(i-1:i,j,k))&
+      !                   -sum(this%itpr_x(:,i,j,k)*rho_f*DP(i-1:i,j,k)) / &
+      !                   (sum(this%itpr_x(:,i,j,k)*rho_f) + tiny(1.0_WP))
+      !           end if
+      !           ! Update face pressure and density in Y
+      !           rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
+      !           if (vol_r.gt.0.0_WP.and.this%mask(i,j  ,k).eq.0) &
+      !                rho_f(1)=(sum(vf%Gvol(:,0,:,i,j  ,k))*this%rho_g&
+      !                         +sum(vf%Lvol(:,0,:,i,j  ,k))*this%rho_l)
+      !           rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,1,:,i,j-1,k)+vf%Lvol(:,1,:,i,j-1,k))
+      !           if (vol_l.gt.0.0_WP.and.this%mask(i,j-1,k).eq.0) &
+      !                rho_f(0)=(sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g&
+      !                         +sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l)
+      !           if (sum(rho_f).gt.0.0_WP) then
+      !              PY(i,j,k)=2.0_WP*sum(this%itpr_y(:,i,j,k)*DP(i,j-1:j,k))&
+      !                   -sum(this%itpr_y(:,i,j,k)*rho_f*DP(i,j-1:j,k)) / &
+      !                   (sum(this%itpr_y(:,i,j,k)*rho_f) + tiny(1.0_WP))
+      !           end if
+      !           ! Update face pressure and density in Z
+      !           rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
+      !           if (vol_r.gt.0.0_WP.and.this%mask(i,j,k  ).eq.0) &
+      !                rho_f(1)=(sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g&
+      !                         +sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l)
+      !           rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,:,1,i,j,k-1)+vf%Lvol(:,:,1,i,j,k-1))
+      !           if (vol_l.gt.0.0_WP.and.this%mask(i,j,k-1).eq.0) &
+      !                rho_f(0)=(sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g&
+      !                         +sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l)
+      !           if (sum(rho_f).gt.0.0_WP) then
+      !              PZ(i,j,k)=2.0_WP*sum(this%itpr_z(:,i,j,k)*DP(i,j,k-1:k))&
+      !                   -sum(this%itpr_z(:,i,j,k)*rho_f*DP(i,j,k-1:k)) / &
+      !                   (sum(this%itpr_z(:,i,j,k)*rho_f) + tiny(1.0_WP))
+      !           end if
+      !        end do
+      !     end do
+      !  end do
+
       call this%cfg%sync(PX)
       call this%cfg%sync(PY)
       call this%cfg%sync(PZ)
