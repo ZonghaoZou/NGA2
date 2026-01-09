@@ -246,8 +246,8 @@ contains
          else
             fs%V=-1.0_WP
             fs%U=3.0_WP
-            ! fs%Vf=fs%V
-            ! fs%Uf=fs%U
+            fs%Vf=fs%V
+            fs%Uf=fs%U
             ! fs%U=1.0_WP
          end if
          ! Calculate cell-centered velocities and divergence
@@ -374,12 +374,13 @@ contains
          
          ! Remember old VOF
          vf%VFold=vf%VF;fs%rhoold=fs%rho
+         vf%bandold=vf%band
          ! Remember old velocity and face densities
          fs%Uold=fs%U
          fs%Vold=fs%V
          fs%Wold=fs%W
          
-         call vf%advance(dt=time%dt,U=fs%Uf,V=fs%Vf,W=fs%Wf)
+         call vf%advance(dt=time%dt,U=fs%Uf,V=fs%Vf,W=fs%Wf,rho_l=fs%rho_l,rho_g=fs%rho_g)
          ! Update face density and momentum vector
          fs%rho=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_faceRHO(vf=vf,rho=fs%rho)
          fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
@@ -409,7 +410,7 @@ contains
             resW=-2.0_WP*fs%rho*fs%W+(fs%rho+fs%rhoold)*fs%Wold+time%dt*resW
             
             ! Form implicit residuals
-            call fs%solve_implicit(time%dt,resU,resV,resW)
+            call fs%solve_implicit(vf,time%dt,resU,resV,resW)
 
             ! Compute predictor U
             fs%U=2.0_WP*fs%U-fs%Uold+resU
@@ -453,10 +454,10 @@ contains
          call fs%get_div()
          
          ! Output to ensight
-         if (ens_evt%occurs()) then
+         ! if (ens_evt%occurs()) then
             call vf%update_surfmesh(smesh)
             call ens_out%write_data(time%t)
-         end if
+         ! end if
          
          ! Perform and output monitoring
          call fs%get_max()

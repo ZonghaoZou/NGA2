@@ -29,7 +29,7 @@ module tpcons_class
    ! List of available averaging strategies for viscosity
    integer, parameter, public :: harmonic_visc=1     !< Harmonically-averaged viscosity
    integer, parameter, public :: arithmetic_visc=2   !< Arithmetically-averaged viscosity
-   
+   integer, parameter, public :: setband=1   
    !> Boundary conditions for the two-phase solver
    type :: bcond
       type(bcond), pointer :: next                        !< Linked list of bconds
@@ -1135,11 +1135,11 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: drhoWdt !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k,ii,jj,kk
       real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
-      real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
+      ! real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
       ! ! Allocate flux arrays
-      allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
-      allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
-      allocate(PZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PZ=0.0_WP
+      ! allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
+      ! allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
+      ! allocate(PZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PZ=0.0_WP
       ! call this%update_faceP(vf,this%P,PX,PY,PZ)
       ! call this%get_STjump_cellcenter(vf,PX,PY,PZ,1)
       ! Zero out drhoUVW/dt arrays
@@ -1154,9 +1154,24 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
-               FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%U(i-1:i,j,k))!-PX(i,j,k)
-               FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%U(i,j-1:j,k)) 
-               FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%U(i,j,k-1:k))
+               if (minval(abs(vf%bandold(i-1:i,j,k))).le.setband) then
+                  FX(i,j,k)=-vf%MFX(1,i,j,k)
+               else
+                  FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%U(i-1:i,j,k))!-PX(i,j,k)
+               end if
+               if (minval(abs(vf%bandold(i,j-1:j,k))).le.setband) then
+                  FY(i,j,k)=-vf%MFY(1,i,j,k)
+               else
+                  FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%U(i,j-1:j,k)) 
+               end if
+               if (minval(abs(vf%bandold(i,j,k-1:k))).le.setband) then
+                  FZ(i,j,k)=-vf%MFZ(1,i,j,k)
+               else
+                  FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%U(i,j,k-1:k))
+               end if
+               ! FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%U(i-1:i,j,k))
+               ! FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%U(i,j-1:j,k))
+               ! FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%U(i,j,k-1:k))
             end do 
          end do 
       end do
@@ -1166,7 +1181,7 @@ contains
             do i=this%cfg%imin_,this%cfg%imax_
                drhoUdt(i,j,k)=sum(this%divp_x(:,i,j,k)*FX(i:i+1,j,k))+&
                &              sum(this%divp_y(:,i,j,k)*FY(i,j:j+1,k))+&
-               &              sum(this%divp_z(:,i,j,k)*FZ(i,j,k:k+1))-PX(i,j,k)
+               &              sum(this%divp_z(:,i,j,k)*FZ(i,j,k:k+1))!-PX(i,j,k)
             end do
          end do
       end do
@@ -1177,9 +1192,24 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
-               FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%V(i-1:i,j,k))
-               FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%V(i,j-1:j,k))!-PY(i,j,k)
-               FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%V(i,j,k-1:k))
+               if (minval(abs(vf%bandold(i-1:i,j,k))).le.setband) then
+                  FX(i,j,k)=-vf%MFX(2,i,j,k)
+               else
+                  FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%V(i-1:i,j,k))
+               end if
+               if (minval(abs(vf%bandold(i,j-1:j,k))).le.setband) then
+                  FY(i,j,k)=-vf%MFY(2,i,j,k)
+               else
+                  FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%V(i,j-1:j,k))!-PY(i,j,k)
+               end if
+               if (minval(abs(vf%bandold(i,j,k-1:k))).le.setband) then
+                  FZ(i,j,k)=-vf%MFZ(2,i,j,k)
+               else
+                  FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%V(i,j,k-1:k))
+               end if
+               ! FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%V(i-1:i,j,k))
+               ! FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%V(i,j-1:j,k))
+               ! FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%V(i,j,k-1:k))
             end do 
          end do 
       end do
@@ -1189,7 +1219,7 @@ contains
             do i=this%cfg%imin_,this%cfg%imax_
                drhoVdt(i,j,k)=sum(this%divp_x(:,i,j,k)*FX(i:i+1,j,k))+&
                &              sum(this%divp_y(:,i,j,k)*FY(i,j:j+1,k))+&
-               &              sum(this%divp_z(:,i,j,k)*FZ(i,j,k:k+1))-PY(i,j,k)
+               &              sum(this%divp_z(:,i,j,k)*FZ(i,j,k:k+1))!-PY(i,j,k)
             end do
          end do
       end do
@@ -1200,9 +1230,24 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
-               FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%W(i-1:i,j,k))
-               FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%W(i,j-1:j,k)) 
-               FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%W(i,j,k-1:k))!-PZ(i,j,k)
+               if (minval(abs(vf%bandold(i-1:i,j,k))).le.setband) then
+                  FX(i,j,k)=-vf%MFX(3,i,j,k)
+               else
+                  FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%W(i-1:i,j,k))
+               end if
+               if (minval(abs(vf%bandold(i,j-1:j,k))).le.setband) then
+                  FY(i,j,k)=-vf%MFY(3,i,j,k)
+               else
+                  FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%W(i,j-1:j,k))
+               end if
+               if (minval(abs(vf%bandold(i,j,k-1:k))).le.setband) then
+                  FZ(i,j,k)=-vf%MFZ(3,i,j,k)
+               else
+                  FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%W(i,j,k-1:k))!-PZ(i,j,k)
+               end if
+               ! FX(i,j,k)=-this%rhoU(i,j,k)*sum(this%itpr_x(:,i,j,k)*this%W(i-1:i,j,k))
+               ! FY(i,j,k)=-this%rhoV(i,j,k)*sum(this%itpr_y(:,i,j,k)*this%W(i,j-1:j,k))
+               ! FZ(i,j,k)=-this%rhoW(i,j,k)*sum(this%itpr_z(:,i,j,k)*this%W(i,j,k-1:k))
             end do 
          end do 
       end do
@@ -1212,7 +1257,7 @@ contains
             do i=this%cfg%imin_,this%cfg%imax_
                drhoWdt(i,j,k)=sum(this%divp_x(:,i,j,k)*FX(i:i+1,j,k))+&
                &              sum(this%divp_y(:,i,j,k)*FY(i,j:j+1,k))+&
-               &              sum(this%divp_z(:,i,j,k)*FZ(i,j,k:k+1))-PZ(i,j,k)
+               &              sum(this%divp_z(:,i,j,k)*FZ(i,j,k:k+1))!-PZ(i,j,k)
             end do
          end do
       end do
@@ -2655,9 +2700,11 @@ contains
    
    
    !> Solve for implicit velocity residual
-   subroutine solve_implicit(this,dt,resU,resV,resW)
+   subroutine solve_implicit(this,vf,dt,resU,resV,resW)
+      use vfs_class, only: vfs
       implicit none
       class(tpcons), intent(inout) :: this
+      class(vfs), intent(in) :: vf
       real(WP), intent(in) :: dt
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resU !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resV !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -2683,18 +2730,49 @@ contains
             do i=this%cfg%imin_,this%cfg%imax_
                rhoUp=this%rhoU(i+1,j,k); rhoVp=this%rhoV(i,j+1,k); rhoWp=this%rhoW(i,j,k+1)
                rhoUm=this%rhoU(i  ,j,k); rhoVm=this%rhoV(i,j  ,k); rhoWm=this%rhoW(i,j,k  )
-               this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*(this%divp_x(+1,i,j,k)*this%itpr_x(-1,i+1,j,k)*rhoUp+&
-               &                                                         this%divp_x( 0,i,j,k)*this%itpr_x( 0,i  ,j,k)*rhoUm+&
-               &                                                         this%divp_y(+1,i,j,k)*this%itpr_y(-1,i,j+1,k)*rhoVp+&
-               &                                                         this%divp_y( 0,i,j,k)*this%itpr_y( 0,i,j  ,k)*rhoVm+&
-               &                                                         this%divp_z(+1,i,j,k)*this%itpr_z(-1,i,j,k+1)*rhoWp+&
-               &                                                         this%divp_z( 0,i,j,k)*this%itpr_z( 0,i,j,k  )*rhoWm)*0.5_WP
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divp_x(+1,i,j,k)*this%itpr_x( 0,i+1,j,k)*rhoUp)*0.5_WP
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm)*0.5_WP
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divp_y(+1,i,j,k)*this%itpr_y( 0,i,j+1,k)*rhoVp)*0.5_WP
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divp_y( 0,i,j,k)*this%itpr_y(-1,i,j  ,k)*rhoVm)*0.5_WP
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divp_z(+1,i,j,k)*this%itpr_z( 0,i,j,k+1)*rhoWp)*0.5_WP
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divp_z( 0,i,j,k)*this%itpr_z(-1,i,j,k  )*rhoWm)*0.5_WP
+               ! +X face
+               if (minval(abs(vf%bandold(i:i+1,j,k))).gt.setband) then
+                  this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_x(+1,i,j,k)*this%itpr_x(-1,i+1,j,k)*rhoUp*0.5_WP
+                  this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*this%divp_x(+1,i,j,k)*this%itpr_x( 0,i+1,j,k)*rhoUp*0.5_WP
+               end if
+               ! -X face   
+               if (minval(abs(vf%bandold(i-1:i,j,k))).gt.setband) then
+                  this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x( 0,i  ,j,k)*rhoUm*0.5_WP
+                  this%implicit%opr(3,i,j,k)=this%implicit%opr(2,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm*0.5_WP
+               end if
+               ! +Y face
+               if (minval(abs(vf%bandold(i,j:j+1,k))).gt.setband) then
+                  this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_y(+1,i,j,k)*this%itpr_y(-1,i,j+1,k)*rhoVp*0.5_WP
+                  this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*this%divp_y(+1,i,j,k)*this%itpr_y( 0,i,j+1,k)*rhoVp*0.5_WP
+               end if
+               ! -Y face
+               if (minval(abs(vf%bandold(i,j-1:j,k))).gt.setband) then
+                  this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_y( 0,i,j,k)*this%itpr_y( 0,i,j  ,k)*rhoVm*0.5_WP
+                  this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*this%divp_y( 0,i,j,k)*this%itpr_y(-1,i,j  ,k)*rhoVm*0.5_WP
+               end if
+               ! +Z face
+               if (minval(abs(vf%bandold(i,j,k:k+1))).gt.setband) then
+                  this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_z(+1,i,j,k)*this%itpr_z(-1,i,j,k+1)*rhoWp*0.5_WP
+                  this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*this%divp_z(+1,i,j,k)*this%itpr_z( 0,i,j,k+1)*rhoWp*0.5_WP
+               end if
+               ! -Z face
+               if (minval(abs(vf%bandold(i,j,k-1:k))).gt.setband) then
+                  this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_z( 0,i,j,k)*this%itpr_z( 0,i,j,k  )*rhoWm*0.5_WP
+                  this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*this%divp_z( 0,i,j,k)*this%itpr_z(-1,i,j,k  )*rhoWm*0.5_WP
+               end if
+               
+               ! this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*(this%divp_x(+1,i,j,k)*this%itpr_x(-1,i+1,j,k)*rhoUp+&
+               ! &                                                         this%divp_x( 0,i,j,k)*this%itpr_x( 0,i  ,j,k)*rhoUm+&
+               ! &                                                         this%divp_y(+1,i,j,k)*this%itpr_y(-1,i,j+1,k)*rhoVp+&
+               ! &                                                         this%divp_y( 0,i,j,k)*this%itpr_y( 0,i,j  ,k)*rhoVm+&
+               ! &                                                         this%divp_z(+1,i,j,k)*this%itpr_z(-1,i,j,k+1)*rhoWp+&
+               ! &                                                         this%divp_z( 0,i,j,k)*this%itpr_z( 0,i,j,k  )*rhoWm)*0.5_WP
+               ! this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divp_x(+1,i,j,k)*this%itpr_x( 0,i+1,j,k)*rhoUp)*0.5_WP
+               ! this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm)*0.5_WP
+               ! this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divp_y(+1,i,j,k)*this%itpr_y( 0,i,j+1,k)*rhoVp)*0.5_WP
+               ! this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divp_y( 0,i,j,k)*this%itpr_y(-1,i,j  ,k)*rhoVm)*0.5_WP
+               ! this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divp_z(+1,i,j,k)*this%itpr_z( 0,i,j,k+1)*rhoWp)*0.5_WP
+               ! this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divp_z( 0,i,j,k)*this%itpr_z(-1,i,j,k  )*rhoWm)*0.5_WP
             end do
          end do
       end do
