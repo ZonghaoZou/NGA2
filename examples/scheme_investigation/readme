@@ -1,0 +1,26 @@
+This is an attempt to investigate the effect of multiple scheme across two test cases:
+1. Inviscid Taylor-Green vortex
+2. Temporal Jet
+
+The numerical scheme that is being investigated are:
+1. Spatial-temporal ke conservative scheme -- Staggered in space
+2. Spatial ke conservative scheme (remove square root weighting of velocities) -- Staggered in space
+3. Phasic momentum conservative scheme, Semi-Lagrangian transport for momentum -- Staggered in space
+4. Phasic momentum conservative scheme -- Collocated in space
+5. Phasic momentum conservative scheme, Semi-Lagrangian transport for momentum (currently not working) -- Collocated in space
+
+List of parameters that are investigated:
+1. Phasic and total momentum
+2. Phasic and total kinetic energy
+
+Several key questions at the moement:
+1. If I understand it correctly, scheme 2 and 3 should both be phasic momentum conservative, is that true, is that not obvious?
+2. Why does scheme 5 not work? Is it related to how to evaluate the velocities associated with the fluxed momentum?
+3. Can we truly have a momentum/mass consistent scheme? What do we mean by that? 
+
+Key steps to take at the moment:
+1. Write out analytically on paper for each of the scheme and see what conclusions can we make.
+2. Investigate more closely to see what leads to scheme 5 not working.
+3. Come up with cases to better understand question 3, and provide a definition for momemtum/mass consistent scheme.
+4. Set up each scheme for each case and running them.
+5. Evaluate the results.
