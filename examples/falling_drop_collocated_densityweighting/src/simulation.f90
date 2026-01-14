@@ -179,8 +179,10 @@ contains
             fs%sigma=We**(-1.0_WP)
             fs%rho_l=1.0_WP
             fs%rho_g=fs%rho_l/r
-            fs%visc_l=0.0_WP
-            fs%visc_g=0.0_WP
+            ! fs%visc_l=0.0_WP
+            ! fs%visc_g=0.0_WP
+            fs%visc_l=Re**(-1.0_WP)
+            fs%visc_g=fs%visc_l/m
             ! fs%visc_l=Re**(-1.0_WP)
             ! fs%visc_g=fs%visc_l/m
          end if
@@ -380,7 +382,7 @@ contains
          fs%Vold=fs%V
          fs%Wold=fs%W
          
-         call vf%advance(dt=time%dt,U=fs%Uf,V=fs%Vf,W=fs%Wf,rho_l=fs%rho_l,rho_g=fs%rho_g)
+         call vf%advance(dt=time%dt,U=fs%Uf,V=fs%Vf,W=fs%Wf,Uc=fs%U,Vc=fs%V,Wc=fs%W,rho_l=fs%rho_l,rho_g=fs%rho_g)
          ! Update face density and momentum vector
          fs%rho=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_faceRHO(vf=vf,rho=fs%rho)
          fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
@@ -454,10 +456,10 @@ contains
          call fs%get_div()
          
          ! Output to ensight
-         ! if (ens_evt%occurs()) then
+         if (ens_evt%occurs()) then
             call vf%update_surfmesh(smesh)
             call ens_out%write_data(time%t)
-         ! end if
+         end if
          
          ! Perform and output monitoring
          call fs%get_max()
