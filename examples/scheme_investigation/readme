@@ -3,11 +3,12 @@ This is an attempt to investigate the effect of multiple scheme across two test 
 2. Temporal Jet
 
 The numerical scheme that is being investigated are:
-1. Spatial-temporal ke conservative scheme -- Staggered in space
-2. Spatial ke conservative scheme (remove square root weighting of velocities) -- Staggered in space
-3. Phasic momentum conservative scheme, Semi-Lagrangian transport for momentum -- Staggered in space
-4. Phasic momentum conservative scheme -- Collocated in space
-5. Phasic momentum conservative scheme, Semi-Lagrangian transport for momentum (currently not working) -- Collocated in space
+1. Default NGA2 -- Staggered in space
+2. Spatial-temporal ke conservative scheme -- Staggered in space
+3. Spatial ke conservative scheme (remove square root weighting of velocities) -- Staggered in space
+4. Phasic momentum conservative scheme, Semi-Lagrangian transport for momentum -- Staggered in space
+5. Phasic momentum conservative scheme -- Collocated in space
+6. Phasic momentum conservative scheme, Semi-Lagrangian transport for momentum -- Collocated in space
 
 List of parameters that are investigated:
 1. Phasic and total momentum
