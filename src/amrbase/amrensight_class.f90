@@ -1,34 +1,33 @@
-!> Amrensight2 class concept is defined here: given an amr config object and associated data,
+!> amrensight class: given an amrgrid object and associated amrdata,
 !> it enables ensight gold format output to a directory - allows user to select levels to output
-module amrensight2_class
+module amrensight_class
    use precision,        only: WP
    use string,           only: str_medium
-   use amrconfig_class,  only: amrconfig
+   use amrgrid_class,    only: amrgrid
+   use amrdata_class,    only: amrdata
    use mpi_f08,          only: MPI_Datatype
    use surfmesh_class,   only: surfmesh
-   !use partmesh_class,   only: partmesh
    use amrex_amr_module, only: amrex_multifab,amrex_imultifab
    implicit none
    private
-   
+
    ! Expose type/constructor/methods
-   public :: amrensight2
-   
+   public :: amrensight
+
    ! List types
    type :: scl !< Scalar field
       type(scl), pointer :: next
       character(len=str_medium) :: name
       integer :: comp
-      type(amrex_multifab) , dimension(:), pointer :: rptr=>NULL()  !< real(WP) data
-      type(amrex_imultifab), dimension(:), pointer :: iptr=>NULL()  !< integer  data
+      class(amrdata), pointer :: ptr=>NULL()  !< amrdata pointer
    end type scl
    type :: vct !< Vector field
       type(vct), pointer :: next
       character(len=str_medium) :: name
       integer :: compx,compy,compz
-      type(amrex_multifab) , dimension(:), pointer :: ptrx=>NULL()
-      type(amrex_multifab) , dimension(:), pointer :: ptry=>NULL()
-      type(amrex_multifab) , dimension(:), pointer :: ptrz=>NULL()
+      class(amrdata), pointer :: ptrx=>NULL()
+      class(amrdata), pointer :: ptry=>NULL()
+      class(amrdata), pointer :: ptrz=>NULL()
    end type vct
    type :: srf !< Surface mesh
       type(srf), pointer :: next
@@ -40,67 +39,62 @@ module amrensight2_class
    !   character(len=str_medium) :: name
    !   type(partmesh), pointer :: ptr
    !end type prt
-   
-   !> Amrensight2 object definition as list of pointers to arrays
-   type :: amrensight2
-      ! An amrensight2 object has a name
-      character(len=str_medium) :: name                               !< Name of amrensight2 directory to read and write case file
-      character(len=str_medium), dimension(:), allocatable :: namelvl !< Name of amrensight2 directory including level to write data
-      ! An amrensight2 object stores time values
-      integer :: ntime                                                !< Number of scalar values
+
+   !> amrensight object definition as list of pointers to data
+   type :: amrensight
+      ! An amrensight object has a name
+      character(len=str_medium) :: name                               !< Name of amrensight directory to read and write case file
+      character(len=str_medium), dimension(:), allocatable :: namelvl !< Name of amrensight directory including level to write data
+      ! An amrensight object stores time values
+      integer :: ntime                                                !< Number of time values
       real(WP), dimension(:), allocatable :: time                     !< Time values
-      ! An amrensight2 object stores geometry data
-      type(amrconfig), pointer :: amr                                 !< Amrconfig for ensight geometry and parallel I/O
+      ! An amrensight object stores geometry data
+      type(amrgrid), pointer :: amr                                   !< amrgrid for ensight geometry and parallel I/O
       integer :: nlvlout                                              !< Number of levels to be dumped
       integer, dimension(:), allocatable :: lvlout                    !< Levels to be dumped
-      ! An amrensight2 object stores lists of pointers to data
+      ! An amrensight object stores lists of pointers to data
       type(scl), pointer :: first_scl                                 !< Scalar list
       type(vct), pointer :: first_vct                                 !< Vector list
       type(srf), pointer :: first_srf                                 !< Surface list
-      !type(prt), pointer :: first_prt                                 !< Particle list
    contains
       procedure :: initialize                                         !< Initialization of object
       procedure :: write_geom                                         !< Write out geometry
-      procedure :: write_data                                         !< Write out data
+      procedure :: write                                              !< Write out data
       procedure :: write_case                                         !< Write out case file
       procedure :: write_scalar                                       !< Write out scalar file
       procedure :: write_vector                                       !< Write out vector file
       procedure :: write_surf                                         !< Write out surface mesh file
-      !procedure :: write_part                                         !< Write out particle mesh file
-      generic :: add_scalar=>add_rscalar,add_iscalar                  !< Add a new scalar field
-      procedure, private :: add_rscalar                               !< Add a new real(WP) scalar field
-      procedure, private :: add_iscalar                               !< Add a new integer  scalar field
-      procedure :: add_vector                                         !< Add a new vector field
-      procedure :: add_surface                                        !< Add a new surface mesh
-      !procedure :: add_particle                                       !< Add a new particle mesh
-   end type amrensight2
-   
-   
+      procedure :: add_scalar                                          !< Add a new scalar field (amrdata)
+      procedure :: add_vector                                          !< Add a new vector field (amrdata)
+      procedure :: add_surface                                         !< Add a new surface mesh
+   end type amrensight
+
+
 contains
-   
-   !> Initialization-in-place for an empty amrensight2 object
+
+   !> Initialization-in-place for an empty amrensight object
    subroutine initialize(this,amr,name,lvls)
       use messager, only: die
       use mpi_f08,  only: MPI_BCAST,MPI_INTEGER
       use parallel, only: MPI_REAL_WP
       use filesys,  only: makedir,isdir
       implicit none
-      class(amrensight2) :: this
-      class(amrconfig), target, intent(in) :: amr
+      class(amrensight) :: this
+      class(amrgrid), target, intent(in) :: amr
       character(len=*), intent(in) :: name
       integer, dimension(:), intent(in), optional :: lvls
       character(len=str_medium) :: line,casename
       integer :: iunit,ierr,stat,n
       logical :: file_is_there,found
-      
-      ! Link to amrconfig
+
+      ! Link to amrgrid
       this%amr=>amr
 
       ! Select which levels to output
       if (present(lvls)) then
          ! Check that they are all valid
          do n=1,size(lvls)
-            if (lvls(n).lt.0.or.lvls(n).gt.this%amr%nlvl) call die('[amrensight2 initialize] lvls provided are improper')
+            if (lvls(n).lt.0.or.lvls(n).gt.this%amr%maxlvl) call die('[amrensight initialize] lvls provided are improper')
          end do
          ! If so, store in our object
          this%nlvlout=size(lvls)
@@ -108,13 +102,13 @@ contains
          this%lvlout=lvls
       else
          ! By default, include all the levels
-         this%nlvlout=this%amr%nlvl+1
+         this%nlvlout=this%amr%maxlvl+1
          allocate(this%lvlout(this%nlvlout))
          do n=1,this%nlvlout
             this%lvlout(n)=n-1
          end do
       end if
-      
+
       ! Store names
       this%name=trim(adjustl(name))
       allocate(this%namelvl(this%nlvlout))
@@ -122,10 +116,10 @@ contains
          line=trim(adjustl(name))//'/lev'; write(line(len_trim(line)+1:),'(i0)') this%lvlout(n)
          this%namelvl(n)=line
       end do
-      
+
       ! Start with no time stamps
       this%ntime=0
-      
+
       ! Create ensight, ensight/name, ensight/name/lvls, and ensight/name/lvls/geometry directories
       if (this%amr%amRoot) then
          if (.not.isdir('ensight')) &
@@ -139,18 +133,18 @@ contains
             & call makedir('ensight/'//trim(this%namelvl(n))//'/geometry')
          end do
       end if
-      
+
       ! Create casefile name for out first level - we'll use it to read in time
       casename='ensight/'//trim(this%name)//'/nga.lev'
       write(casename(len_trim(casename)+1:),'(i0)') this%lvlout(1)
       casename=trim(casename)//'.case'
-      
+
       ! Empty pointer to lists for now
       this%first_scl=>NULL()
       this%first_vct=>NULL()
       this%first_srf=>NULL()
       !this%first_prt=>NULL()
-      
+
       ! Check if a case file exists already - root only
       if (this%amr%amRoot) then
          inquire(file=trim(casename),exist=file_is_there)
@@ -178,37 +172,40 @@ contains
             close(iunit)
          end if
       end if
-      
+
       ! Communicate to all processors
       call MPI_BCAST(this%ntime,1,MPI_INTEGER,0,this%amr%comm,ierr)
       if (this%ntime.gt.0) then
          if (.not.this%amr%amRoot) allocate(this%time(this%ntime))
          call MPI_BCAST(this%time,this%ntime,MPI_REAL_WP,0,this%amr%comm,ierr)
       end if
-      
+
    end subroutine initialize
-   
-   
-   !> Add a real scalar field for output
-   subroutine add_rscalar(this,name,scalar,comp)
+
+
+   !> Add a scalar field for output (from amrdata)
+   subroutine add_scalar(this,data,comp,name)
       use filesys,  only: makedir,isdir
       use messager, only: die
       implicit none
-      class(amrensight2), intent(inout) :: this
-      character(len=*), intent(in) :: name
-      type(amrex_multifab), dimension(0:), target, intent(in) :: scalar
+      class(amrensight), intent(inout) :: this
+      class(amrdata), target, intent(in) :: data
       integer, intent(in) :: comp
+      character(len=*), intent(in), optional :: name
       type(scl), pointer :: new_scl
       integer :: n
       ! Check that the component is meaningful
-      if (comp.le.0) call die('[amrensight2 add_rscalar] comp must be at least one')
-      if (comp.gt.scalar(0)%nc) call die('[amrensight2 add_rscalar] comp is too large for provided scalar mfab')
+      if (comp.le.0) call die('[amrensight add_scalar] comp must be at least one')
+      if (comp.gt.data%ncomp) call die('[amrensight add_scalar] comp is too large for provided amrdata')
       ! Prepare new scalar
       allocate(new_scl)
-      new_scl%name=trim(adjustl(name))
+      if (present(name)) then
+         new_scl%name=trim(adjustl(name))
+      else
+         new_scl%name=trim(adjustl(data%name))
+      end if
       new_scl%comp=comp
-      new_scl%rptr(0:)=>scalar
-      new_scl%iptr=>NULL()
+      new_scl%ptr=>data
       ! Insert it up front
       new_scl%next=>this%first_scl
       ! Point list to new object
@@ -220,72 +217,44 @@ contains
             & call makedir('ensight/'//trim(this%namelvl(n))//'/'//trim(new_scl%name))
          end do
       end if
-   end subroutine add_rscalar
-   
-   
-   !> Add an integer scalar field for output
-   subroutine add_iscalar(this,name,scalar,comp)
+   end subroutine add_scalar
+
+
+   !> Add a vector field for output (from amrdata)
+   subroutine add_vector(this,datax,compx,datay,compy,dataz,compz,name)
       use filesys,  only: makedir,isdir
       use messager, only: die
       implicit none
-      class(amrensight2), intent(inout) :: this
-      character(len=*), intent(in) :: name
-      type(amrex_imultifab), dimension(0:), target, intent(in) :: scalar
-      integer, intent(in) :: comp
-      type(scl), pointer :: new_scl
-      integer :: n
-      ! Check that the component is meaningful
-      if (comp.le.0) call die('[amrensight2 add_iscalar] comp must be at least one')
-      if (comp.gt.scalar(0)%nc) call die('[amrensight2 add_iscalar] comp is too large for provided scalar mfab')
-      ! Prepare new scalar
-      allocate(new_scl)
-      new_scl%name=trim(adjustl(name))
-      new_scl%comp=comp
-      new_scl%rptr=>NULL()
-      new_scl%iptr(0:)=>scalar
-      ! Insert it up front
-      new_scl%next=>this%first_scl
-      ! Point list to new object
-      this%first_scl=>new_scl
-      ! Also create the corresponding directories
-      if (this%amr%amRoot) then
-         do n=1,this%nlvlout
-            if (.not.isdir('ensight/'//trim(this%namelvl(n))//'/'//trim(new_scl%name))) &
-            & call makedir('ensight/'//trim(this%namelvl(n))//'/'//trim(new_scl%name))
-         end do
-      end if
-   end subroutine add_iscalar
-   
-   
-   !> Add a vector field for output
-   subroutine add_vector(this,name,vectx,compx,vecty,compy,vectz,compz)
-      use filesys,  only: makedir,isdir
-      use messager, only: die
-      implicit none
-      class(amrensight2), intent(inout) :: this
-      character(len=*), intent(in) :: name
-      type(amrex_multifab), dimension(0:), target, intent(in) :: vectx
-      type(amrex_multifab), dimension(0:), target, intent(in) :: vecty
-      type(amrex_multifab), dimension(0:), target, intent(in) :: vectz
-      integer, intent(in) :: compx,compy,compz
+      class(amrensight), intent(inout) :: this
+      class(amrdata), target, intent(in) :: datax
+      integer, intent(in) :: compx
+      class(amrdata), target, intent(in) :: datay
+      integer, intent(in) :: compy
+      class(amrdata), target, intent(in) :: dataz
+      integer, intent(in) :: compz
+      character(len=*), intent(in), optional :: name
       type(vct), pointer :: new_vct
       integer :: n
-      ! Check that the component is meaningful
-      if (compx.le.0) call die('[amrensight2 add_vector] compx must be at least one')
-      if (compx.gt.vectx(0)%nc) call die('[amrensight2 add_vector] compx is too large for provided vectx mfab')
-      if (compy.le.0) call die('[amrensight2 add_vector] compy must be at least one')
-      if (compy.gt.vecty(0)%nc) call die('[amrensight2 add_vector] compy is too large for provided vecty mfab')
-      if (compz.le.0) call die('[amrensight2 add_vector] compz must be at least one')
-      if (compz.gt.vectz(0)%nc) call die('[amrensight2 add_vector] compz is too large for provided vectz mfab')
+      ! Check that the components are meaningful
+      if (compx.le.0) call die('[amrensight add_vector] compx must be at least one')
+      if (compx.gt.datax%ncomp) call die('[amrensight add_vector] compx is too large for provided datax')
+      if (compy.le.0) call die('[amrensight add_vector] compy must be at least one')
+      if (compy.gt.datay%ncomp) call die('[amrensight add_vector] compy is too large for provided datay')
+      if (compz.le.0) call die('[amrensight add_vector] compz must be at least one')
+      if (compz.gt.dataz%ncomp) call die('[amrensight add_vector] compz is too large for provided dataz')
       ! Prepare new vector
       allocate(new_vct)
-      new_vct%name=trim(adjustl(name))
+      if (present(name)) then
+         new_vct%name=trim(adjustl(name))
+      else
+         new_vct%name='vector'  ! Default name if not provided
+      end if
       new_vct%compx=compx
       new_vct%compy=compy
       new_vct%compz=compz
-      new_vct%ptrx(0:)=>vectx
-      new_vct%ptry(0:)=>vecty
-      new_vct%ptrz(0:)=>vectz
+      new_vct%ptrx=>datax
+      new_vct%ptry=>datay
+      new_vct%ptrz=>dataz
       ! Insert it up front
       new_vct%next=>this%first_vct
       ! Point list to new object
@@ -298,13 +267,13 @@ contains
          end do
       end if
    end subroutine add_vector
-   
-   
+
+
    !> Add a surface mesh for output
    subroutine add_surface(this,name,surface)
       use filesys, only: makedir,isdir
       implicit none
-      class(amrensight2), intent(inout) :: this
+      class(amrensight), intent(inout) :: this
       character(len=*), intent(in) :: name
       type(surfmesh), target, intent(in) :: surface
       type(srf), pointer :: new_srf
@@ -325,13 +294,13 @@ contains
          end do
       end if
    end subroutine add_surface
-   
-   
+
+
    !> Add a particle mesh for output
    !subroutine add_particle(this,name,particle)
    !   use filesys, only: makedir,isdir
    !   implicit none
-   !   class(amrensight2), intent(inout) :: this
+   !   class(amrensight), intent(inout) :: this
    !   character(len=*), intent(in) :: name
    !   type(partmesh), target, intent(in) :: particle
    !   type(prt), pointer :: new_prt
@@ -348,12 +317,12 @@ contains
    !      if (.not.isdir('mkdir -p ensight/'//trim(this%namelvl)//'/'//trim(new_prt%name))) call makedir('mkdir -p ensight/'//trim(this%namelvl)//'/'//trim(new_prt%name))
    !   end if
    !end subroutine add_particle
-   
-   
+
+
    !> Output all data in the object
-   subroutine write_data(this,time)
+   subroutine write(this,time)
       implicit none
-      class(amrensight2), intent(inout) :: this
+      class(amrensight), intent(inout) :: this
       real(WP), intent(in) :: time
       integer :: i,n
       type(scl), pointer :: my_scl
@@ -385,7 +354,7 @@ contains
          temp_time=[this%time(1:this%ntime-1),time]
          call move_alloc(temp_time,this%time)
       end if
-      
+
       ! Write out the geometry
       do n=1,this%nlvlout
          call this%write_geom(n)
@@ -401,7 +370,7 @@ contains
          ! Continue on to the next scalar object
          my_scl=>my_scl%next
       end do
-      
+
       ! Traverse all datasets and print them all out - vectors second
       my_vct=>this%first_vct
       do while (associated(my_vct))
@@ -412,12 +381,12 @@ contains
          ! Continue on to the next vector object
          my_vct=>my_vct%next
       end do
-      
+
       ! Finally, re-write the case files
       do n=1,this%nlvlout
          call this%write_case(n)
       end do
-      
+
       ! Now output all surface meshes
       my_srf=>this%first_srf
       do while (associated(my_srf))
@@ -428,7 +397,7 @@ contains
          ! Continue on to the next surface mesh object
          my_srf=>my_srf%next
       end do
-      
+
       ! Now output all particle meshes
       !my_prt=>this%first_prt
       !do while (associated(my_prt))
@@ -437,20 +406,20 @@ contains
       !   ! Continue on to the next surface mesh object
       !   my_prt=>my_prt%next
       !end do
-      
-   end subroutine write_data
-   
-   
+
+   end subroutine write
+
+
    !> Case description serial output to a text file
    subroutine write_case(this,lvl)
       implicit none
-      class(amrensight2), intent(in) :: this
+      class(amrensight), intent(in) :: this
       integer, intent(in) :: lvl
       integer :: iunit,ierr
       type(scl), pointer :: my_scl
       type(vct), pointer :: my_vct
       character(len=str_medium) :: charlvl,casename
-      
+
       ! Only the root does this work
       if (.not.this%amr%amRoot) return
 
@@ -459,13 +428,13 @@ contains
       casename='ensight/'//trim(this%name)//'/nga.lev'
       write(casename(len_trim(casename)+1:),'(i0)') this%lvlout(lvl)
       casename=trim(casename)//'.case'
-      
+
       ! Open the case file
       open(newunit=iunit,file=trim(casename),form='formatted',status='replace',access='stream',iostat=ierr)
-      
+
       ! Write all the geometry information
       write(iunit,'(a,/,a,/,/,a,/,a,/)') 'FORMAT','type: ensight gold','GEOMETRY','model: 1 '//trim(charlvl)//'geometry/geometry.******'
-      
+
       ! Write all the variable information
       write(iunit,'(a)') 'VARIABLE'
       my_scl=>this%first_scl
@@ -478,17 +447,17 @@ contains
          write(iunit,'(a)') 'vector per element: 1 '//trim(my_vct%name)//' '//trim(charlvl)//trim(my_vct%name)//'/'//trim(my_vct%name)//'.******'
          my_vct=>my_vct%next
       end do
-      
+
       ! Write the time information
       write(iunit,'(/,a,/,a,/,a,i0,/,a,/,a,/,a)') 'TIME','time set: 1','number of steps: ',this%ntime,'filename start number: 1','filename increment: 1','time values:'
       write(iunit,'(999999(es12.5,/))') this%time
-      
+
       ! Close the case file
       close(iunit)
-      
+
    end subroutine write_case
-   
-   
+
+
    !> Geometry output to a file in parallel
    subroutine write_geom(this,lvl)
       use precision,        only: SP
@@ -497,7 +466,7 @@ contains
       use mpi_f08,          only: MPI_BCAST,MPI_INTEGER
       use amrex_amr_module, only: amrex_box,amrex_mfiter
       implicit none
-      class(amrensight2), intent(in) :: this
+      class(amrensight), intent(in) :: this
       integer, intent(in) :: lvl
       integer :: iunit,ierr
       type(amrex_box)    :: bx
@@ -506,16 +475,16 @@ contains
       character(len=80) :: cbuff
       real(SP) :: rbuff
       integer :: ibuff,rank,nbox
-      
+
       ! Generate timestamped filename
       filename='ensight/'//trim(this%namelvl(lvl))//'/geometry/geometry.'
       write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') this%ntime
-      
+
       ! Root begins geometry I/O
       if (this%amr%amRoot) then
          ! Open new file
          open(newunit=iunit,file=trim(filename),form='unformatted',status='replace',access='stream',iostat=ierr)
-         if (ierr.ne.0) call die('[amrensight2 write geom] Could not open file '//trim(filename))
+         if (ierr.ne.0) call die('[amrensight write geom] Could not open file '//trim(filename))
          ! General geometry header
          cbuff='C Binary'                  ; write(iunit) cbuff
          cbuff='Ensight Gold Geometry File'; write(iunit) cbuff
@@ -525,7 +494,7 @@ contains
          ! Close the file
          close(iunit)
       end if
-      
+
       ! Write all the boxes on our level in parallel to the same file
       nbox=0
       ! Build an mfiter at our level
@@ -535,7 +504,7 @@ contains
          if (rank.eq.this%amr%rank) then
             ! Open the file
             open(newunit=iunit,file=trim(filename),form='unformatted',status='old',access='stream',position='append',iostat=ierr)
-            if (ierr.ne.0) call die('[amrensight2 write geom] Could not reopen file '//trim(filename))
+            if (ierr.ne.0) call die('[amrensight write geom] Could not reopen file '//trim(filename))
             ! Loop through all boxes in mfiter
             do while (mfi%next())
                bx=mfi%tilebox()
@@ -566,10 +535,9 @@ contains
       end do
       ! Destroy iterator
       call this%amr%mfiter_destroy(mfi)
-      
+
    end subroutine write_geom
-   
-   
+
    !> Procedure that writes out a scalar in Ensight format
    subroutine write_scalar(this,my_scl,lvl)
       use precision,        only: SP
@@ -578,7 +546,7 @@ contains
       use mpi_f08,          only: MPI_BCAST,MPI_INTEGER
       use amrex_amr_module, only: amrex_box,amrex_mfiter
       implicit none
-      class(amrensight2), intent(inout) :: this
+      class(amrensight), intent(inout) :: this
       type(scl), pointer, intent(in) :: my_scl
       integer, intent(in) :: lvl
       character(len=str_medium) :: filename
@@ -587,24 +555,23 @@ contains
       type(amrex_box)    :: bx
       type(amrex_mfiter) :: mfi
       real(WP), dimension(:,:,:,:), contiguous, pointer :: rphi
-      integer , dimension(:,:,:,:), contiguous, pointer :: iphi
       real(SP), dimension(:,:,:), allocatable :: spbuff
-      
+
       ! Create filename
       filename='ensight/'//trim(this%namelvl(lvl))//'/'//trim(my_scl%name)//'/'//trim(my_scl%name)//'.'
       write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') this%ntime
-      
+
       ! Root process starts writing the file header
       if (this%amr%amRoot) then
          ! Open the file
          open(newunit=iunit,file=trim(filename),form='unformatted',status='replace',access='stream',iostat=ierr)
-         if (ierr.ne.0) call die('[amrensight2 write scalar] Could not open file '//trim(filename))
+         if (ierr.ne.0) call die('[amrensight write scalar] Could not open file '//trim(filename))
          ! Write the header
          cbuff=trim(my_scl%name); write(iunit) cbuff
          ! Close the file
          close(iunit)
       end if
-      
+
       ! Write all the boxes on our level in parallel to the same file
       nbox=0
       ! Build an mfiter at our level
@@ -614,7 +581,7 @@ contains
          if (rank.eq.this%amr%rank) then
             ! Open the file
             open(newunit=iunit,file=trim(filename),form='unformatted',status='old',access='stream',position='append',iostat=ierr)
-            if (ierr.ne.0) call die('[amrensight2 write data] Could not reopen file '//trim(filename))
+            if (ierr.ne.0) call die('[amrensight write data] Could not reopen file '//trim(filename))
             ! Loop through all boxes in mfiter
             do while (mfi%next())
                ! Get box
@@ -626,14 +593,9 @@ contains
                cbuff='block'; write(iunit) cbuff
                ! Allocate SPbuff to right size
                allocate(spbuff(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3)))
-               ! Copy data from appropriate multifab
-               if (associated(my_scl%rptr)) then
-                  rphi=>my_scl%rptr(this%lvlout(lvl))%dataptr(mfi)
-                  spbuff=real(rphi(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3),my_scl%comp),SP)
-               else if (associated(my_scl%iptr)) then
-                  iphi=>my_scl%iptr(this%lvlout(lvl))%dataptr(mfi)
-                  spbuff=real(iphi(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3),my_scl%comp),SP)
-               end if
+               ! Copy data from amrdata multifab
+               rphi=>my_scl%ptr%mf(this%lvlout(lvl))%dataptr(mfi)
+               spbuff=real(rphi(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3),my_scl%comp),SP)
                ! Write it out
                write(iunit) spbuff
                ! Deallocate SPbuff
@@ -647,7 +609,7 @@ contains
       end do
       ! Destroy iterator
       call this%amr%mfiter_destroy(mfi)
-      
+
    end subroutine write_scalar
 
 
@@ -659,7 +621,7 @@ contains
       use mpi_f08,          only: MPI_BCAST,MPI_INTEGER
       use amrex_amr_module, only: amrex_box,amrex_mfiter
       implicit none
-      class(amrensight2), intent(inout) :: this
+      class(amrensight), intent(inout) :: this
       type(vct), pointer, intent(in) :: my_vct
       integer, intent(in) :: lvl
       character(len=str_medium) :: filename
@@ -669,22 +631,22 @@ contains
       type(amrex_mfiter) :: mfi
       real(WP), dimension(:,:,:,:), contiguous, pointer :: rphi
       real(SP), dimension(:,:,:), allocatable :: spbuff
-      
+
       ! Create filename
       filename='ensight/'//trim(this%namelvl(lvl))//'/'//trim(my_vct%name)//'/'//trim(my_vct%name)//'.'
       write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') this%ntime
-      
+
       ! Root process starts writing the file header
       if (this%amr%amRoot) then
          ! Open the file
          open(newunit=iunit,file=trim(filename),form='unformatted',status='replace',access='stream',iostat=ierr)
-         if (ierr.ne.0) call die('[amrensight2 write vector] Could not open file '//trim(filename))
+         if (ierr.ne.0) call die('[amrensight write vector] Could not open file '//trim(filename))
          ! Write the header
          cbuff=trim(my_vct%name); write(iunit) cbuff
          ! Close the file
          close(iunit)
       end if
-      
+
       ! Write all the boxes on our level in parallel to the same file
       nbox=0
       ! Build an mfiter at our level
@@ -694,7 +656,7 @@ contains
          if (rank.eq.this%amr%rank) then
             ! Open the file
             open(newunit=iunit,file=trim(filename),form='unformatted',status='old',access='stream',position='append',iostat=ierr)
-            if (ierr.ne.0) call die('[amrensight2 write data] Could not reopen file '//trim(filename))
+            if (ierr.ne.0) call die('[amrensight write data] Could not reopen file '//trim(filename))
             ! Loop through all boxes in mfiter
             do while (mfi%next())
                ! Get box
@@ -706,14 +668,14 @@ contains
                cbuff='block'; write(iunit) cbuff
                ! Allocate SPbuff to right size
                allocate(spbuff(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3)))
-               ! Copy data from appropriate multifab and write it out
-               rphi=>my_vct%ptrx(this%lvlout(lvl))%dataptr(mfi)
+               ! Copy data from amrdata multifabs and write it out
+               rphi=>my_vct%ptrx%mf(this%lvlout(lvl))%dataptr(mfi)
                spbuff=real(rphi(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3),my_vct%compx),SP)
                write(iunit) spbuff
-               rphi=>my_vct%ptry(this%lvlout(lvl))%dataptr(mfi)
+               rphi=>my_vct%ptry%mf(this%lvlout(lvl))%dataptr(mfi)
                spbuff=real(rphi(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3),my_vct%compy),SP)
                write(iunit) spbuff
-               rphi=>my_vct%ptrz(this%lvlout(lvl))%dataptr(mfi)
+               rphi=>my_vct%ptrz%mf(this%lvlout(lvl))%dataptr(mfi)
                spbuff=real(rphi(bx%lo(1):bx%hi(1),bx%lo(2):bx%hi(2),bx%lo(3):bx%hi(3),my_vct%compz),SP)
                write(iunit) spbuff
                ! Deallocate SPbuff
@@ -727,17 +689,17 @@ contains
       end do
       ! Destroy iterator
       call this%amr%mfiter_destroy(mfi)
-      
+
    end subroutine write_vector
-   
-   
+
+
    !> Procedure that writes out a surface mesh in Ensight format
    subroutine write_surf(this,surf,lvl)
       use precision, only: SP
       use messager,  only: die
       use mpi_f08,   only: mpi_barrier
       implicit none
-      class(amrensight2), intent(in) :: this
+      class(amrensight), intent(in) :: this
       type(srf), pointer, intent(in) :: surf
       integer, intent(in) :: lvl
       character(len=str_medium) :: filename,charlvl
@@ -745,7 +707,7 @@ contains
       character(len=80) :: cbuff
       real(SP) :: rbuff
       integer :: ibuff
-      
+
       ! Write the case file from scratch in ASCII format
       if (this%amr%amRoot) then
          ! Open the case file
@@ -768,11 +730,11 @@ contains
          ! Close the case file
          close(iunit)
       end if
-      
+
       ! Generate the surface geometry filename
       filename='ensight/'//trim(this%namelvl(lvl))//'/'//trim(surf%name)//'/'//trim(surf%name)//'.'
       write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') this%ntime
-      
+
       ! Write the file header for Ensight Gold unstructured geometry
       if (this%amr%amRoot) then
          ! Open the file
@@ -787,7 +749,7 @@ contains
          ! Close the file
          close(iunit)
       end if
-      
+
       ! Write polygonal mesh in Ensight Gold 'nsided' format
       do rank=0,this%amr%nproc-1
          if (rank.eq.this%amr%rank) then
@@ -820,7 +782,7 @@ contains
          ! Force synchronization
          call MPI_BARRIER(this%amr%comm,ierr)
       end do
-      
+
       ! Generate the additional variable files
       do n=1,surf%ptr%nvar
          filename='ensight/'//trim(this%namelvl(lvl))//'/'//trim(surf%name)//'/'//trim(surf%ptr%varname(n))//'.'
@@ -856,7 +818,7 @@ contains
             call MPI_BARRIER(this%amr%comm,ierr)
          end do
       end do
-      
+
    end subroutine write_surf
 
 
@@ -866,13 +828,13 @@ contains
    !   use messager,  only: die
    !   use mpi_f08,   only: MPI_BARRIER,MPI_ALLREDUCE,MPI_SUM,MPI_INTEGER
    !   implicit none
-   !   class(amrensight2), intent(in) :: this
+   !   class(amrensight), intent(in) :: this
    !   type(prt), pointer, intent(in) :: part
    !   character(len=str_medium) :: filename
    !   integer :: iunit,ierr,rank,n
    !   character(len=80) :: cbuff
    !   integer :: ibuff,npart
-   !   
+   !
    !   ! Write the case file from scratch in ASCII format
    !   if (this%amr%amRoot) then
    !      ! Open the case file
@@ -894,7 +856,7 @@ contains
    !      ! Close the case file
    !      close(iunit)
    !   end if
-   !   
+   !
    !   ! Generate the particle geometry file
    !   filename='ensight/'//trim(this%name)//'/'//trim(part%name)//'/particle.'
    !   write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') this%ntime
@@ -928,7 +890,7 @@ contains
    !      ! Force synchronization
    !      call MPI_BARRIER(this%amr%comm,ierr)
    !   end do
-   !   
+   !
    !   ! Generate the particle scalar files
    !   do n=1,part%ptr%nvar
    !      filename='ensight/'//trim(this%name)//'/'//trim(part%name)//'/'//trim(part%ptr%varname(n))//'.'
@@ -958,7 +920,7 @@ contains
    !         call MPI_BARRIER(this%amr%comm,ierr)
    !      end do
    !   end do
-   !   
+   !
    !   ! Generate the particle vector files
    !   do n=1,part%ptr%nvec
    !      filename='ensight/'//trim(this%name)//'/'//trim(part%name)//'/'//trim(part%ptr%vecname(n))//'.'
@@ -988,8 +950,8 @@ contains
    !         call MPI_BARRIER(this%amr%comm,ierr)
    !      end do
    !   end do
-   !   
+   !
    !end subroutine write_part
-   
-   
-end module amrensight2_class
+
+
+end module amrensight_class
