@@ -17,8 +17,7 @@ Surface tension coefficient : 0
 # Time integration
 Max timestep size : 1e-3
 Max cfl number :    0.9
-Max time :          15
-Subiterations:      2
+Max time :          10
 
 # Pressure solver
 Pressure tolerance : 1e-9
