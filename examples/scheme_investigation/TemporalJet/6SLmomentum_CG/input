@@ -1,0 +1,49 @@
+# Parallelization
+Partition :	6 1 4
+
+# Mesh definition
+Lx : 8
+Ly : 8
+Lz : 8
+nx : 128
+ny : 128
+nz : 128
+
+# Fluid properties
+Reynolds number : 5000
+Weber number :    134.294
+Viscosity ratio : 66.7
+Density ratio :   657.5
+
+# Time integration
+Max timestep size : 2.5e-2
+Max cfl number :    0.9
+Max time :          70
+
+# Pressure solver
+Pressure tolerance : 1e-4
+Pressure iteration : 100
+
+# Other options
+Use Pipe Simulation : .true.
+Use implicit solver : .true.
+Use SGS model :       .true.
+
+# Ensight output
+Ensight output period : 1
+
+
+# Pipe info
+# Time integration
+[Pipe] I/O partition : 1 1 1
+[Pipe] Max timestep size : 0.02
+[Pipe] Max cfl number :    0.8
+[Pipe] Max time          : 82
+
+# Other options
+[Pipe] Use implicit solver : .false.
+[Pipe] Use SGS model :       .false.
+
+# Restart handling
+[Pipe] Restart output period : 20
+[Pipe] Restart from : restart/pipe_8.00056E+01

@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH -p normal
+#SBATCH -t 120:00:00
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=12
+#SBATCH --exclude=c-3-[13,15]
+#SBATCH --exclusive
+#SBATCH -J VTG20sub
+#SBATCH -o %j.out
+#SBATCH -e %j.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=zz474@cornell.edu
+mpiexec --mca io ^ompio nga.dp.gnu.opt.mpi.exe -i input -v 2
