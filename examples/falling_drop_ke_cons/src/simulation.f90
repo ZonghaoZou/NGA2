@@ -156,7 +156,7 @@ contains
          ! Create flow solver
          call fs%initialize(cfg=cfg,name='Two-phase NS')
          ! Add slight backward bias to CN scheme
-         fs%theta=fs%theta+1.0e-2_WP
+         fs%theta=fs%theta!+1.0e-2_WP
          ! Read in adimensional parameters
          call param_read('Froude number',Fr)     ! Fr=U^2/(g*D)=1/g
          call param_read('Weber number',We)      ! We=rho_l*U^2*D/sigma=1/sigma
@@ -176,9 +176,9 @@ contains
          call param_read('Pressure iteration',ps%maxit)
          call param_read('Pressure tolerance',ps%rcvg)
          ! Configure implicit velocity solver
-         vs=ddadi(cfg=cfg,name='Velocity',nst=7)
+         ! vs=ddadi(cfg=cfg,name='Velocity',nst=7)
          ! Setup the solver
-         call fs%setup(pressure_solver=ps,implicit_solver=vs)
+         call fs%setup(pressure_solver=ps)!,implicit_solver=vs)
       end block create_flow_solver
       
       

@@ -36,7 +36,7 @@ ylabel('KE/KE_0')
 set(gca,'Fontsize',20)
 set(gca,'fontname','Times New Roman')
 set(gca,'LineWidth',LW)% %% Post process weighted by its distance
-legend("S1","S2","S3","S4","S5","S6",'Location','Eastoutside')
+% legend("S1","S2","S3","S4","S5","S6",'Location','Eastoutside')
 xlim([1,100])
 ylim([0.2,1.01])
 
@@ -84,7 +84,7 @@ set(gca,'fontname','Times New Roman')
 set(gca,'LineWidth',LW)% %% Post process weighted by its distance
 % legend({"1KE","1KE_l","1KE_g"})
 xlim([1,100])
-ylim([0.0005,0.05])
+ylim([0.0005,0.06])
 
 
 
@@ -321,7 +321,7 @@ function [output] = importdata(id)
     opts = setvaropts(opts, "time", "TrimNonNumeric", true);
     opts = setvaropts(opts, "time", "ThousandsSeparator", ",");
     
-    filename=strcat("/Users/zonghaozou/Repositories/NGA2/examples/scheme_investigation/Taylor-Green/result/",int2str(id),"/output.csv");
+    filename=strcat("/Users/zonghaozou/Repositories/NGA2/examples/scheme_investigation/Taylor-Green/result/",int2str(id),"/output_explicit.csv");
     % Import the data
     output = readtable(filename, opts);
    

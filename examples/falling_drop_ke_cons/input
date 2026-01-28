@@ -1,5 +1,5 @@
 # Parallelization
-Partition :	8 1 1
+Partition :	6 1 1
 
 # Mesh definition
 Lx :	10
@@ -7,7 +7,7 @@ Ly :	10
 Lz :	10
 nx :	128
 ny :	128
-nz :	128
+nz :	1!128
 
 # Case parameters
 Droplet center : 0 5 0
@@ -21,10 +21,10 @@ Density ratio :    816
 Viscosity ratio :  64
 
 # SGS modeling
-Use SGS model : .true.
+Use SGS model : .false.
 
 # Time integration
-Max timestep size : 1e-2
+Max timestep size : 2e-2!1e-2
 Max cfl number :    0.9
 Max time :          20
 

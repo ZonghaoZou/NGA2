@@ -32,6 +32,7 @@ module simulation
    type(monitor) :: cflfile    !< CFL monitoring
    
    !> Private work arrays
+   real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities (based on Umid)
    real(WP), dimension(:,:,:,:), allocatable :: vel               !< Other cell-centered velocity (based on U)
@@ -199,7 +200,7 @@ contains
          call ens_out%add_scalar('curvature',vf%curv)
          call ens_out%add_surface('plic',smesh)
          ! Output to ensight
-         if (ens_evt%occurs()) call ens_out%write_data(time%t)
+         ! if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
       
       
@@ -276,9 +277,9 @@ contains
          fs%Vold=fs%V; fs%sRHOyold=fs%sRHOy
          fs%Wold=fs%W; fs%sRHOzold=fs%sRHOz
          
-         ! Advance VOF equation
+         ! VOF equation ====================================================
          call vf%advance(dt=time%dt,U=fs%Umid,V=fs%Vmid,W=fs%Wmid)
-         
+
          ! Update sqrt(face density) and momentum vector
          resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
          fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
@@ -290,7 +291,26 @@ contains
 
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
+            
+            ! ! VOF equation ====================================================
+            ! ! Advance VOF equation
+            ! vf%VF=vf%VFold
+            ! if (time%it.eq.time%itmax) then   
+            !    call vf%advance(dt=time%dt,U=fs%Umid,V=fs%Vmid,W=fs%Wmid)
+            ! else
+            !    call vf%advance_tmp(dt=time%dt,U=fs%Umid,V=fs%Vmid,W=fs%Wmid)
+            ! end if
+            
+            ! ! Update sqrt(face density) and momentum vector
+            ! resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
+            ! fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
+            ! fs%rhoV=fs%rho_l*vf%UFl(2,:,:,:)+fs%rho_g*vf%UFg(2,:,:,:)
+            ! fs%rhoW=fs%rho_l*vf%UFl(3,:,:,:)+fs%rho_g*vf%UFg(3,:,:,:)
+            
+            ! ! Prepare new staggered viscosity (at n+1)
+            ! call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
 
+            ! Momentum equation ===============================================
             ! Explicit calculation of drho*u/dt from NS
             call fs%get_dmomdt(resU,resV,resW)
             
@@ -350,10 +370,10 @@ contains
          ! Get the Ca at the end of the simulation
          if (time%done()) call get_Ca()         
          ! Output to ensight
-         if (ens_evt%occurs()) then
-            call vf%update_surfmesh(smesh)
-            call ens_out%write_data(time%t)
-         end if
+         ! if (ens_evt%occurs()) then
+         !    call vf%update_surfmesh(smesh)
+         !    call ens_out%write_data(time%t)
+         ! end if
          
          ! Perform and output monitoring
          call fs%get_max()
@@ -405,7 +425,7 @@ contains
          ! Open file dynamically with append mode
          open(unit=10, file=filename, status="unknown", position="append", action="write")
          ! Write data with 16-digit precision in CSV format
-         write(10, '(F24.16,F24.16,F24.16,F24.16)') Ca_rms_U, Ca_rms_Umid, Ca_max_U, Ca_max_Umid
+         write(10, '(F24.16, F24.16, F24.16, F24.16)') Ca_rms_U, Ca_rms_Umid, Ca_max_U, Ca_max_Umid
          close(10)
       end if
    end subroutine get_Ca

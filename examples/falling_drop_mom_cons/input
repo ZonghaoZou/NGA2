@@ -17,7 +17,7 @@ Pool depth : 4
 Method type : 1 ! 1 is the momentum flux, 2 is the centered
 Falling Drop Activated: .false.
 Surface tension Activated: .false.
-Implicit: .true.
+Implicit: .false.
 
 
 # Fluid properties      | (1) Jet  | (2) No jet
@@ -40,4 +40,4 @@ Pressure tolerance : 1e-5
 Pressure iteration : 100
 
 # Ensight output
-Ensight output period : 0.0001!2e-
+Ensight output period : 2e-1

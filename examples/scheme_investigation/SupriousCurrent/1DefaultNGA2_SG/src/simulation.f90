@@ -186,7 +186,7 @@ module simulation
           call ens_out%add_scalar('curvature',vf%curv)
           call ens_out%add_surface('plic',smesh)
           ! Output to ensight
-          if (ens_evt%occurs()) call ens_out%write_data(time%t)
+         !  if (ens_evt%occurs()) call ens_out%write_data(time%t)
        end block create_ensight
        
        
@@ -339,10 +339,10 @@ module simulation
           if (time%done()) call get_Ca()         
 
           ! Output to ensight
-          if (ens_evt%occurs()) then
-             call vf%update_surfmesh(smesh)
-             call ens_out%write_data(time%t)
-          end if
+         !  if (ens_evt%occurs()) then
+         !     call vf%update_surfmesh(smesh)
+         !     call ens_out%write_data(time%t)
+         !  end if
           
           ! Perform and output monitoring
           call fs%get_max()

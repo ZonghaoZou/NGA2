@@ -110,6 +110,7 @@ module vfs_class
       integer, dimension(:,:),   allocatable :: band_map  !< Unstructured band mapping
       integer, dimension(0:nband) :: band_count           !< Number of cells per band value
       
+      integer, dimension(:,:,:), allocatable :: indicator      !< Band to localize workload around the interface
       ! Interface handling methods
       integer :: reconstruction_method                    !< Interface reconstruction method
       integer :: transport_method                         !< Interface transport method
@@ -289,6 +290,7 @@ contains
       allocate(this%G    (  this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%G    =0.0_WP
       allocate(this%curv (  this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%curv =0.0_WP
       
+      allocate(this%indicator (  this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%indicator =0.0_WP
       ! Fluxing velocities
       allocate(this%UFl(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%UFl=0.0_WP
       allocate(this%UFg(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%UFg=0.0_WP
@@ -1368,9 +1370,14 @@ contains
          Lvolnew=Lvolold+Lvolinc
          Gvolnew=Gvolold+Gvolinc
          
+
          ! Compute new liquid volume fraction
+         ! if (this%indicator(i,j,k).eq.1) then
+         !    this%VF(i,j,k)=Lvolnew/this%cfg%vol(i,j,k)
+         ! else
+         !    this%VF(i,j,k)=Lvolnew/(Lvolnew+Gvolnew)
+         ! end if
          this%VF(i,j,k)=Lvolnew/(Lvolnew+Gvolnew)
-         
          ! Only work on higher order moments if VF is in [VFlo,VFhi]
          if (this%VF(i,j,k).lt.VFlo) then
             this%VF(i,j,k)=0.0_WP
@@ -2069,6 +2076,7 @@ contains
       ! this%thickness_old
       ! Reset thickness
       this%thickness=0.0_WP
+      ! this%thickness=3.5_WP*this%cfg%min_meshsize
       ! First compute thickness based on current surface and volume moments (SD and VF)
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
@@ -2090,6 +2098,7 @@ contains
       call this%cfg%sync(this%thickness)
       ! Filter thickness
       allocate(tmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); tmp=0.0_WP
+      ! allocate(tmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); tmp=3.5_WP*this%cfg%min_meshsize
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_

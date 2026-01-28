@@ -50,7 +50,7 @@ module simulation
    real(WP) :: radius1,radius2
    real(WP) :: HamakerC,lambdaAir
    real(WP) :: anew,aold,amax,minThickness,thickthd1,thickthd2,mulfact,thicknew,minThicknessold
-   real(WP) :: meshaligned_angle
+   real(WP) :: meshaligned_angle,uzvel
    integer :: curr_case,mesh_ratio
    logical :: activated,breakup,default
    contains
@@ -84,6 +84,7 @@ subroutine get_gasVel
    ! Set indicator to 0
    anew=0.0_WP;x0=0.0_WP;y0=0.0_WP;z0=0.0_WP;a_cell=0.0_WP
    mask_IB=1;thickold=0.0_WP;thicknew=0.0_WP;dhdt=0.0_WP
+   vf%indicator=0
    ! Query optimal work array size
    if (.not.allocated(work)) then
       call dsyev('V','U',3,A,3,d,lwork_query,-1,info)
@@ -115,6 +116,7 @@ subroutine get_gasVel
             thicknew=thicknew+thickness_new(i,j,k)
             fct(n)=fct(n)+1.0_WP
             mask_IB(i,j,k)=0
+            vf%indicator(i,j,k)=1
          end if 
      end do 
    end do
@@ -249,19 +251,19 @@ subroutine get_gasVel
       real(WP), dimension(3) :: er,ef
       integer, dimension(:,:,:), allocatable :: mask_IB_x,mask_IB_y,mask_IB_z,tmp_mask
       allocate(tmp_mask(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));tmp_mask=mask_IB
-      ! ! Extend mask_IB for one more layer
-      ! do k=cfg%kmin_,cfg%kmax_
-      !    do j=cfg%jmin_,cfg%jmax_
-      !       do i=cfg%imin_,cfg%imax_
-      !          if (mask_IB(i,j,k).eq.0) then
-      !             tmp_mask(i-1,j,k)=0; tmp_mask(i+1,j,k)=0
-      !             tmp_mask(i,j-1,k)=0; tmp_mask(i,j+1,k)=0
-      !             tmp_mask(i,j,k-1)=0; tmp_mask(i,j,k+1)=0
-      !          end if
-      !       end do 
-      !    end do 
-      ! end do 
-      ! call cfg%sync(tmp_mask); mask_IB=tmp_mask
+      ! Extend mask_IB for one more layer
+      do k=cfg%kmin_,cfg%kmax_
+         do j=cfg%jmin_,cfg%jmax_
+            do i=cfg%imin_,cfg%imax_
+               if (mask_IB(i,j,k).eq.0) then
+                  tmp_mask(i-1,j,k)=0; tmp_mask(i+1,j,k)=0
+                  tmp_mask(i,j-1,k)=0; tmp_mask(i,j+1,k)=0
+                  tmp_mask(i,j,k-1)=0; tmp_mask(i,j,k+1)=0
+               end if
+            end do 
+         end do 
+      end do 
+      call cfg%sync(tmp_mask); mask_IB=tmp_mask
       allocate(mask_IB_x(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_x=1
       allocate(mask_IB_y(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_y=1
       allocate(mask_IB_z(fs%cfg%imino_:fs%cfg%imaxo_,fs%cfg%jmino_:fs%cfg%jmaxo_,fs%cfg%kmino_:fs%cfg%kmaxo_));mask_IB_z=1
@@ -282,6 +284,7 @@ subroutine get_gasVel
       call cfg%sync(mask_IB_y)
       call cfg%sync(mask_IB_z)
 
+      uzvel=mulfact*(2*(5.0_WP-4.0_WP*DeltaKn)*dlogadt*thicknew+5.0_WP*dhdt)/(16*DeltaKn)
       Us=0.0_WP;Vs=0.0_WP;Ws=0.0_WP
       do k=cfg%kmin_,cfg%kmax_
          do j=cfg%jmin_,cfg%jmax_
@@ -300,7 +303,8 @@ subroutine get_gasVel
                   !    ! Could add another constraint on seeing if the face is contained in gas, but skip that for now
                      ! Us(i,j,k)=Ur*dot_product(er,ef)
                   ! else
-                     Us(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz
+                     Ur=0.0_WP
+                     Us(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz!-fs%U(i,j,k)
                   ! end if
                   ! Us(i,j,k)=sign(1.0_WP,dot_product([x,y,z],t3))*dot_product(t3,ef)*Uz
                end if
@@ -316,7 +320,8 @@ subroutine get_gasVel
                   ! !    ! Could add another constraint on seeing if the face is contained in gas, but skip that for now
                      ! Vs(i,j,k)=Ur*dot_product(er,ef)
                   ! else
-                     Vs(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz
+                  Ur=0.0_WP
+                     Vs(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz!-fs%V(i,j,k)
                   ! end if
                   ! Vs(i,j,k)=sign(1.0_WP,dot_product([x,y,z],t3))*dot_product(t3,ef)*Uz
                end if
@@ -332,7 +337,8 @@ subroutine get_gasVel
                   ! !    ! Could add another constraint on seeing if the face is contained in gas, but skip that for now
                      ! Ws(i,j,k)=Ur*dot_product(er,ef)
                   ! else
-                     Ws(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz
+                  Ur=0.0_WP
+                     Ws(i,j,k)=Ur*dot_product(er,ef)+sign(1.0_WP,zr)*dot_product(t3,ef)*Uz!-fs%W(i,j,k)
                   ! end if
                   ! Ws(i,j,k)=sign(1.0_WP,dot_product([x,y,z],t3))*dot_product(t3,ef)*Uz
                end if
@@ -372,10 +378,11 @@ end subroutine get_gasVel
       use parallel,  only: MPI_REAL_WP
       implicit none 
       real(WP), dimension(cfg%imino_:,cfg%jmino_:,cfg%kmino_:), intent(out) :: thickness_in
-      real(WP) :: tmplvol,tmpgvol,tmparea
+      real(WP) :: tmplvol,tmpgvol,tmparea,area
       real(WP), dimension(1:3) :: tmpxvol, tmpL
+      real(WP), dimension(:,:,:), allocatable :: tmp
       integer :: nneigh_thickness,i,j,k,ii,jj,kk,ierr
-      nneigh_thickness=3
+      nneigh_thickness=2
       do k=cfg%kmin_,cfg%kmax_
          do j=cfg%jmin_,cfg%jmax_
             do i=cfg%imin_,cfg%imax_
@@ -402,6 +409,30 @@ end subroutine get_gasVel
          end do 
       end do
       call cfg%sync(thickness_in)
+
+      ! allocate(tmp(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_)); tmp=3.5_WP*cfg%min_meshsize
+      ! do k=cfg%kmin_,cfg%kmax_
+      !    do j=cfg%jmin_,cfg%jmax_
+      !       do i=cfg%imin_,cfg%imax_
+      !          ! Skip wall/bcond/full cells
+      !          if (vf%mask(i,j,k).ne.0) cycle
+      !          if (vf%VF(i,j,k).lt.VFlo.or.vf%VF(i,j,k).gt.VFhi) cycle
+      !          ! Surface-average thickness
+      !          area=0.0_WP;tmp(i,j,k)=0.0_WP
+      !          do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
+      !             area      =area      +vf%SD(ii,jj,kk)*cfg%vol(ii,jj,kk)
+      !             tmp(i,j,k)=tmp(i,j,k)+vf%SD(ii,jj,kk)*cfg%vol(ii,jj,kk)*thickness_in(ii,jj,kk)
+      !          end do; end do; end do
+      !          if (area.gt.0.0_WP) tmp(i,j,k)=tmp(i,j,k)/area
+      !       end do
+      !    end do
+      ! end do
+      ! call cfg%sync(tmp)
+      ! thickness_in=tmp
+      ! deallocate(tmp)
+
+
+      ! thickness_in=vf%thickness
       minThicknessold=minThickness
       minThickness=3.5_WP*cfg%min_meshsize
       do k=cfg%kmin_,cfg%kmax_
@@ -436,12 +467,13 @@ end subroutine get_gasVel
             ! write(filename,'("thickness_p",I0,".csv")') ival
          end if
          open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',position='append',iostat=ierr)
-         write(iunit,*) time%t, minThickness, thicknew
+         write(iunit,*) time%t, minThickness,uzvel,uzvel*time%dt
          close(iunit)
       end if
    end subroutine record_thickness
 
    subroutine attempt_breakup
+      use vfs_class, only : VFhi,VFlo
       implicit none
       integer :: n,i,j,k,m
       call ccl%build(make_label,same_label)
@@ -468,7 +500,7 @@ end subroutine get_gasVel
          implicit none
          integer, intent(in) :: i,j,k
          ! if (vf%VF(i,j,k).gt.0.0_WP) then
-         if (vf%thin_sensor(i,j,k).eq.2.0_WP) then! .and.thickness_new(i,j,k).le.1.1*cfg%min_meshsize) then
+         if (vf%thin_sensor(i,j,k).eq.2.0_WP .and. vf%VF(i,j,k).gt.VFlo .and. vf%VF(i,j,k).lt. VFhi) then! .and.thickness_new(i,j,k).le.1.1*cfg%min_meshsize) then
             make_label=.true.
          else
             make_label=.false.
@@ -517,7 +549,7 @@ end subroutine get_gasVel
          allocate(thickness_old(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));thickness_old=0.0_WP
          allocate(thickness_new(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_));thickness_new=0.0_WP
          activated=.false.; breakup=.false.
-         amax=0.0_WP;anew=0.0_WP;aold=0.0_WP
+         amax=0.0_WP;anew=0.0_WP;aold=0.0_WP;uzvel=0.0_WP
       end block allocate_work_arrays
       
       
@@ -841,6 +873,7 @@ end subroutine get_gasVel
             resV=fs%V+Vs
             resW=fs%W+Ws
             call vf%advance(dt=time%dt,U=resU,V=resV,W=resW)
+            ! call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)
          else
          ! VOF solver ste
             ! Remember old VOF

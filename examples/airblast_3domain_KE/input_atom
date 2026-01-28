@@ -1,15 +1,15 @@
 # Parallelization
-Partition : 22 1 12
-I/O partition : 1 1 1
+Partition : 17 4 12
+I/O partition : 20 1 1
 
 # Mesh definition
 X shift : 0.01
-Lx :  0.06
-Ly :  0.05!0.04
-Lz :  0.05!0.04
-nx :  300!210!420
-ny :  250!210!420
-nz :  250!210!420
+Lx :  0.05
+Ly :  0.04
+Lz :  0.04
+nx :  375
+ny :  300
+nz :  300
 
 # PLY file
 PLY filename : atomizer_tip.ply
@@ -42,5 +42,9 @@ Pressure iteration : 100
 Ensight output period : 1.5e-4
 Restart output period : 0.5e-2
 
+# Stats output 
+Stat output period: 0.5e-2
+Stat begin: 2e-2
+
 # Data restart
-Restart from : !2.00000E-02
+Restart from : 

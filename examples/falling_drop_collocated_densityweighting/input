@@ -1,5 +1,5 @@
 # Parallelization
-Partition :	1 1 1
+Partition :	2 1 1
 
 # Mesh definition
 Lx :	10
@@ -7,7 +7,7 @@ Ly :	10
 Lz :	10
 nx :	128!64!128
 ny :	128!64!128
-nz :	1!64!128
+nz :	1!128!64!128
 
 # Case parameters
 Droplet center : 0 5 0
@@ -15,8 +15,8 @@ Pool depth : 4
 
 # Method type
 Method type : 1 ! 1 is the momentum flux, 2 is the centered
-Falling Drop Activated: .false.
-Surface tension Activated: .false.
+Falling Drop Activated: .true.
+Surface tension Activated: .true.
 Implicit: .true.
 
 
@@ -40,4 +40,4 @@ Pressure tolerance : 1e-5
 Pressure iteration : 100
 
 # Ensight output
-Ensight output period : 2e-10
+Ensight output period : 3e-1

@@ -1,38 +1,49 @@
 # Parallelization
 Partition :	6 1 1
 
-# Mesh definition
-Lx :	1e-3
-Ly :	1e-3
-Lz :	1e-3
-nx :	96!128!64
-ny :	96!128!64
-nz :	96!128!64
+# Non-dimensionalized by Radius
+# Mesh definition 
+Lx :	5.5
+Ly :	4.125
+Lz :	4.125
+nx :	64!96
+ny :	48!72
+nz :	48!72
 
-Droplet 1 diameter : 360e-6
-Droplet 1 position : -190-6 -00.0e-6 0
-Droplet 1 velocity : +0.55 0 0
+# D1= 2
+# D2= 2
+# 1 Pos =-1.05       0 0
+# 2 Pos =+1.05+Lx/nx 0 0
+# vel1 = +1 0 0
+# vel2 = -1 0 0
+# Non-dimensional properties
+# We=2 R0 rho_l (2U)^2/sigma
+# A_H=A/(rho_l (2U)^2 R_0^3)  Current scaled by sigma R0^2 could be made to reactive to inertia
+# Fluid properties          | (1) vel=0.15 | (2) vel=0.25 | (3) vel=0.35 | (4) vel=0.45 | (5) vel=0.55 ! (6) vel=0.65 ! (7) vel=0.75 
+Weber number     :    0.9282!       0.9282 !       2.5782 !       5.0533 !       8.3534 !      12.4785 !      17.4286 !      23.2038 
+Reynolds number  :   33.4537!      33.4537 !      55.7561 !      78.0585 !      100.361 !      122.663 !      144.966 !      167.268 
+Hamaker Constant :  5.92e-11
+Density ratio    :     665.5
+Viscosity ratio  :     139.8
+Impact Parameter :       0.0
+Initial Location :       1.1 
+Mean Free Path   :    3.8e-4
+Mesh aligned angle  :   45
+Meshratio : 10
 
-# Droplet 2 definiton
-Droplet 2 diameter : 360e-6
-Droplet 2 position : +200.417-6 0 0 !+200.4167-6 0.0 0!+190-6 +00.0e-6 0
-Droplet 2 velocity : -0.55 0 0
-
-# Fluid properties
-Liquid dynamic viscosity :    2.46e-3!2.128e-3
-Gas dynamic viscosity :       1.76e-5!1.827e-5
-Liquid density :              762.0!762.0
-Gas density :                 1.145!1.225
-Surface tension coefficient : 0.0266!0.0265
-
+Threshold 1      :    1.09e-3
+Threshold 2      :    5.0e-5
+mulfact          :     10.0
+default          :    .false.
+Current Case     :      1
 # Time integration
-Max timestep size : 1e-6!6e-7!2.0e-6!8e-7
+Max timestep size : 0.0015!0.0015
 Max cfl number :    0.8
-Max time :          1.0e-2
+Max time :          1.5
 
 # Pressure solver
 Pressure tolerance : 1e-6
 Pressure iteration : 100
 
 # Ensight output
-Ensight output period : 5e-6
+Ensight output period : 0.015

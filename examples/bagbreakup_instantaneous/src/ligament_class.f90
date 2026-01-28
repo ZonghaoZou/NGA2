@@ -1100,7 +1100,7 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2p,transport_method=remap,name='VOF')
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
          this%vf%thin_thld_min=0.0_WP
          this%vf%flotsam_thld=0.0_WP
          this%vf%maxcurv_times_mesh=1.0_WP
@@ -1202,7 +1202,7 @@ contains
          call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
       end block create_flow_solver
       
-       ! Prepare Lagrangian drop model
+      ! Prepare Lagrangian drop model
       prepare_transfer: block
          use messager,  only: die
          use filesys,  only: makedir,isdir

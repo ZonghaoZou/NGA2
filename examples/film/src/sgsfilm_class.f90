@@ -189,6 +189,7 @@ contains
                end do
             end do
          end do
+         
          call this%vf%sync_interface()
          ! Reset moments from r2p
          call this%vf%reset_volume_moments()

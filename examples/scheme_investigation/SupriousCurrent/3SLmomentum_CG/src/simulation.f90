@@ -130,6 +130,8 @@ contains
          use hypre_str_class, only: pcg_pfmg2
          use mathtools, only: pi
          real(WP) :: La
+         ! Create flow solver
+         call fs%initialize(cfg=cfg,name='Two-phase NS')
          ! Read in viscousity
          call param_read('Viscosity',fs%visc_l); fs%visc_g=fs%visc_l
          ! Read in surface tension coefficient
@@ -147,6 +149,11 @@ contains
          vs=ddadi(cfg=cfg,name='Velocity',nst=7)
          ! Setup the solver
          call fs%setup(pressure_solver=ps,implicit_solver=vs)
+         fs%U=0.0_WP;fs%V=0.0_WP;fs%W=0.0_WP
+         fs%Uf=0.0_WP;fs%Vf=0.0_WP;fs%Wf=0.0_WP
+         ! Calculate cell-centered velocities and divergence
+         call fs%interp_vel(Ui,Vi,Wi)
+         call fs%get_div()
          fs%rho=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_faceRHO(vf=vf,rho=fs%rho)
       end block create_flow_solver
       
@@ -185,7 +192,7 @@ contains
          call ens_out%add_scalar('band',vf%band)
          call ens_out%add_surface('plic',smesh)
          ! Output to ensight
-         if (ens_evt%occurs()) call ens_out%write_data(time%t)
+         ! if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
       
       
@@ -340,10 +347,10 @@ contains
          if (time%done()) call get_Ca()         
 
          ! Output to ensight
-         if (ens_evt%occurs()) then
-            call vf%update_surfmesh(smesh)
-            call ens_out%write_data(time%t)
-         end if
+         ! if (ens_evt%occurs()) then
+         !    call vf%update_surfmesh(smesh)
+         !    call ens_out%write_data(time%t)
+         ! end if
          
          ! Perform and output monitoring
          call fs%get_max()
