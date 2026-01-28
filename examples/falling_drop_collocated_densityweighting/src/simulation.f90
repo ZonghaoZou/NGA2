@@ -217,11 +217,12 @@ contains
             end do
             
             ! Apply all other boundary conditions
-            call fs%apply_bcond(time%t,time%dt)
+            call fs%apply_bcond(time%dt,'cell')
             ! Solve Poisson equation
             call fs%update_laplacian()
             call fs%correct_mfr()
             call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
+            call fs%apply_bcond(time%dt,'face')
             call fs%get_div()
             fs%psolv%rhs=-fs%cfg%vol*fs%div
             fs%psolv%sol=0.0_WP
@@ -239,7 +240,7 @@ contains
             fs%U=fs%U-resU/fs%rho
             fs%V=fs%V-resV/fs%rho
             fs%W=fs%W-resW/fs%rho
-
+            call fs%apply_bcond(time%dt,'cell')
             ! call output_info()
             ! fs%V=0.0_WP
             ! fs%U=0.0_WP
@@ -421,13 +422,11 @@ contains
 
             ! Update viscosity explictly
             call fs%viscosity_explict(vf,time%dt)
-
-            ! Sync and apply boundary conditions
-            call fs%apply_bcond(time%t,time%dt)
             ! Solve Poisson equation
             call fs%update_laplacian()
             call fs%correct_mfr()
             call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
+            call fs%apply_bcond(time%dt,'face')
             call fs%get_div()
             if (STflag) call fs%add_surface_tension_jump(dt=time%dt,div=fs%div,vf=vf)
             fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
@@ -447,7 +446,7 @@ contains
             fs%U=fs%U-time%dt*resU/fs%rho
             fs%V=fs%V-time%dt*resV/fs%rho
             fs%W=fs%W-time%dt*resW/fs%rho
-
+            call fs%apply_bcond(time%dt,'cell')
             ! Increment sub-iteration counter =================================
             time%it=time%it+1
          end do
