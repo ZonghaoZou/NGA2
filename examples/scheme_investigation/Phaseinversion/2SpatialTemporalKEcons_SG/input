@@ -1,0 +1,26 @@
+# Parallelization
+Partition :	2 2 1
+
+# Domain Size                   
+H :                           0.1! 1
+# Mesh definition
+nx: 32
+# Fluid properties                          
+Gravity :                     0 -9.81 0
+Liquid dynamic viscosity :    0.001
+Gas dynamic viscosity :       0.1
+Liquid density :              1000
+Gas density :                 900
+Surface tension coefficient : 0.045 !0.45
+
+# Time integration
+Max timestep size : 9e-3
+Max cfl number :    0.9
+Max time :          5
+
+# Pressure solver
+Pressure tolerance : 1e-5
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 9e-2
