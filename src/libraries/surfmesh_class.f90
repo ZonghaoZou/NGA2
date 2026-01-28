@@ -24,6 +24,7 @@ module surfmesh_class
       procedure :: reset                                   !< Reset surface mesh to zero size
       procedure :: set_size                                !< Set surface mesh to provided size
       procedure :: finalize                                !< Finalize surfmesh object
+      procedure :: add_polygon                             !< Append a polygon (grows arrays as needed)
    end type surfmesh
    
    
@@ -360,6 +361,67 @@ contains
       if (allocated(this%varname)) deallocate(this%varname)
       this%name='UNNAMED_SURFMESH'
    end subroutine finalize
+   
+   
+   !> Append a single polygon to the surface mesh
+   !> Grows internal arrays as needed using doubling strategy
+   subroutine add_polygon(this, verts, nv)
+      implicit none
+      class(surfmesh), intent(inout) :: this
+      real(WP), dimension(3,nv), intent(in) :: verts  !< Polygon vertices (3 x nv)
+      integer, intent(in) :: nv                        !< Number of vertices
+      real(WP), dimension(:), allocatable :: new_x, new_y, new_z
+      integer, dimension(:), allocatable :: new_size, new_conn
+      integer :: new_cap, i
+      
+      ! Initialize arrays if not allocated
+      if (.not.allocated(this%xVert)) then
+         allocate(this%xVert(1000), this%yVert(1000), this%zVert(1000))
+         allocate(this%polySize(1000), this%polyConn(1000))
+         this%nVert = 0
+         this%nPoly = 0
+      end if
+      
+      ! Grow vertex arrays if needed
+      if (this%nVert + nv > size(this%xVert)) then
+         new_cap = max(2*size(this%xVert), this%nVert + nv)
+         allocate(new_x(new_cap), new_y(new_cap), new_z(new_cap))
+         new_x(1:this%nVert) = this%xVert(1:this%nVert)
+         new_y(1:this%nVert) = this%yVert(1:this%nVert)
+         new_z(1:this%nVert) = this%zVert(1:this%nVert)
+         call move_alloc(new_x, this%xVert)
+         call move_alloc(new_y, this%yVert)
+         call move_alloc(new_z, this%zVert)
+      end if
+      
+      ! Grow polyConn array if needed
+      if (this%nVert + nv > size(this%polyConn)) then
+         new_cap = max(2*size(this%polyConn), this%nVert + nv)
+         allocate(new_conn(new_cap))
+         new_conn(1:this%nVert) = this%polyConn(1:this%nVert)
+         call move_alloc(new_conn, this%polyConn)
+      end if
+      
+      ! Grow polySize array if needed
+      if (this%nPoly + 1 > size(this%polySize)) then
+         new_cap = 2*size(this%polySize)
+         allocate(new_size(new_cap))
+         new_size(1:this%nPoly) = this%polySize(1:this%nPoly)
+         call move_alloc(new_size, this%polySize)
+      end if
+      
+      ! Append polygon
+      this%nPoly = this%nPoly + 1
+      this%polySize(this%nPoly) = nv
+      do i = 1, nv
+         this%nVert = this%nVert + 1
+         this%xVert(this%nVert) = verts(1, i)
+         this%yVert(this%nVert) = verts(2, i)
+         this%zVert(this%nVert) = verts(3, i)
+         this%polyConn(this%nVert) = this%nVert
+      end do
+      
+   end subroutine add_polygon
    
    
 end module surfmesh_class

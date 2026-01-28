@@ -1,17 +1,18 @@
-# NGA location if not yet defined
+# NGA location
 NGA_HOME ?= ../..
 
 # Compilation parameters
 PRECISION = DOUBLE
 USE_MPI   = TRUE
-USE_HYPRE = FALSE
-USE_LAPACK= TRUE
-USE_IRL   = TRUE
+USE_FFTW  = FALSE
+USE_HYPRE = TRUE
+USE_LAPACK= FALSE
 USE_AMREX = TRUE
+USE_HDF5  = TRUE
 PROFILE   = FALSE
 DEBUG     = FALSE
 COMP      = gnu
-EXEBASE   = nga
+EXEBASE   = amrvof_tester
 
 # Directories that contain user-defined code
 Udirs   := src
@@ -23,13 +24,11 @@ include $(Upack)
 INCLUDE_LOCATIONS += $(Ulocs)
 VPATH_LOCATIONS   += $(Ulocs)
 
-# External libraries are defined in .profile/.bashrc/.zshrc, but could be defined here as well
-
 # NGA compilation definitions
 include $(NGA_HOME)/tools/GNUMake/Make.defs
 
 # Include NGA base code
-Bdirs   := two_phase constant_density solver config grid data core libraries
+Bdirs   := amrbase amrsolvers libraries core
 Bpack   += $(foreach dir, $(Bdirs), $(NGA_HOME)/src/$(dir)/Make.package)
 include $(Bpack)
 

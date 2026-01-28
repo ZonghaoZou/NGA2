@@ -45,6 +45,8 @@ module amrex_interface
    public :: amrmfab_fillpatch_single
    public :: amrmfab_fillpatch_two
    public :: amrmfab_fillcoarsepatch
+   public :: amrmfab_fillcoarsepatch_faces  ! 3-component
+   public :: amrmfab_fillpatch_two_faces    ! 3-component
 
    !=====================================================================
    ! Plotfile Output
@@ -62,6 +64,23 @@ module amrex_interface
    public :: amrcheckpoint_mfab_prefix
    public :: amrvismf_set_noutfiles
    public :: amrvismf_get_noutfiles
+
+   !=====================================================================
+   ! MLMG Utilities
+   !=====================================================================
+   public :: amrmlmg_get_niters
+   public :: amrmlmg_get_fluxes
+
+   !=====================================================================
+   ! MultiFab Averaging (unified API - not in AMReX Fortran interface)
+   !=====================================================================
+   public :: amrmfab_average_down_cell  ! Cell-centered
+   public :: amrmfab_average_down_face  ! Face-centered (nodal in 1 dir)
+   public :: amrmfab_average_down_edge  ! Edge-centered (nodal in 2 dirs)
+   public :: amrmfab_average_down_node  ! Node-centered (nodal in 3 dirs)
+   public :: amrmfab_compute_divergence ! Compute div(u) from face velocities
+   public :: amrmfab_sum_unique         ! Sum for face/nodal data (no double-counting)
+   public :: amrmask_make_fine          ! Create mask for cells covered by finer level
 
    interface
 
@@ -197,19 +216,21 @@ module amrex_interface
       !------------------------------------------------------------------
 
       !> FillPatch for level 0 (single level, physical BCs only)
-      subroutine amrmfab_fillpatch_single(mf,t_old,mf_old,t_new,mf_new, &
-      &   geom,solver_ctx,bc_dispatch,time,scomp,dcomp,ncomp) bind(c)
+      subroutine amrmfab_fillpatch_single_c(mf,t_old,mf_old,t_new,mf_new, &
+      &   geom,solver_ctx,bc_dispatch,time,scomp,dcomp,ncomp) &
+      &   bind(c, name='amrmfab_fillpatch_single')
          import :: c_ptr,c_funptr,c_double,c_int
          type(c_ptr), value :: mf,mf_old,mf_new,geom,solver_ctx
          type(c_funptr), value :: bc_dispatch
          real(c_double), value :: t_old,t_new,time
          integer(c_int), value :: scomp,dcomp,ncomp
-      end subroutine amrmfab_fillpatch_single
+      end subroutine amrmfab_fillpatch_single_c
 
       !> FillPatch for fine levels (two-level interpolation + BCs)
-      subroutine amrmfab_fillpatch_two(mf,t_old_c,mf_old_c,t_new_c,mf_new_c,geom_c, &
+      subroutine amrmfab_fillpatch_two_c(mf,t_old_c,mf_old_c,t_new_c,mf_new_c,geom_c, &
       &   t_old_f,mf_old_f,t_new_f,mf_new_f,geom_f,solver_ctx,bc_dispatch, &
-      &   time,scomp,dcomp,ncomp,ref_ratio,interp_type,lo_bc,hi_bc,nbc) bind(c)
+      &   time,scomp,dcomp,ncomp,ref_ratio,interp_type,lo_bc,hi_bc,nbc) &
+      &   bind(c, name='amrmfab_fillpatch_two')
          import :: c_ptr,c_funptr,c_double,c_int
          type(c_ptr), value :: mf,mf_old_c,mf_new_c,geom_c
          type(c_ptr), value :: mf_old_f,mf_new_f,geom_f,solver_ctx
@@ -217,18 +238,60 @@ module amrex_interface
          real(c_double), value :: t_old_c,t_new_c,t_old_f,t_new_f,time
          integer(c_int), value :: scomp,dcomp,ncomp,ref_ratio,interp_type,nbc
          integer(c_int), intent(in) :: lo_bc(*),hi_bc(*)
-      end subroutine amrmfab_fillpatch_two
+      end subroutine amrmfab_fillpatch_two_c
 
       !> FillCoarsePatch - fill fine level from coarse only (for new levels)
-      subroutine amrmfab_fillcoarsepatch(mf_f,time,mf_c,geom_c,geom_f,solver_ctx, &
-      &   bc_dispatch,scomp,dcomp,ncomp,ref_ratio,interp_type,lo_bc,hi_bc,nbc) bind(c)
+      subroutine amrmfab_fillcoarsepatch_c(mf_f,time,mf_c,geom_c,geom_f,solver_ctx, &
+      &   bc_dispatch,scomp,dcomp,ncomp,ref_ratio,interp_type,lo_bc,hi_bc,nbc) &
+      &   bind(c, name='amrmfab_fillcoarsepatch')
          import :: c_ptr,c_funptr,c_double,c_int
          type(c_ptr), value :: mf_f,mf_c,geom_c,geom_f,solver_ctx
          type(c_funptr), value :: bc_dispatch
          real(c_double), value :: time
          integer(c_int), value :: scomp,dcomp,ncomp,ref_ratio,interp_type,nbc
          integer(c_int), intent(in) :: lo_bc(*),hi_bc(*)
-      end subroutine amrmfab_fillcoarsepatch
+      end subroutine amrmfab_fillcoarsepatch_c
+
+
+      !> FillCoarsePatch for 3-component face-centered velocity
+      subroutine amrmfab_fillcoarsepatch_faces_c(mf_u, mf_v, mf_w, time, &
+      &   cmf_u, cmf_v, cmf_w, geom_c, geom_f, &
+      &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
+      &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc) &
+      &   bind(c, name='amrmfab_fillcoarsepatch_faces')
+         import :: c_ptr, c_funptr, c_double, c_int
+         type(c_ptr), value :: mf_u, mf_v, mf_w
+         type(c_ptr), value :: cmf_u, cmf_v, cmf_w
+         type(c_ptr), value :: geom_c, geom_f
+         type(c_ptr), value :: ctx_u, ctx_v, ctx_w
+         type(c_funptr), value :: bc_u, bc_v, bc_w
+         real(c_double), value :: time
+         integer(c_int), value :: scomp, dcomp, ncomp, ref_ratio, interp_type
+         integer(c_int), intent(in) :: lo_bc(*), hi_bc(*)
+      end subroutine amrmfab_fillcoarsepatch_faces_c
+
+      !> FillPatch for 3-component face-centered velocity from two levels
+      subroutine amrmfab_fillpatch_two_faces_c(mf_u, mf_v, mf_w, time, &
+      &   t_old_c, mf_old_c_u, mf_old_c_v, mf_old_c_w, &
+      &   t_new_c, mf_new_c_u, mf_new_c_v, mf_new_c_w, geom_c, &
+      &   t_old_f, mf_old_f_u, mf_old_f_v, mf_old_f_w, &
+      &   t_new_f, mf_new_f_u, mf_new_f_v, mf_new_f_w, geom_f, &
+      &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
+      &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc) &
+      &   bind(c, name='amrmfab_fillpatch_two_faces')
+         import :: c_ptr, c_funptr, c_double, c_int
+         type(c_ptr), value :: mf_u, mf_v, mf_w
+         type(c_ptr), value :: mf_old_c_u, mf_old_c_v, mf_old_c_w
+         type(c_ptr), value :: mf_new_c_u, mf_new_c_v, mf_new_c_w
+         type(c_ptr), value :: mf_old_f_u, mf_old_f_v, mf_old_f_w
+         type(c_ptr), value :: mf_new_f_u, mf_new_f_v, mf_new_f_w
+         type(c_ptr), value :: geom_c, geom_f
+         type(c_ptr), value :: ctx_u, ctx_v, ctx_w
+         type(c_funptr), value :: bc_u, bc_v, bc_w
+         real(c_double), value :: time, t_old_c, t_new_c, t_old_f, t_new_f
+         integer(c_int), value :: scomp, dcomp, ncomp, ref_ratio, interp_type
+         integer(c_int), intent(in) :: lo_bc(*), hi_bc(*)
+      end subroutine amrmfab_fillpatch_two_faces_c
 
       !====================================================================
       ! Plotfile Output
@@ -311,6 +374,318 @@ module amrex_interface
          import :: c_int
       end function amrvismf_get_noutfiles
 
+      !====================================================================
+      ! MLMG Utilities (not available in AMReX Fortran interface)
+      !====================================================================
+
+      !> Get number of iterations from last MLMG solve
+      integer(c_int) function amrmlmg_get_niters(mlmg) bind(c)
+         import :: c_int,c_ptr
+         type(c_ptr), value :: mlmg
+      end function amrmlmg_get_niters
+
+      !> Get face-centered fluxes from MLMG using solver's C/F stencils
+      !> For (alpha*A - beta*div(B*grad))phi = rhs, flux = -B*grad(phi)
+      subroutine amrmlmg_get_fluxes(mlmg, sol_mfs, flux_x, flux_y, flux_z, nlevs) bind(c)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: mlmg
+         type(c_ptr), intent(in) :: sol_mfs(*)
+         type(c_ptr), intent(in) :: flux_x(*), flux_y(*), flux_z(*)
+         integer(c_int), value :: nlevs
+      end subroutine amrmlmg_get_fluxes
+
+      !====================================================================
+      ! MultiFab Averaging (C bindings - unified API for all 4 types)
+      ! Signature: (fine, crse, geom, ratio, ngcrse)
+      ! geom can be null (c_null_ptr) to skip periodic fix-up
+      !====================================================================
+
+      subroutine amrmfab_average_down_cell_c(fine_mf, crse_mf, crse_geom, ref_ratio, ngcrse) &
+         bind(c, name='amrmfab_average_down_cell')
+         import :: c_ptr, c_int
+         type(c_ptr), value :: fine_mf, crse_mf, crse_geom
+         integer(c_int), value :: ref_ratio, ngcrse
+      end subroutine amrmfab_average_down_cell_c
+
+      subroutine amrmfab_average_down_face_c(fine_mf, crse_mf, crse_geom, ref_ratio, ngcrse) &
+         bind(c, name='amrmfab_average_down_face')
+         import :: c_ptr, c_int
+         type(c_ptr), value :: fine_mf, crse_mf, crse_geom
+         integer(c_int), value :: ref_ratio, ngcrse
+      end subroutine amrmfab_average_down_face_c
+
+      subroutine amrmfab_average_down_edge_c(fine_mf, crse_mf, crse_geom, ref_ratio, ngcrse) &
+         bind(c, name='amrmfab_average_down_edge')
+         import :: c_ptr, c_int
+         type(c_ptr), value :: fine_mf, crse_mf, crse_geom
+         integer(c_int), value :: ref_ratio, ngcrse
+      end subroutine amrmfab_average_down_edge_c
+
+      subroutine amrmfab_average_down_node_c(fine_mf, crse_mf, crse_geom, ref_ratio, ngcrse) &
+         bind(c, name='amrmfab_average_down_node')
+         import :: c_ptr, c_int
+         type(c_ptr), value :: fine_mf, crse_mf, crse_geom
+         integer(c_int), value :: ref_ratio, ngcrse
+      end subroutine amrmfab_average_down_node_c
+
+      !> Compute divergence of face-centered velocity into cell-centered MultiFab
+      subroutine amrmfab_compute_divergence_c(divu, umac_x, umac_y, umac_z, geom) &
+         bind(c, name='amrmfab_compute_divergence')
+         import :: c_ptr
+         type(c_ptr), value :: divu, umac_x, umac_y, umac_z, geom
+      end subroutine amrmfab_compute_divergence_c
+
+      !> Sum MultiFab avoiding double-counting at shared nodes/faces (for periodic)
+      real(c_double) function amrmfab_sum_unique_c(mf, geom, comp) &
+         bind(c, name='amrmfab_sum_unique')
+         import :: c_ptr, c_double, c_int
+         type(c_ptr), value :: mf, geom
+         integer(c_int), value :: comp
+      end function amrmfab_sum_unique_c
+
+      !> Create mask identifying cells covered by finer level
+      subroutine amrmask_make_fine_c(mask, ba_fine, ref_ratio, covered_val, notcovered_val) &
+         bind(c, name='amrmask_make_fine')
+         import :: c_ptr, c_int
+         type(c_ptr), value :: mask, ba_fine
+         integer(c_int), intent(in) :: ref_ratio(3)
+         integer(c_int), value :: covered_val, notcovered_val
+      end subroutine amrmask_make_fine_c
+
    end interface
 
+contains
+
+   !====================================================================
+   ! MultiFab Averaging Wrappers (Unified API)
+   ! All 4 types have identical signature:
+   !   (fmf, cmf, rr, cgeom, ngcrse)
+   ! cgeom and ngcrse are optional. If cgeom provided, FillBoundary is
+   ! called in C++ for periodic ghost fix-up.
+   !====================================================================
+
+   !> Average down cell-centered MultiFab
+   subroutine amrmfab_average_down_cell(fmf, cmf, rr, cgeom, ngcrse)
+      use iso_c_binding, only: c_null_ptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(in) :: fmf
+      type(amrex_multifab), intent(inout) :: cmf
+      integer, intent(in) :: rr
+      type(amrex_geometry), intent(in), optional :: cgeom
+      integer, intent(in), optional :: ngcrse
+      integer :: ng
+      ng = 0; if (present(ngcrse)) ng = ngcrse
+      if (present(cgeom)) then
+         call amrmfab_average_down_cell_c(fmf%p, cmf%p, cgeom%p, rr, ng)
+      else
+         call amrmfab_average_down_cell_c(fmf%p, cmf%p, c_null_ptr, rr, ng)
+      end if
+   end subroutine amrmfab_average_down_cell
+
+   !> Average down face-centered MultiFab (nodal in 1 dir, cell in 2)
+   subroutine amrmfab_average_down_face(fmf, cmf, rr, cgeom, ngcrse)
+      use iso_c_binding, only: c_null_ptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(in) :: fmf
+      type(amrex_multifab), intent(inout) :: cmf
+      integer, intent(in) :: rr
+      type(amrex_geometry), intent(in), optional :: cgeom
+      integer, intent(in), optional :: ngcrse
+      integer :: ng
+      ng = 0; if (present(ngcrse)) ng = ngcrse
+      if (present(cgeom)) then
+         call amrmfab_average_down_face_c(fmf%p, cmf%p, cgeom%p, rr, ng)
+      else
+         call amrmfab_average_down_face_c(fmf%p, cmf%p, c_null_ptr, rr, ng)
+      end if
+   end subroutine amrmfab_average_down_face
+
+   !> Average down edge-centered MultiFab (nodal in 2 dirs, cell in 1)
+   subroutine amrmfab_average_down_edge(fmf, cmf, rr, cgeom, ngcrse)
+      use iso_c_binding, only: c_null_ptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(in) :: fmf
+      type(amrex_multifab), intent(inout) :: cmf
+      integer, intent(in) :: rr
+      type(amrex_geometry), intent(in), optional :: cgeom
+      integer, intent(in), optional :: ngcrse
+      integer :: ng
+      ng = 0; if (present(ngcrse)) ng = ngcrse
+      if (present(cgeom)) then
+         call amrmfab_average_down_edge_c(fmf%p, cmf%p, cgeom%p, rr, ng)
+      else
+         call amrmfab_average_down_edge_c(fmf%p, cmf%p, c_null_ptr, rr, ng)
+      end if
+   end subroutine amrmfab_average_down_edge
+
+   !> Average down node-centered MultiFab (nodal in all dirs)
+   subroutine amrmfab_average_down_node(fmf, cmf, rr, cgeom, ngcrse)
+      use iso_c_binding, only: c_null_ptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(in) :: fmf
+      type(amrex_multifab), intent(inout) :: cmf
+      integer, intent(in) :: rr
+      type(amrex_geometry), intent(in), optional :: cgeom
+      integer, intent(in), optional :: ngcrse
+      integer :: ng
+      ng = 0; if (present(ngcrse)) ng = ngcrse
+      if (present(cgeom)) then
+         call amrmfab_average_down_node_c(fmf%p, cmf%p, cgeom%p, rr, ng)
+      else
+         call amrmfab_average_down_node_c(fmf%p, cmf%p, c_null_ptr, rr, ng)
+      end if
+   end subroutine amrmfab_average_down_node
+
+   !> Compute divergence of face-centered velocity into cell-centered MultiFab
+   subroutine amrmfab_compute_divergence(divu, umac_x, umac_y, umac_z, geom)
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(inout) :: divu
+      type(amrex_multifab), intent(in) :: umac_x, umac_y, umac_z
+      type(amrex_geometry), intent(in) :: geom
+      call amrmfab_compute_divergence_c(divu%p, umac_x%p, umac_y%p, umac_z%p, geom%p)
+   end subroutine amrmfab_compute_divergence
+
+   !> Sum MultiFab avoiding double-counting at shared nodes/faces (for periodic)
+   function amrmfab_sum_unique(mf, geom, comp) result(val)
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      use precision, only: WP
+      type(amrex_multifab), intent(in) :: mf
+      type(amrex_geometry), intent(in) :: geom
+      integer, intent(in), optional :: comp
+      real(WP) :: val
+      integer :: ic
+      ic = 1; if (present(comp)) ic = comp
+      val = amrmfab_sum_unique_c(mf%p, geom%p, ic)
+   end function amrmfab_sum_unique
+
+   !> Create integer mask identifying cells covered by finer level
+   !> mask must already be built with same BA/DM as coarse level
+   !> After call: mask(i,j,k) = notcovered_val where valid, covered_val where fine exists
+   subroutine amrmask_make_fine(mask, ba_fine, ref_ratio, covered_val, notcovered_val)
+      use amrex_multifab_module, only: amrex_imultifab
+      use amrex_boxarray_module, only: amrex_boxarray
+      type(amrex_imultifab), intent(inout) :: mask
+      type(amrex_boxarray), intent(in) :: ba_fine
+      integer, intent(in) :: ref_ratio(3)
+      integer, intent(in) :: covered_val, notcovered_val
+      call amrmask_make_fine_c(mask%p, ba_fine%p, ref_ratio, covered_val, notcovered_val)
+   end subroutine amrmask_make_fine
+
+   !> Fill coarse patch for 3-component face-centered velocity
+   subroutine amrmfab_fillcoarsepatch_faces(mf_u, mf_v, mf_w, time, &
+   &   cmf_u, cmf_v, cmf_w, geom_c, geom_f, &
+   &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
+   &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc)
+      use iso_c_binding, only: c_ptr, c_funptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(inout) :: mf_u, mf_v, mf_w
+      type(amrex_multifab), intent(in) :: cmf_u, cmf_v, cmf_w
+      type(amrex_geometry), intent(in) :: geom_c, geom_f
+      type(c_ptr), intent(in) :: ctx_u, ctx_v, ctx_w
+      type(c_funptr), intent(in) :: bc_u, bc_v, bc_w
+      real(8), intent(in) :: time
+      integer, intent(in) :: scomp, dcomp, ncomp, ref_ratio, interp_type
+      integer, intent(in) :: lo_bc(*), hi_bc(*)
+      call amrmfab_fillcoarsepatch_faces_c(mf_u%p, mf_v%p, mf_w%p, time, &
+      &   cmf_u%p, cmf_v%p, cmf_w%p, geom_c%p, geom_f%p, &
+      &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
+      &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc)
+   end subroutine amrmfab_fillcoarsepatch_faces
+
+   !> FillPatch for 3-component face-centered velocity from two levels
+   subroutine amrmfab_fillpatch_two_faces(mf_u, mf_v, mf_w, time, &
+   &   t_old_c, mf_old_c_u, mf_old_c_v, mf_old_c_w, &
+   &   t_new_c, mf_new_c_u, mf_new_c_v, mf_new_c_w, geom_c, &
+   &   t_old_f, mf_old_f_u, mf_old_f_v, mf_old_f_w, &
+   &   t_new_f, mf_new_f_u, mf_new_f_v, mf_new_f_w, geom_f, &
+   &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
+   &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc)
+      use iso_c_binding, only: c_ptr, c_funptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(inout) :: mf_u, mf_v, mf_w
+      type(amrex_multifab), intent(in) :: mf_old_c_u, mf_old_c_v, mf_old_c_w
+      type(amrex_multifab), intent(in) :: mf_new_c_u, mf_new_c_v, mf_new_c_w
+      type(amrex_multifab), intent(in) :: mf_old_f_u, mf_old_f_v, mf_old_f_w
+      type(amrex_multifab), intent(in) :: mf_new_f_u, mf_new_f_v, mf_new_f_w
+      type(amrex_geometry), intent(in) :: geom_c, geom_f
+      type(c_ptr), intent(in) :: ctx_u, ctx_v, ctx_w
+      type(c_funptr), intent(in) :: bc_u, bc_v, bc_w
+      real(8), intent(in) :: time, t_old_c, t_new_c, t_old_f, t_new_f
+      integer, intent(in) :: scomp, dcomp, ncomp, ref_ratio, interp_type
+      integer, intent(in) :: lo_bc(*), hi_bc(*)
+      call amrmfab_fillpatch_two_faces_c(mf_u%p, mf_v%p, mf_w%p, time, &
+      &   t_old_c, mf_old_c_u%p, mf_old_c_v%p, mf_old_c_w%p, &
+      &   t_new_c, mf_new_c_u%p, mf_new_c_v%p, mf_new_c_w%p, geom_c%p, &
+      &   t_old_f, mf_old_f_u%p, mf_old_f_v%p, mf_old_f_w%p, &
+      &   t_new_f, mf_new_f_u%p, mf_new_f_v%p, mf_new_f_w%p, geom_f%p, &
+      &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
+      &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc)
+   end subroutine amrmfab_fillpatch_two_faces
+
+   !> FillPatch for level 0 (single level, physical BCs only)
+   subroutine amrmfab_fillpatch_single(mf, t_old, mf_old, t_new, mf_new, &
+   &   geom, solver_ctx, bc_dispatch, time, scomp, dcomp, ncomp)
+      use iso_c_binding, only: c_ptr, c_funptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(inout) :: mf
+      type(amrex_multifab), intent(in) :: mf_old, mf_new
+      type(amrex_geometry), intent(in) :: geom
+      type(c_ptr), intent(in) :: solver_ctx
+      type(c_funptr), intent(in) :: bc_dispatch
+      real(8), intent(in) :: t_old, t_new, time
+      integer, intent(in) :: scomp, dcomp, ncomp
+      call amrmfab_fillpatch_single_c(mf%p, t_old, mf_old%p, t_new, mf_new%p, &
+      &   geom%p, solver_ctx, bc_dispatch, time, scomp, dcomp, ncomp)
+   end subroutine amrmfab_fillpatch_single
+
+   !> FillPatch for fine levels (two-level interpolation + BCs)
+   subroutine amrmfab_fillpatch_two(mf, t_old_c, mf_old_c, t_new_c, mf_new_c, geom_c, &
+   &   t_old_f, mf_old_f, t_new_f, mf_new_f, geom_f, solver_ctx, bc_dispatch, &
+   &   time, scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc, nbc)
+      use iso_c_binding, only: c_ptr, c_funptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(inout) :: mf
+      type(amrex_multifab), intent(in) :: mf_old_c, mf_new_c, mf_old_f, mf_new_f
+      type(amrex_geometry), intent(in) :: geom_c, geom_f
+      type(c_ptr), intent(in) :: solver_ctx
+      type(c_funptr), intent(in) :: bc_dispatch
+      real(8), intent(in) :: t_old_c, t_new_c, t_old_f, t_new_f, time
+      integer, intent(in) :: scomp, dcomp, ncomp, ref_ratio, interp_type, nbc
+      integer, intent(in) :: lo_bc(*), hi_bc(*)
+      call amrmfab_fillpatch_two_c(mf%p, t_old_c, mf_old_c%p, t_new_c, mf_new_c%p, &
+      &   geom_c%p, t_old_f, mf_old_f%p, t_new_f, mf_new_f%p, geom_f%p, &
+      &   solver_ctx, bc_dispatch, time, scomp, dcomp, ncomp, ref_ratio, &
+      &   interp_type, lo_bc, hi_bc, nbc)
+   end subroutine amrmfab_fillpatch_two
+
+   !> FillCoarsePatch - fill fine level from coarse only (for new levels)
+   subroutine amrmfab_fillcoarsepatch(mf_f, time, mf_c, geom_c, geom_f, solver_ctx, &
+   &   bc_dispatch, scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc, nbc)
+      use iso_c_binding, only: c_ptr, c_funptr
+      use amrex_multifab_module, only: amrex_multifab
+      use amrex_geometry_module, only: amrex_geometry
+      type(amrex_multifab), intent(inout) :: mf_f
+      type(amrex_multifab), intent(in) :: mf_c
+      type(amrex_geometry), intent(in) :: geom_c, geom_f
+      type(c_ptr), intent(in) :: solver_ctx
+      type(c_funptr), intent(in) :: bc_dispatch
+      real(8), intent(in) :: time
+      integer, intent(in) :: scomp, dcomp, ncomp, ref_ratio, interp_type, nbc
+      integer, intent(in) :: lo_bc(*), hi_bc(*)
+      call amrmfab_fillcoarsepatch_c(mf_f%p, time, mf_c%p, geom_c%p, geom_f%p, &
+      &   solver_ctx, bc_dispatch, scomp, dcomp, ncomp, ref_ratio, interp_type, &
+      &   lo_bc, hi_bc, nbc)
+   end subroutine amrmfab_fillcoarsepatch
+
 end module amrex_interface
+

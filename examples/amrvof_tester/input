@@ -1,0 +1,11 @@
+# Select which test to run: geometry, plic, all
+Test: plic
+
+# Mesh parameters
+Base nx: 32
+Base ny: 32
+Base nz: 32
+Max level: 2
+
+# Sphere parameters (for plic test)
+Sphere radius: 0.25

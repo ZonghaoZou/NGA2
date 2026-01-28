@@ -13,12 +13,17 @@ module amrgrid_class
    ! Expose type/constructor/methods
    public :: amrgrid
 
-   !> Abstract interface for user-provided tagging callback
+   ! Tag constants for use in tagging callbacks (match AMReX TagBox::TagVal enum)
+   character(kind=c_char), parameter, public :: CLRtag = char(0)  !< Clear tag
+   character(kind=c_char), parameter, public :: SETtag = char(2)  !< Set tag
+
+   !> Abstract interface for user-provided tagging callback (with context)
    abstract interface
-      subroutine tagging_callback(lvl,tags,time)
+      subroutine tagging_callback(ctx,lvl,tags,time)
          use iso_c_binding, only: c_ptr
          use precision, only: WP
          implicit none
+         type(c_ptr), intent(in) :: ctx   !< User context pointer
          integer, intent(in) :: lvl
          type(c_ptr), intent(in) :: tags  !< amrex_tagboxarray C pointer
          real(WP), intent(in) :: time
@@ -26,11 +31,15 @@ module amrgrid_class
    end interface
 
    !> Abstract interface for post-regrid callback (with context)
+   !> Called after regrid completes; receives lbase (base level) and time
    abstract interface
-      subroutine postregrid_callback(ctx)
+      subroutine postregrid_callback(ctx,lbase,time)
          use iso_c_binding, only: c_ptr
+         use precision, only: WP
          implicit none
          type(c_ptr), intent(in) :: ctx
+         integer, intent(in) :: lbase
+         real(WP), intent(in) :: time
       end subroutine postregrid_callback
    end interface
 
@@ -62,6 +71,7 @@ module amrgrid_class
    ! Wrappers for callback lists
    type :: tagger_wrapper
       procedure(tagging_callback), pointer, nopass :: f=>null()
+      type(c_ptr) :: ctx=c_null_ptr
    end type tagger_wrapper
    type :: postregrid_wrapper
       procedure(postregrid_callback), pointer, nopass :: f=>null()
@@ -82,12 +92,10 @@ module amrgrid_class
       character(len=str_medium) :: name='UNNAMED_AMRGRID'
       ! Pointer to AMReX's amrcore object
       type(c_ptr) :: amrcore=c_null_ptr
-      ! Self-pointer for C interop (set early before `this` becomes polymorphic)
-      type(c_ptr), private :: self_ptr=c_null_ptr
       ! Coordinate system
       integer :: coordsys=0
       ! Domain periodicity
-      logical :: xper,yper,zper
+      logical :: xper=.false., yper=.false., zper=.false.
       ! Domain extent
       real(WP) :: xlo,ylo,zlo
       real(WP) :: xhi,yhi,zhi
@@ -118,6 +126,9 @@ module amrgrid_class
       integer  :: nboxes =-1            !< Current total number of boxes
       real(WP) :: ncells =-1.0_WP       !< Current total number of cells (real!)
       real(WP) :: compression=-1.0_WP   !< Current compression ratio (ncells/total cells with uniform mesh)
+      real(WP) :: maxRSS=-1.0_WP        !< Maximum RSS
+      real(WP) :: minRSS=-1.0_WP        !< Minimum RSS
+      real(WP) :: avgRSS=-1.0_WP        !< Average RSS
       ! Level callback lists (solvers register their handlers)
       type(level_cb_wrapper), dimension(:), allocatable :: on_init
       type(level_cb_wrapper), dimension(:), allocatable :: on_coarse
@@ -126,10 +137,12 @@ module amrgrid_class
       ! Tagging and post-regrid callback lists
       type(tagger_wrapper), dimension(:), allocatable :: taggers
       type(postregrid_wrapper), dimension(:), allocatable :: postregrid_funcs
+      ! Default tiling for mfiter_build
+      logical :: default_tiling = .true.
    contains
       procedure :: initialize                !< Initialization of amrgrid object
       procedure :: finalize                  !< Finalization of amrgrid object
-      procedure :: initialize_grid           !< Initialize data on armgrid according to registered function
+      procedure :: init_from_scratch         !< Initialize data on armgrid according to registered function
       procedure :: regrid                    !< Perform regriding operation on level baselvl
       procedure :: get_info                  !< Calculate various information on our amrgrid object
       procedure :: print                     !< Print out grid info
@@ -139,20 +152,21 @@ module amrgrid_class
       procedure :: add_on_remake             !< Add remake level callback
       procedure :: add_on_clear              !< Add clear level callback
       procedure :: clear_level_callbacks     !< Clear all level callbacks
-
+      ! Tagging and post-regrid registers
+      procedure :: add_tagging               !< Add a tagging callback
+      procedure :: add_postregrid            !< Add a post-regrid callback
+      procedure :: clear_tagging             !< Clear all tagging callbacks
+      procedure :: clear_postregrid          !< Clear all post-regrid callbacks
+      ! Various tools and accessors
       procedure :: get_boxarray              !< Obtain box array at a given level
       procedure :: get_distromap             !< Obtain distromap at a given level
-
+      procedure :: ba => get_boxarray        !< Short alias for get_boxarray
+      procedure :: dm => get_distromap       !< Short alias for get_distromap
       procedure :: mfiter_build              !< Build mfiter at a given level
       procedure :: mfiter_destroy            !< Destroy mfiter
       procedure :: clvl                      !< Return current finest level
       procedure :: mfab_build                !< Build multifab at a given level
       procedure :: mfab_destroy              !< Destroy multifab
-      procedure :: add_tagging               !< Add a tagging callback
-      procedure :: add_postregrid            !< Add a post-regrid callback
-      procedure :: clear_tagging             !< Clear all tagging callbacks
-      procedure :: clear_postregrid          !< Clear all post-regrid callbacks
-      procedure :: init_from_scratch         !< Build all levels by looping regrid
    end type amrgrid
 
    ! Instance counter for automated AMReX lifecycle management
@@ -164,6 +178,7 @@ contains
    !> Initialization of an amrgrid object
    subroutine initialize(this,name)
       use messager, only: die
+      use param,    only: verbose
       implicit none
       class(amrgrid), target, intent(inout) :: this
       character(len=*), intent(in), optional :: name
@@ -218,9 +233,8 @@ contains
          ! Set owner pointer - use select type to get c_loc of concrete type
          select type (this)
           type is (amrgrid)
-            this%self_ptr=c_loc(this)
+            call amrcore_set_owner(this%amrcore, c_loc(this))
          end select
-         call amrcore_set_owner(this%amrcore,this%self_ptr)
          call amrcore_set_on_init_dispatch(this%amrcore,c_funloc(dispatch_mak_lvl_init))
          call amrcore_set_on_coarse_dispatch(this%amrcore,c_funloc(dispatch_mak_lvl_crse))
          call amrcore_set_on_remake_dispatch(this%amrcore,c_funloc(dispatch_mak_lvl_remk))
@@ -269,6 +283,8 @@ contains
          ! Smallest mesh size
          this%min_meshsize=min(this%dx(this%maxlvl),this%dy(this%maxlvl),this%dz(this%maxlvl))
       end block compute_shortcuts
+      ! Print info
+      if (verbose.gt.1) call this%print()
    end subroutine initialize
 
 
@@ -307,6 +323,239 @@ contains
       end block auto_finalize
    end subroutine finalize
 
+   !> Initialize grid hierarchy from scratch using AMReX's native init
+   !> This calls MakeNewLevelFromScratch for ALL levels (triggers on_init callbacks)
+   !> If do_postregrid=.true. (default), fires post-regrid callbacks after init
+   subroutine init_from_scratch(this, time, do_postregrid)
+      use iso_c_binding, only: c_loc
+      use amrex_interface, only: amrcore_init_from_scratch
+      implicit none
+      class(amrgrid), target, intent(inout) :: this
+      real(WP), intent(in) :: time
+      logical, intent(in), optional :: do_postregrid
+      logical :: fire_postregrid
+      ! Default: fire post-regrid callbacks
+      fire_postregrid = .true.
+      if (present(do_postregrid)) fire_postregrid = do_postregrid
+      ! Use AMReX's native init_from_scratch which properly builds all levels
+      call amrcore_init_from_scratch(this%amrcore, time)
+      ! Optionally fire post-regrid callbacks (for average_down, etc.)
+      if (fire_postregrid) then
+         select type (this)
+          type is (amrgrid)
+            call dispatch_postregrid(c_loc(this), 0, time)
+         end select
+      end if
+      ! Generate info about grid
+      call this%get_info()
+   end subroutine init_from_scratch
+
+
+   !> Perform regriding operation on baselvl
+   subroutine regrid(this,baselvl,time)
+      use amrex_interface, only: amrcore_regrid
+      implicit none
+      class(amrgrid), target, intent(inout) :: this
+      integer,  intent(in) :: baselvl
+      real(WP), intent(in) :: time
+      ! Regenerate grid and resize/transfer data
+      call amrcore_regrid(this%amrcore,baselvl,time)
+      ! Generate info about grid
+      call this%get_info()
+   end subroutine regrid
+
+   !> Get info on amrgrid object
+   subroutine get_info(this)
+      use amrex_amr_module, only: amrex_boxarray,amrex_box
+      use resource_tracker, only: getRSS,maxRSS,minRSS,avgRSS
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      type(amrex_boxarray) :: ba
+      type(amrex_box)      :: bx
+      integer :: n,m,nb
+      integer, dimension(3) :: lo,hi
+      ! Update number of levels
+      this%nlevels=this%clvl()+1
+      ! Update number of boxes and cells
+      this%nboxes=0
+      this%ncells=0.0_WP
+      do n=0,this%clvl()
+         ! Get boxarray
+         ba=this%get_boxarray(lvl=n)
+         ! Increment boxes
+         nb=int(ba%nboxes())
+         this%nboxes=this%nboxes+nb
+         ! Traverse boxes and count cells
+         do m=1,nb
+            ! Get box
+            bx=ba%get_box(m-1)
+            ! Increment cells
+            this%ncells=this%ncells+real((bx%hi(1)-bx%lo(1)+1),WP)*&
+            &                       real((bx%hi(2)-bx%lo(2)+1),WP)*&
+            &                       real((bx%hi(3)-bx%lo(3)+1),WP)
+         end do
+      end do
+      ! Update compression ratio
+      this%compression=this%geom(this%clvl())%dx(1)*&
+      &                this%geom(this%clvl())%dx(2)*&
+      &                this%geom(this%clvl())%dx(3)*&
+      &                this%ncells/((this%xhi-this%xlo)*(this%yhi-this%ylo)*(this%zhi-this%zlo))
+      ! Check memory usage
+      call getRSS()
+      this%maxRSS=maxRSS
+      this%minRSS=minRSS
+      this%avgRSS=avgRSS
+   end subroutine get_info
+
+
+   !> Print amrgrid object
+   subroutine print(this)
+      use, intrinsic :: iso_fortran_env, only: output_unit
+      use amrex_amr_module, only: amrex_boxarray,amrex_box
+      use parallel, only: amRoot
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      type(amrex_boxarray) :: ba
+      type(amrex_box)      :: bx
+      integer :: n,m,nb
+      integer, dimension(3) :: lo,hi
+      if (this%amRoot) then
+         write(output_unit,'("AMR Cartesian grid [",a,"]")') trim(this%name)
+         write(output_unit,'(" > amr level = ",i2)') this%clvl()
+         write(output_unit,'(" > max level = ",i2)') this%maxlvl
+         if (allocated(this%rref)) write(output_unit,'(" > ref ratio = ",100(" ",i0))') this%rref
+         write(output_unit,'(" >    extent = [",es12.5,",",es12.5,"]x[",es12.5,",",es12.5,"]x[",es12.5,",",es12.5,"]")') this%xlo,this%xhi,this%ylo,this%yhi,this%zlo,this%zhi
+         write(output_unit,'(" >  periodic = ",l1,"x",l1,"x",l1)') this%xper,this%yper,this%zper
+         ! Loop over levels
+         do n=0,this%clvl()
+            ! Get boxarray at that level
+            ba=this%get_boxarray(lvl=n)
+            write(output_unit,'(" >>> Level ",i2,"/",i2," with [dx =",es12.5,",dy =",es12.5,",dz =",es12.5,"]")') n,this%clvl(),this%geom(n)%dx(1),this%geom(n)%dx(2),this%geom(n)%dx(3)
+            ! Loop over boxes
+            nb=int(ba%nboxes())
+            do m=1,nb
+               bx=ba%get_box(m-1)
+               write(output_unit,'(" >>> Box ",i0,"/",i0," from [",i3,",",i3,",",i3,"] to [",i3,",",i3,",",i3,"]")') m,nb,bx%lo,bx%hi
+            end do
+         end do
+      end if
+   end subroutine print
+
+
+   ! --- STATIC DISPATCHERS (bind(c)) ---
+   ! These receive calls from C++ with the owner pointer
+   subroutine dispatch_mak_lvl_init(owner,lvl,time,ba,dm) bind(c)
+      use iso_c_binding, only: c_ptr,c_int,c_double,c_f_pointer
+      implicit none
+      type(c_ptr), value, intent(in) :: owner
+      integer(c_int), value, intent(in) :: lvl
+      real(c_double), value, intent(in) :: time
+      type(c_ptr), value, intent(in) :: ba,dm
+      type(amrex_boxarray) :: ba_obj
+      type(amrex_distromap) :: dm_obj
+      type(amrgrid), pointer :: this_grid
+      integer :: i
+      call c_f_pointer(owner,this_grid)
+      ba_obj=ba
+      dm_obj=dm
+      if (allocated(this_grid%on_init)) then
+         do i=1,size(this_grid%on_init)
+            call this_grid%on_init(i)%f(this_grid%on_init(i)%ctx,int(lvl),real(time,WP),ba_obj,dm_obj)
+         end do
+      end if
+   end subroutine dispatch_mak_lvl_init
+
+   subroutine dispatch_mak_lvl_crse(owner,lvl,time,ba,dm) bind(c)
+      use iso_c_binding, only: c_ptr,c_int,c_double,c_f_pointer
+      implicit none
+      type(c_ptr), value, intent(in) :: owner
+      integer(c_int), value, intent(in) :: lvl
+      real(c_double), value, intent(in) :: time
+      type(c_ptr), value, intent(in) :: ba,dm
+      type(amrex_boxarray) :: ba_obj
+      type(amrex_distromap) :: dm_obj
+      type(amrgrid), pointer :: this_grid
+      integer :: i
+      call c_f_pointer(owner,this_grid)
+      ba_obj=ba
+      dm_obj=dm
+      if (allocated(this_grid%on_coarse)) then
+         do i=1,size(this_grid%on_coarse)
+            call this_grid%on_coarse(i)%f(this_grid%on_coarse(i)%ctx,int(lvl),real(time,WP),ba_obj,dm_obj)
+         end do
+      end if
+   end subroutine dispatch_mak_lvl_crse
+
+   subroutine dispatch_mak_lvl_remk(owner,lvl,time,ba,dm) bind(c)
+      use iso_c_binding, only: c_ptr,c_int,c_double,c_f_pointer
+      implicit none
+      type(c_ptr), value, intent(in) :: owner
+      integer(c_int), value, intent(in) :: lvl
+      real(c_double), value, intent(in) :: time
+      type(c_ptr), value, intent(in) :: ba,dm
+      type(amrex_boxarray) :: ba_obj
+      type(amrex_distromap) :: dm_obj
+      type(amrgrid), pointer :: this_grid
+      integer :: i
+      call c_f_pointer(owner,this_grid)
+      ba_obj=ba
+      dm_obj=dm
+      if (allocated(this_grid%on_remake)) then
+         do i=1,size(this_grid%on_remake)
+            call this_grid%on_remake(i)%f(this_grid%on_remake(i)%ctx,int(lvl),real(time,WP),ba_obj,dm_obj)
+         end do
+      end if
+   end subroutine dispatch_mak_lvl_remk
+
+   subroutine dispatch_clr_lvl(owner,lvl) bind(c)
+      use iso_c_binding, only: c_ptr,c_int,c_f_pointer
+      implicit none
+      type(c_ptr), value, intent(in) :: owner
+      integer(c_int), value, intent(in) :: lvl
+      type(amrgrid), pointer :: this_grid
+      integer :: i
+      call c_f_pointer(owner,this_grid)
+      if (allocated(this_grid%on_clear)) then
+         do i=1,size(this_grid%on_clear)
+            call this_grid%on_clear(i)%f(this_grid%on_clear(i)%ctx,int(lvl))
+         end do
+      end if
+   end subroutine dispatch_clr_lvl
+
+   subroutine dispatch_err_est(owner, lvl, tags, time) bind(c)
+      use iso_c_binding, only: c_ptr, c_int, c_double, c_f_pointer
+      implicit none
+      type(c_ptr), value, intent(in) :: owner
+      integer(c_int), value, intent(in) :: lvl
+      type(c_ptr), value, intent(in) :: tags
+      real(c_double), value, intent(in) :: time
+      type(amrgrid), pointer :: this_grid
+      integer :: i
+      call c_f_pointer(owner,this_grid)
+      ! Call all registered tagging callbacks with their context
+      if (allocated(this_grid%taggers)) then
+         do i=1,size(this_grid%taggers)
+            call this_grid%taggers(i)%f(this_grid%taggers(i)%ctx, int(lvl), tags, real(time, WP))
+         end do
+      end if
+   end subroutine dispatch_err_est
+
+   subroutine dispatch_postregrid(owner, lbase, time) bind(c)
+      use iso_c_binding, only: c_ptr, c_int, c_double, c_f_pointer
+      implicit none
+      type(c_ptr), value, intent(in) :: owner
+      integer(c_int), value, intent(in) :: lbase
+      real(c_double), value, intent(in) :: time
+      type(amrgrid), pointer :: this_grid
+      integer :: i
+      call c_f_pointer(owner,this_grid)
+      ! Call all registered post-regrid callbacks with their context
+      if (allocated(this_grid%postregrid_funcs)) then
+         do i=1,size(this_grid%postregrid_funcs)
+            call this_grid%postregrid_funcs(i)%f(this_grid%postregrid_funcs(i)%ctx, int(lbase), real(time, WP))
+         end do
+      end if
+   end subroutine dispatch_postregrid
 
    !> Add a level init callback (called for MakeNewLevelFromScratch)
    subroutine add_on_init(this,callback,ctx)
@@ -410,102 +659,65 @@ contains
       if (allocated(this%on_clear))  deallocate(this%on_clear)
    end subroutine clear_level_callbacks
 
-   !> Initialize grid on an amrgrid object
-   subroutine initialize_grid(this,time)
-      use amrex_interface, only: amrcore_init_from_scratch
-      implicit none
-      class(amrgrid), target, intent(inout) :: this
-      real(WP), intent(in) :: time
-      ! Generate grid and allocate data
-      call amrcore_init_from_scratch(this%amrcore,time)
-      ! Generate info about grid
-      call this%get_info()
-   end subroutine initialize_grid
-
-
-   !> Perform regriding operation on baselvl
-   subroutine regrid(this,baselvl,time)
-      use amrex_interface, only: amrcore_regrid
-      implicit none
-      class(amrgrid), target, intent(inout) :: this
-      integer,  intent(in) :: baselvl
-      real(WP), intent(in) :: time
-      ! Regenerate grid and resize/transfer data
-      call amrcore_regrid(this%amrcore,baselvl,time)
-      ! Generate info about grid
-      call this%get_info()
-   end subroutine regrid
-
-   !> Get info on amrgrid object
-   subroutine get_info(this)
-      use amrex_amr_module, only: amrex_boxarray,amrex_box
+   !> Add a tagging callback to the list (with context)
+   subroutine add_tagging(this,tagger,ctx)
+      use iso_c_binding, only: c_ptr
       implicit none
       class(amrgrid), intent(inout) :: this
-      type(amrex_boxarray) :: ba
-      type(amrex_box)      :: bx
-      integer :: n,m,nb
-      integer, dimension(3) :: lo,hi
-      ! Update number of levels
-      this%nlevels=this%clvl()+1
-      ! Update number of boxes and cells
-      this%nboxes=0
-      this%ncells=0.0_WP
-      do n=0,this%clvl()
-         ! Get boxarray
-         ba=this%get_boxarray(lvl=n)
-         ! Increment boxes
-         nb=int(ba%nboxes())
-         this%nboxes=this%nboxes+nb
-         ! Traverse boxes and count cells
-         do m=1,nb
-            ! Get box
-            bx=ba%get_box(m-1)
-            ! Increment cells
-            this%ncells=this%ncells+real((bx%hi(1)-bx%lo(1)+1),WP)*&
-            &                       real((bx%hi(2)-bx%lo(2)+1),WP)*&
-            &                       real((bx%hi(3)-bx%lo(3)+1),WP)
-         end do
-      end do
-      ! Update compression ratio
-      this%compression=this%geom(this%clvl())%dx(1)*&
-      &                this%geom(this%clvl())%dx(2)*&
-      &                this%geom(this%clvl())%dx(3)*&
-      &                this%ncells/((this%xhi-this%xlo)*(this%yhi-this%ylo)*(this%zhi-this%zlo))
-   end subroutine get_info
-
-
-   !> Print amrgrid object
-   subroutine print(this)
-      use, intrinsic :: iso_fortran_env, only: output_unit
-      use amrex_amr_module, only: amrex_boxarray,amrex_box
-      use parallel, only: amRoot
-      implicit none
-      class(amrgrid), intent(inout) :: this
-      type(amrex_boxarray) :: ba
-      type(amrex_box)      :: bx
-      integer :: n,m,nb
-      integer, dimension(3) :: lo,hi
-      if (this%amRoot) then
-         write(output_unit,'("AMR Cartesian grid [",a,"]")') trim(this%name)
-         write(output_unit,'(" > amr level = ",i2)') this%clvl()
-         write(output_unit,'(" > max level = ",i2)') this%maxlvl
-         if (allocated(this%rref)) write(output_unit,'(" > ref ratio = ",100(" ",i0))') this%rref
-         write(output_unit,'(" >    extent = [",es12.5,",",es12.5,"]x[",es12.5,",",es12.5,"]x[",es12.5,",",es12.5,"]")') this%xlo,this%xhi,this%ylo,this%yhi,this%zlo,this%zhi
-         write(output_unit,'(" >  periodic = ",l1,"x",l1,"x",l1)') this%xper,this%yper,this%zper
-         ! Loop over levels
-         do n=0,this%clvl()
-            ! Get boxarray at that level
-            ba=this%get_boxarray(lvl=n)
-            write(output_unit,'(" >>> Level ",i2,"/",i2," with [dx =",es12.5,",dy =",es12.5,",dz =",es12.5,"]")') n,this%clvl(),this%geom(n)%dx(1),this%geom(n)%dx(2),this%geom(n)%dx(3)
-            ! Loop over boxes
-            nb=int(ba%nboxes())
-            do m=1,nb
-               bx=ba%get_box(m-1)
-               write(output_unit,'(" >>> Box ",i0,"/",i0," from [",i3,",",i3,",",i3,"] to [",i3,",",i3,",",i3,"]")') m,nb,bx%lo,bx%hi
-            end do
-         end do
+      procedure(tagging_callback) :: tagger
+      type(c_ptr), intent(in) :: ctx
+      type(tagger_wrapper), dimension(:), allocatable :: tmp
+      integer :: n
+      if (allocated(this%taggers)) then
+         n=size(this%taggers)
+         allocate(tmp(n+1))
+         tmp(1:n)=this%taggers
+         tmp(n+1)%f=>tagger
+         tmp(n+1)%ctx=ctx
+         call move_alloc(tmp,this%taggers)
+      else
+         allocate(this%taggers(1))
+         this%taggers(1)%f=>tagger
+         this%taggers(1)%ctx=ctx
       end if
-   end subroutine print
+   end subroutine add_tagging
+
+   !> Clear all tagging callbacks
+   subroutine clear_tagging(this)
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      if (allocated(this%taggers)) deallocate(this%taggers)
+   end subroutine clear_tagging
+
+   !> Add a post-regrid callback to the list
+   subroutine add_postregrid(this,callback,ctx)
+      use iso_c_binding, only: c_ptr
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      procedure(postregrid_callback) :: callback
+      type(c_ptr), intent(in) :: ctx
+      type(postregrid_wrapper), dimension(:), allocatable :: tmp
+      integer :: n
+      if (allocated(this%postregrid_funcs)) then
+         n=size(this%postregrid_funcs)
+         allocate(tmp(n+1))
+         tmp(1:n)=this%postregrid_funcs
+         tmp(n+1)%f=>callback
+         tmp(n+1)%ctx=ctx
+         call move_alloc(tmp,this%postregrid_funcs)
+      else
+         allocate(this%postregrid_funcs(1))
+         this%postregrid_funcs(1)%f=>callback
+         this%postregrid_funcs(1)%ctx=ctx
+      end if
+   end subroutine add_postregrid
+
+   !> Clear all post-regrid callbacks
+   subroutine clear_postregrid(this)
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      if (allocated(this%postregrid_funcs)) deallocate(this%postregrid_funcs)
+   end subroutine clear_postregrid
 
 
    !> Obtain box array at a level
@@ -533,17 +745,21 @@ contains
 
 
    !> Build mfiter at a level
-   subroutine mfiter_build(this,lvl,mfi)
+   subroutine mfiter_build(this,lvl,mfi,tiling)
       use amrex_amr_module, only: amrex_boxarray,amrex_distromap,amrex_mfiter,amrex_mfiter_build
       implicit none
       class(amrgrid), intent(inout) :: this
       integer, intent(in) :: lvl
       type(amrex_mfiter), intent(out) :: mfi
+      logical, intent(in), optional :: tiling
       type(amrex_boxarray) :: ba
       type(amrex_distromap) :: dm
+      logical :: use_tiling
+      use_tiling = this%default_tiling
+      if (present(tiling)) use_tiling = tiling
       ba=this%get_boxarray (lvl)
       dm=this%get_distromap(lvl)
-      call amrex_mfiter_build(mfi,ba,dm)
+      call amrex_mfiter_build(mfi,ba,dm,tiling=use_tiling)
    end subroutine mfiter_build
 
 
@@ -555,210 +771,6 @@ contains
       type(amrex_mfiter), intent(inout) :: mfi
       call amrex_mfiter_destroy(mfi)
    end subroutine mfiter_destroy
-
-   ! --- STATIC DISPATCHERS (bind(c)) ---
-   ! These receive calls from C++ with the owner pointer
-   subroutine dispatch_mak_lvl_init(owner,lvl,time,ba,dm) bind(c)
-      use iso_c_binding, only: c_ptr,c_int,c_double,c_f_pointer
-      implicit none
-      type(c_ptr), value, intent(in) :: owner
-      integer(c_int), value, intent(in) :: lvl
-      real(c_double), value, intent(in) :: time
-      type(c_ptr), value, intent(in) :: ba,dm
-      type(amrex_boxarray) :: ba_obj
-      type(amrex_distromap) :: dm_obj
-      type(amrgrid), pointer :: this_grid
-      integer :: i
-      call c_f_pointer(owner,this_grid)
-      ba_obj=ba
-      dm_obj=dm
-      if (allocated(this_grid%on_init)) then
-         do i=1,size(this_grid%on_init)
-            call this_grid%on_init(i)%f(this_grid%on_init(i)%ctx,int(lvl),real(time,WP),ba_obj,dm_obj)
-         end do
-      end if
-   end subroutine dispatch_mak_lvl_init
-
-   subroutine dispatch_mak_lvl_crse(owner,lvl,time,ba,dm) bind(c)
-      use iso_c_binding, only: c_ptr,c_int,c_double,c_f_pointer
-      implicit none
-      type(c_ptr), value, intent(in) :: owner
-      integer(c_int), value, intent(in) :: lvl
-      real(c_double), value, intent(in) :: time
-      type(c_ptr), value, intent(in) :: ba,dm
-      type(amrex_boxarray) :: ba_obj
-      type(amrex_distromap) :: dm_obj
-      type(amrgrid), pointer :: this_grid
-      integer :: i
-      call c_f_pointer(owner,this_grid)
-      ba_obj=ba
-      dm_obj=dm
-      if (allocated(this_grid%on_coarse)) then
-         do i=1,size(this_grid%on_coarse)
-            call this_grid%on_coarse(i)%f(this_grid%on_coarse(i)%ctx,int(lvl),real(time,WP),ba_obj,dm_obj)
-         end do
-      end if
-   end subroutine dispatch_mak_lvl_crse
-
-   subroutine dispatch_mak_lvl_remk(owner,lvl,time,ba,dm) bind(c)
-      use iso_c_binding, only: c_ptr,c_int,c_double,c_f_pointer
-      implicit none
-      type(c_ptr), value, intent(in) :: owner
-      integer(c_int), value, intent(in) :: lvl
-      real(c_double), value, intent(in) :: time
-      type(c_ptr), value, intent(in) :: ba,dm
-      type(amrex_boxarray) :: ba_obj
-      type(amrex_distromap) :: dm_obj
-      type(amrgrid), pointer :: this_grid
-      integer :: i
-      call c_f_pointer(owner,this_grid)
-      ba_obj=ba
-      dm_obj=dm
-      if (allocated(this_grid%on_remake)) then
-         do i=1,size(this_grid%on_remake)
-            call this_grid%on_remake(i)%f(this_grid%on_remake(i)%ctx,int(lvl),real(time,WP),ba_obj,dm_obj)
-         end do
-      end if
-   end subroutine dispatch_mak_lvl_remk
-
-   subroutine dispatch_clr_lvl(owner,lvl) bind(c)
-      use iso_c_binding, only: c_ptr,c_int,c_f_pointer
-      implicit none
-      type(c_ptr), value, intent(in) :: owner
-      integer(c_int), value, intent(in) :: lvl
-      type(amrgrid), pointer :: this_grid
-      integer :: i
-      call c_f_pointer(owner,this_grid)
-      if (allocated(this_grid%on_clear)) then
-         do i=1,size(this_grid%on_clear)
-            call this_grid%on_clear(i)%f(this_grid%on_clear(i)%ctx,int(lvl))
-         end do
-      end if
-   end subroutine dispatch_clr_lvl
-
-
-
-   !> Error estimation callback - calls all registered taggers
-   subroutine dispatch_err_est(owner, lvl, tags, time, tagval, clrval) bind(c)
-      use iso_c_binding, only: c_ptr, c_char, c_int, c_double, c_f_pointer
-      implicit none
-      type(c_ptr), value, intent(in) :: owner
-      integer(c_int), value, intent(in) :: lvl
-      type(c_ptr), value, intent(in) :: tags
-      real(c_double), value, intent(in) :: time
-      character(kind=c_char), value, intent(in) :: tagval, clrval
-      type(amrgrid), pointer :: this_grid
-      integer :: i
-      call c_f_pointer(owner,this_grid)
-      ! Call all registered tagging callbacks
-      if (allocated(this_grid%taggers)) then
-         do i=1,size(this_grid%taggers)
-            call this_grid%taggers(i)%f(int(lvl), tags, real(time, WP))
-         end do
-      end if
-   end subroutine dispatch_err_est
-
-
-   !> Post-regrid callback - calls all registered post-regrid callbacks
-   subroutine dispatch_postregrid(owner) bind(c)
-      use iso_c_binding, only: c_ptr,c_f_pointer
-      implicit none
-      type(c_ptr), value, intent(in) :: owner
-      type(amrgrid), pointer :: this_grid
-      integer :: i
-      call c_f_pointer(owner,this_grid)
-      ! Call all registered post-regrid callbacks with their context
-      if (allocated(this_grid%postregrid_funcs)) then
-         do i=1,size(this_grid%postregrid_funcs)
-            call this_grid%postregrid_funcs(i)%f(this_grid%postregrid_funcs(i)%ctx)
-         end do
-      end if
-   end subroutine dispatch_postregrid
-
-
-   !> Add a tagging callback to the list
-   subroutine add_tagging(this,tagger)
-      implicit none
-      class(amrgrid), intent(inout) :: this
-      procedure(tagging_callback) :: tagger
-      type(tagger_wrapper), dimension(:), allocatable :: tmp
-      integer :: n
-      if (allocated(this%taggers)) then
-         n=size(this%taggers)
-         allocate(tmp(n+1))
-         tmp(1:n)=this%taggers
-         tmp(n+1)%f=>tagger
-         call move_alloc(tmp,this%taggers)
-      else
-         allocate(this%taggers(1))
-         this%taggers(1)%f=>tagger
-      end if
-   end subroutine add_tagging
-
-
-   !> Clear all tagging callbacks
-   subroutine clear_tagging(this)
-      implicit none
-      class(amrgrid), intent(inout) :: this
-      if (allocated(this%taggers)) deallocate(this%taggers)
-   end subroutine clear_tagging
-
-
-   !> Add a post-regrid callback to the list
-   subroutine add_postregrid(this,callback,ctx)
-      use iso_c_binding, only: c_ptr
-      implicit none
-      class(amrgrid), intent(inout) :: this
-      procedure(postregrid_callback) :: callback
-      type(c_ptr), intent(in) :: ctx
-      type(postregrid_wrapper), dimension(:), allocatable :: tmp
-      integer :: n
-      if (allocated(this%postregrid_funcs)) then
-         n=size(this%postregrid_funcs)
-         allocate(tmp(n+1))
-         tmp(1:n)=this%postregrid_funcs
-         tmp(n+1)%f=>callback
-         tmp(n+1)%ctx=ctx
-         call move_alloc(tmp,this%postregrid_funcs)
-      else
-         allocate(this%postregrid_funcs(1))
-         this%postregrid_funcs(1)%f=>callback
-         this%postregrid_funcs(1)%ctx=ctx
-      end if
-   end subroutine add_postregrid
-
-
-   !> Clear all post-regrid callbacks
-   subroutine clear_postregrid(this)
-      implicit none
-      class(amrgrid), intent(inout) :: this
-      if (allocated(this%postregrid_funcs)) deallocate(this%postregrid_funcs)
-   end subroutine clear_postregrid
-
-   !> Initialize grid hierarchy from scratch using AMReX's native init
-   !> This calls MakeNewLevelFromScratch for ALL levels (triggers on_init callbacks)
-   !> If do_postregrid=.true. (default), fires post-regrid callbacks after init
-   subroutine init_from_scratch(this, time, do_postregrid)
-      use iso_c_binding, only: c_loc
-      use amrex_interface, only: amrcore_init_from_scratch
-      implicit none
-      class(amrgrid), target, intent(inout) :: this
-      real(WP), intent(in) :: time
-      logical, intent(in), optional :: do_postregrid
-      logical :: fire_postregrid
-      ! Default: fire post-regrid callbacks
-      fire_postregrid = .true.
-      if (present(do_postregrid)) fire_postregrid = do_postregrid
-      ! Use AMReX's native init_from_scratch which properly builds all levels
-      call amrcore_init_from_scratch(this%amrcore, time)
-      ! Optionally fire post-regrid callbacks (for average_down, etc.)
-      if (fire_postregrid) then
-         select type (this)
-          type is (amrgrid)
-            call dispatch_postregrid(c_loc(this))
-         end select
-      end if
-   end subroutine init_from_scratch
 
 
    !> Return current finest level
@@ -787,6 +799,7 @@ contains
       dm=this%get_distromap(lvl)
       call amrex_multifab_build(mfab,ba,dm,ncomp,nover,atface)
    end subroutine mfab_build
+
 
    !> Destroy multifab
    subroutine mfab_destroy(this,mfab)
