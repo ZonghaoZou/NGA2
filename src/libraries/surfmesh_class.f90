@@ -17,7 +17,7 @@ module surfmesh_class
       integer :: nPoly                                     !< Number of polygons
       integer,  dimension(:), allocatable :: polySize      !< Size of polygons - size=nPoly
       integer,  dimension(:), allocatable :: polyConn      !< Connectivity - size=sum(polySize)
-      integer :: nvar                                                   !< Number of surface variables stored
+      integer :: nvar=0                                                 !< Number of surface variables stored (default=0)
       real(WP), dimension(:,:), allocatable :: var                      !< Surface variable storage
       character(len=str_medium), dimension(:), allocatable :: varname   !< Name of surface variable fields
    contains

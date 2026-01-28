@@ -464,126 +464,57 @@ contains
    end function flux_polyhedron_vol
    
    !> Correct 9th vertex of flux polyhedron to enforce exact volume (x-flux)
-   !> face(:,1:8) are the 8 face vertices, face(:,9) is the center vertex (modified)
-   !> target_vol is the desired swept volume (e.g., U*dt*dy*dz)
-   pure subroutine volume_correct_x(face, target_vol)
+   subroutine volume_correct_x(face, volume)
       implicit none
       real(WP), dimension(3,9), intent(inout) :: face
-      real(WP), intent(in) :: target_vol
-      real(WP) :: volume, denom
-      real(WP), dimension(3) :: a, b, c
+      real(WP) :: volume
+      real(WP), dimension(3) :: a,b,c
       integer :: ntet
-      ! Compute current volume mismatch
-      volume = target_vol
-      do ntet = 1, 6
-         a = face(:,tet_map(1,ntet)) - face(:,tet_map(4,ntet))
-         b = face(:,tet_map(2,ntet)) - face(:,tet_map(4,ntet))
-         c = face(:,tet_map(3,ntet)) - face(:,tet_map(4,ntet))
-         volume = volume + (a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
+      ! Compute volume mismatch
+      do ntet=1,6
+         a=face(:,tet_map(1,ntet))-face(:,tet_map(4,ntet)); b=face(:,tet_map(2,ntet))-face(:,tet_map(4,ntet)); c=face(:,tet_map(3,ntet))-face(:,tet_map(4,ntet))
+         volume=volume+(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2)))/6.0_WP
       end do
-      ! Analytical correction for x-component of vertex 9
-      denom = -(face(2,6)-face(2,9))*(face(3,8)-face(3,9))+(face(2,8)-face(2,9))*(face(3,6)-face(3,9)) &
-              -face(2,5)*(face(3,6)-face(3,9))+face(2,5)*(face(3,8)-face(3,9))+face(2,9)*(face(3,6)-face(3,9)) &
-              -face(2,9)*(face(3,8)-face(3,9))-face(3,5)*(face(2,8)-face(2,9))+face(3,5)*(face(2,6)-face(2,9)) &
-              +face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,6)-face(2,9))-(face(2,7)-face(2,9))*(face(3,8)-face(3,9)) &
-              +(face(2,8)-face(2,9))*(face(3,7)-face(3,9))-face(2,6)*(face(3,7)-face(3,9))+face(2,6)*(face(3,8)-face(3,9)) &
-              +face(2,9)*(face(3,7)-face(3,9))-face(2,9)*(face(3,8)-face(3,9))-face(3,6)*(face(2,8)-face(2,9)) &
-              +face(3,6)*(face(2,7)-face(2,9))+face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,7)-face(2,9))
-      if (abs(denom).gt.tiny(1.0_WP)) then
-         face(1,9) = (-6.0_WP*volume &
-            +face(1,5)*((face(2,8)-face(2,9))*(face(3,6)-face(3,9))-(face(2,6)-face(2,9))*(face(3,8)-face(3,9))) &
-            +face(2,5)*((face(3,8)-face(3,9))*face(1,6)-(face(3,6)-face(3,9))*face(1,8)) &
-            +face(2,9)*((face(3,6)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,6)) &
-            +face(3,5)*((face(2,6)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,6)) &
-            +face(3,9)*((face(2,8)-face(2,9))*face(1,6)-(face(2,6)-face(2,9))*face(1,8)) &
-            +face(1,6)*((face(2,8)-face(2,9))*(face(3,7)-face(3,9))-(face(2,7)-face(2,9))*(face(3,8)-face(3,9))) &
-            +face(2,6)*((face(3,8)-face(3,9))*face(1,7)-(face(3,7)-face(3,9))*face(1,8)) &
-            +face(2,9)*((face(3,7)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,7)) &
-            +face(3,6)*((face(2,7)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,7)) &
-            +face(3,9)*((face(2,8)-face(2,9))*face(1,7)-(face(2,7)-face(2,9))*face(1,8))) / denom
-      end if
-      face(2,9) = 0.25_WP * sum(face(2,5:8))
-      face(3,9) = 0.25_WP * sum(face(3,5:8))
+      ! Use analytical correction
+      face(1,9)=(-6.0_WP*volume+face(1,5)*((face(2,8)-face(2,9))*(face(3,6)-face(3,9))-(face(2,6)-face(2,9))*(face(3,8)-face(3,9)))+face(2,5)*((face(3,8)-face(3,9))*face(1,6)-(face(3,6)-face(3,9))*face(1,8))+face(2,9)*((face(3,6)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,6))+face(3,5)*((face(2,6)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,6))+face(3,9)*((face(2,8)-face(2,9))*face(1,6)-(face(2,6)-face(2,9))*face(1,8))+face(1,6)*((face(2,8)-face(2,9))*(face(3,7)-face(3,9))-(face(2,7)-face(2,9))*(face(3,8)-face(3,9)))+face(2,6)*((face(3,8)-face(3,9))*face(1,7)-(face(3,7)-face(3,9))*face(1,8))+face(2,9)*((face(3,7)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,7))+face(3,6)*((face(2,7)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,7))+face(3,9)*((face(2,8)-face(2,9))*face(1,7)-(face(2,7)-face(2,9))*face(1,8)))/(-(face(2,6)-face(2,9))*(face(3,8)-face(3,9))+(face(2,8)-face(2,9))*(face(3,6)-face(3,9))-face(2,5)*(face(3,6)-face(3,9))+face(2,5)*(face(3,8)-face(3,9))+face(2,9)*(face(3,6)-face(3,9))-face(2,9)*(face(3,8)-face(3,9))-face(3,5)*(face(2,8)-face(2,9))+face(3,5)*(face(2,6)-face(2,9))+face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,6)-face(2,9))-(face(2,7)-face(2,9))*(face(3,8)-face(3,9))+(face(2,8)-face(2,9))*(face(3,7)-face(3,9))-face(2,6)*(face(3,7)-face(3,9))+face(2,6)*(face(3,8)-face(3,9))+face(2,9)*(face(3,7)-face(3,9))-face(2,9)*(face(3,8)-face(3,9))-face(3,6)*(face(2,8)-face(2,9))+face(3,6)*(face(2,7)-face(2,9))+face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,7)-face(2,9)))
+      face(2,9)=0.25_WP*sum(face(2,5:8))
+      face(3,9)=0.25_WP*sum(face(3,5:8))
    end subroutine volume_correct_x
-   
+
    !> Correct 9th vertex of flux polyhedron to enforce exact volume (y-flux)
-   pure subroutine volume_correct_y(face, target_vol)
+   subroutine volume_correct_y(face, volume)
       implicit none
       real(WP), dimension(3,9), intent(inout) :: face
-      real(WP), intent(in) :: target_vol
-      real(WP) :: volume, denom
-      real(WP), dimension(3) :: a, b, c
+      real(WP) :: volume
+      real(WP), dimension(3) :: a,b,c
       integer :: ntet
-      ! Compute current volume mismatch (note sign flip for y)
-      volume = target_vol
-      do ntet = 1, 6
-         a = face(:,tet_map(1,ntet)) - face(:,tet_map(4,ntet))
-         b = face(:,tet_map(2,ntet)) - face(:,tet_map(4,ntet))
-         c = face(:,tet_map(3,ntet)) - face(:,tet_map(4,ntet))
-         volume = volume - (a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
+      ! Compute volume mismatch
+      do ntet=1,6
+         a=face(:,tet_map(1,ntet))-face(:,tet_map(4,ntet)); b=face(:,tet_map(2,ntet))-face(:,tet_map(4,ntet)); c=face(:,tet_map(3,ntet))-face(:,tet_map(4,ntet))
+         volume=volume-(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2)))/6.0_WP
       end do
-      ! Analytical correction for y-component
-      face(1,9) = 0.25_WP * sum(face(1,5:8))
-      denom = face(1,5)*((face(3,6)-face(3,9))-(face(3,8)-face(3,9)))+face(1,9)*((face(3,8)-face(3,9))-(face(3,6)-face(3,9))) &
-             +((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9))) &
-             +face(3,5)*((face(1,8)-face(1,9))-(face(1,6)-face(1,9)))+face(3,9)*((face(1,6)-face(1,9))-(face(1,8)-face(1,9))) &
-             +face(1,9)*((face(3,8)-face(3,9))-(face(3,7)-face(3,9))) &
-             +((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9))) &
-             +face(3,6)*((face(1,8)-face(1,9))-(face(1,7)-face(1,9)))+face(3,9)*((face(1,7)-face(1,9))-(face(1,8)-face(1,9)))
-      if (abs(denom).gt.tiny(1.0_WP)) then
-         face(2,9) = (6.0_WP*volume &
-            +face(1,5)*((face(3,6)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,6)) &
-            +face(1,9)*((face(3,8)-face(3,9))*face(2,6)-(face(3,6)-face(3,9))*face(2,8)) &
-            +face(2,5)*((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9))) &
-            +face(3,5)*((face(1,8)-face(1,9))*face(2,6)-(face(1,6)-face(1,9))*face(2,8)) &
-            +face(3,9)*((face(1,6)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,6)) &
-            +face(1,6)*((face(3,7)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,7)) &
-            +face(1,9)*((face(3,8)-face(3,9))*face(2,7)-(face(3,7)-face(3,9))*face(2,8)) &
-            +face(2,6)*((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9))) &
-            +face(3,6)*((face(1,8)-face(1,9))*face(2,7)-(face(1,7)-face(1,9))*face(2,8)) &
-            +face(3,9)*((face(1,7)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,7))) / denom
-      end if
-      face(3,9) = 0.25_WP * sum(face(3,5:8))
+      ! Use analytical correction
+      face(1,9)=0.25_WP*sum(face(1,5:8))
+      face(2,9)=(6.0_WP*volume+face(1,5)*((face(3,6)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,6))+face(1,9)*((face(3,8)-face(3,9))*face(2,6)-(face(3,6)-face(3,9))*face(2,8))+face(2,5)*((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9)))+face(3,5)*((face(1,8)-face(1,9))*face(2,6)-(face(1,6)-face(1,9))*face(2,8))+face(3,9)*((face(1,6)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,6))+face(1,6)*((face(3,7)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,7))+face(1,9)*((face(3,8)-face(3,9))*face(2,7)-(face(3,7)-face(3,9))*face(2,8))+face(2,6)*((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9)))+face(3,6)*((face(1,8)-face(1,9))*face(2,7)-(face(1,7)-face(1,9))*face(2,8))+face(3,9)*((face(1,7)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,7)))/(face(1,5)*((face(3,6)-face(3,9))-(face(3,8)-face(3,9)))+face(1,9)*((face(3,8)-face(3,9))-(face(3,6)-face(3,9)))+((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9)))+face(3,5)*((face(1,8)-face(1,9))-(face(1,6)-face(1,9)))+face(3,9)*((face(1,6)-face(1,9))-(face(1,8)-face(1,9)))+face(1,9)*((face(3,8)-face(3,9))-(face(3,7)-face(3,9)))+((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9)))+face(3,6)*((face(1,8)-face(1,9))-(face(1,7)-face(1,9)))+face(3,9)*((face(1,7)-face(1,9))-(face(1,8)-face(1,9))))
+      face(3,9)=0.25_WP*sum(face(3,5:8))
    end subroutine volume_correct_y
    
    !> Correct 9th vertex of flux polyhedron to enforce exact volume (z-flux)
-   pure subroutine volume_correct_z(face, target_vol)
+   subroutine volume_correct_z(face, volume)
       implicit none
       real(WP), dimension(3,9), intent(inout) :: face
-      real(WP), intent(in) :: target_vol
-      real(WP) :: volume, denom
-      real(WP), dimension(3) :: a, b, c
+      real(WP) :: volume
+      real(WP), dimension(3) :: a,b,c
       integer :: ntet
-      ! Compute current volume mismatch
-      volume = target_vol
-      do ntet = 1, 6
-         a = face(:,tet_map(1,ntet)) - face(:,tet_map(4,ntet))
-         b = face(:,tet_map(2,ntet)) - face(:,tet_map(4,ntet))
-         c = face(:,tet_map(3,ntet)) - face(:,tet_map(4,ntet))
-         volume = volume + (a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
+      ! Compute volume mismatch
+      do ntet=1,6
+         a=face(:,tet_map(1,ntet))-face(:,tet_map(4,ntet)); b=face(:,tet_map(2,ntet))-face(:,tet_map(4,ntet)); c=face(:,tet_map(3,ntet))-face(:,tet_map(4,ntet))
+         volume=volume+(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2)))/6.0_WP
       end do
-      ! Analytical correction for z-component
-      face(1,9) = 0.25_WP * sum(face(1,5:8))
-      face(2,9) = 0.25_WP * sum(face(2,5:8))
-      denom = face(1,5)*face(2,6)-face(2,5)*face(1,6)-face(1,5)*face(2,8)+face(2,5)*face(1,8) &
-             +face(1,6)*face(2,7)-face(2,6)*face(1,7)+face(1,7)*face(2,8)-face(2,7)*face(1,8)
-      if (abs(denom).gt.tiny(1.0_WP)) then
-         face(3,9) = (6.0_WP*volume &
-            +face(1,5)*face(2,6)*face(3,8)-face(1,5)*face(3,6)*face(2,8) &
-            -face(2,5)*face(1,6)*face(3,8)+face(2,5)*face(3,6)*face(1,8) &
-            +face(3,5)*face(1,6)*face(2,8)-face(3,5)*face(2,6)*face(1,8) &
-            +face(1,5)*face(3,6)*face(2,5)-face(2,5)*face(3,6)*face(1,5) &
-            -face(3,5)*face(1,6)*face(2,5)+face(3,5)*face(2,6)*face(1,5) &
-            +face(1,6)*face(2,7)*face(3,8)-face(1,6)*face(3,7)*face(2,8) &
-            -face(2,6)*face(1,7)*face(3,8)+face(2,6)*face(3,7)*face(1,8) &
-            +face(3,6)*face(1,7)*face(2,8)-face(3,6)*face(2,7)*face(1,8) &
-            -face(1,5)*face(3,8)*face(2,5)+face(2,5)*face(3,8)*face(1,5) &
-            +face(3,5)*face(1,8)*face(2,5)-face(3,5)*face(2,8)*face(1,5) &
-            +face(1,6)*face(3,7)*face(2,5)-face(2,6)*face(3,7)*face(1,5) &
-            -face(3,6)*face(1,7)*face(2,5)+face(3,6)*face(2,7)*face(1,5) &
-            +face(1,7)*face(3,8)*face(2,5)-face(2,7)*face(3,8)*face(1,5) &
-            -face(3,7)*face(1,8)*face(2,5)+face(3,7)*face(2,8)*face(1,5)) / denom
-      end if
+      ! Use analytical correction
+      face(1,9)=0.25_WP*sum(face(1,5:8))
+      face(2,9)=0.25_WP*sum(face(2,5:8))
+      face(3,9)=(6.0_WP*volume+face(1,5)*face(2,6)*face(3,8)-face(1,5)*face(3,6)*face(2,8)-face(2,5)*face(1,6)*face(3,8)+face(2,5)*face(3,6)*face(1,8)+face(3,5)*face(1,6)*face(2,8)-face(3,5)*face(2,6)*face(1,8)+face(1,5)*face(3,6)*face(2,5)-face(2,5)*face(3,6)*face(1,5)-face(3,5)*face(1,6)*face(2,5)+face(3,5)*face(2,6)*face(1,5)+face(1,6)*face(2,7)*face(3,8)-face(1,6)*face(3,7)*face(2,8)-face(2,6)*face(1,7)*face(3,8)+face(2,6)*face(3,7)*face(1,8)+face(3,6)*face(1,7)*face(2,8)-face(3,6)*face(2,7)*face(1,8)-face(1,5)*face(3,8)*face(2,5)+face(2,5)*face(3,8)*face(1,5)+face(3,5)*face(1,8)*face(2,5)-face(3,5)*face(2,8)*face(1,5)+face(1,6)*face(3,7)*face(2,5)-face(2,6)*face(3,7)*face(1,5)-face(3,6)*face(1,7)*face(2,5)+face(3,6)*face(2,7)*face(1,5)+face(1,7)*face(3,8)*face(2,5)-face(2,7)*face(3,8)*face(1,5)-face(3,7)*face(1,8)*face(2,5)+face(3,7)*face(2,8)*face(1,5))/(face(1,5)*face(2,6)-face(2,5)*face(1,6)-face(1,5)*face(2,8)+face(2,5)*face(1,8)+face(1,6)*face(2,7)-face(2,6)*face(1,7)+face(1,7)*face(2,8)-face(2,7)*face(1,8))
    end subroutine volume_correct_z
    
    !> Cut a hex cell by a plane and compute liquid/gas volumes and barycenters

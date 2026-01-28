@@ -467,8 +467,7 @@ contains
    !> Average down cell-centered MultiFab
    subroutine amrmfab_average_down_cell(fmf, cmf, rr, cgeom, ngcrse)
       use iso_c_binding, only: c_null_ptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(in) :: fmf
       type(amrex_multifab), intent(inout) :: cmf
       integer, intent(in) :: rr
@@ -486,8 +485,7 @@ contains
    !> Average down face-centered MultiFab (nodal in 1 dir, cell in 2)
    subroutine amrmfab_average_down_face(fmf, cmf, rr, cgeom, ngcrse)
       use iso_c_binding, only: c_null_ptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(in) :: fmf
       type(amrex_multifab), intent(inout) :: cmf
       integer, intent(in) :: rr
@@ -505,8 +503,7 @@ contains
    !> Average down edge-centered MultiFab (nodal in 2 dirs, cell in 1)
    subroutine amrmfab_average_down_edge(fmf, cmf, rr, cgeom, ngcrse)
       use iso_c_binding, only: c_null_ptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(in) :: fmf
       type(amrex_multifab), intent(inout) :: cmf
       integer, intent(in) :: rr
@@ -524,8 +521,7 @@ contains
    !> Average down node-centered MultiFab (nodal in all dirs)
    subroutine amrmfab_average_down_node(fmf, cmf, rr, cgeom, ngcrse)
       use iso_c_binding, only: c_null_ptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(in) :: fmf
       type(amrex_multifab), intent(inout) :: cmf
       integer, intent(in) :: rr
@@ -542,8 +538,7 @@ contains
 
    !> Compute divergence of face-centered velocity into cell-centered MultiFab
    subroutine amrmfab_compute_divergence(divu, umac_x, umac_y, umac_z, geom)
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(inout) :: divu
       type(amrex_multifab), intent(in) :: umac_x, umac_y, umac_z
       type(amrex_geometry), intent(in) :: geom
@@ -552,8 +547,7 @@ contains
 
    !> Sum MultiFab avoiding double-counting at shared nodes/faces (for periodic)
    function amrmfab_sum_unique(mf, geom, comp) result(val)
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       use precision, only: WP
       type(amrex_multifab), intent(in) :: mf
       type(amrex_geometry), intent(in) :: geom
@@ -568,8 +562,7 @@ contains
    !> mask must already be built with same BA/DM as coarse level
    !> After call: mask(i,j,k) = notcovered_val where valid, covered_val where fine exists
    subroutine amrmask_make_fine(mask, ba_fine, ref_ratio, covered_val, notcovered_val)
-      use amrex_multifab_module, only: amrex_imultifab
-      use amrex_boxarray_module, only: amrex_boxarray
+      use amrex_amr_module, only: amrex_imultifab, amrex_boxarray
       type(amrex_imultifab), intent(inout) :: mask
       type(amrex_boxarray), intent(in) :: ba_fine
       integer, intent(in) :: ref_ratio(3)
@@ -583,8 +576,7 @@ contains
    &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
    &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc)
       use iso_c_binding, only: c_ptr, c_funptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(inout) :: mf_u, mf_v, mf_w
       type(amrex_multifab), intent(in) :: cmf_u, cmf_v, cmf_w
       type(amrex_geometry), intent(in) :: geom_c, geom_f
@@ -608,8 +600,7 @@ contains
    &   ctx_u, ctx_v, ctx_w, bc_u, bc_v, bc_w, &
    &   scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc)
       use iso_c_binding, only: c_ptr, c_funptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(inout) :: mf_u, mf_v, mf_w
       type(amrex_multifab), intent(in) :: mf_old_c_u, mf_old_c_v, mf_old_c_w
       type(amrex_multifab), intent(in) :: mf_new_c_u, mf_new_c_v, mf_new_c_w
@@ -634,8 +625,7 @@ contains
    subroutine amrmfab_fillpatch_single(mf, t_old, mf_old, t_new, mf_new, &
    &   geom, solver_ctx, bc_dispatch, time, scomp, dcomp, ncomp)
       use iso_c_binding, only: c_ptr, c_funptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(inout) :: mf
       type(amrex_multifab), intent(in) :: mf_old, mf_new
       type(amrex_geometry), intent(in) :: geom
@@ -652,8 +642,7 @@ contains
    &   t_old_f, mf_old_f, t_new_f, mf_new_f, geom_f, solver_ctx, bc_dispatch, &
    &   time, scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc, nbc)
       use iso_c_binding, only: c_ptr, c_funptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(inout) :: mf
       type(amrex_multifab), intent(in) :: mf_old_c, mf_new_c, mf_old_f, mf_new_f
       type(amrex_geometry), intent(in) :: geom_c, geom_f
@@ -672,8 +661,7 @@ contains
    subroutine amrmfab_fillcoarsepatch(mf_f, time, mf_c, geom_c, geom_f, solver_ctx, &
    &   bc_dispatch, scomp, dcomp, ncomp, ref_ratio, interp_type, lo_bc, hi_bc, nbc)
       use iso_c_binding, only: c_ptr, c_funptr
-      use amrex_multifab_module, only: amrex_multifab
-      use amrex_geometry_module, only: amrex_geometry
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
       type(amrex_multifab), intent(inout) :: mf_f
       type(amrex_multifab), intent(in) :: mf_c
       type(amrex_geometry), intent(in) :: geom_c, geom_f

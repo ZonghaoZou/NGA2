@@ -85,6 +85,7 @@ module amrvof_class
       procedure :: fill_plic_lvl          !< Fill PLIC ghosts at level (sync + BC)
       procedure :: average_down_moments   !< Average down VF/Cliq/Cgas to coarse levels
       procedure :: reset_moments          !< Recompute VF/barycenters from PLIC
+      procedure :: get_cfl                !< Compute advective CFL at finest level
       procedure :: print => amrvof_print  !< Print solver info
    end type amrvof
 
@@ -1350,51 +1351,35 @@ contains
       real(WP), dimension(3,9) :: face     ! 4 current + 4 projected + 1 center
       real(WP) :: dxi, dyi, dzi
       integer :: ilo_, ihi_, jlo_, jhi_, klo_, khi_  ! Velocity bounds
-      ! 8-tet decomposition of 9-point polyhedron (from noirl)
-      integer, dimension(4,8), parameter :: tet_map = reshape([ &
-         7, 4, 3, 6, &
-         6, 3, 2, 4, &
-         6, 2, 1, 4, &
-         7, 8, 4, 6, &
-         6, 5, 8, 4, &
-         6, 5, 4, 1, &
-         5, 6, 8, 9, &
-         6, 7, 8, 9], shape(tet_map))
-      
-      ! Detect velocity centering from MultiFab nodality
-      detect_staggered: block
+
+      ! Check velocity centering and ghost cell requirements
+      check_velocity: block
          use messager, only: die
          logical, dimension(3) :: nodal_U, nodal_V, nodal_W
          nodal_U = U%nodal_type()
          nodal_V = V%nodal_type()
          nodal_W = W%nodal_type()
-         if (nodal_U(1) .and. nodal_V(2) .and. nodal_W(3)) then
+         if (all(nodal_U .eqv. [.true. , .false., .false.]) .and. & 
+         &   all(nodal_V .eqv. [.false., .true. , .false.]) .and. & 
+         &   all(nodal_W .eqv. [.false., .false., .true. ])) then
             is_staggered = .true.
          else if (.not.any(nodal_U) .and. .not.any(nodal_V) .and. .not.any(nodal_W)) then
             is_staggered = .false.
          else
             call die('[advance_vof] velocity must be either staggered (face-centered) or collocated (cell-centered)')
          end if
-      end block detect_staggered
-
-
+         if (U%nghost() .lt. 2 .or. V%nghost() .lt. 2 .or. W%nghost() .lt. 2) then
+            call die('[advance_vof] velocity requires >= 2 ghost cells')
+         end if
+      end block check_velocity
       
       ! Only advect at finest level
       lvl = this%amr%clvl()
       
-      ! Require >= 2 ghost cells for velocity (RK2 backtracking needs neighbors)
-      check_ghost_cells: block
-         use messager, only: die
-         if (U%nghost() .lt. 2 .or. V%nghost() .lt. 2 .or. W%nghost() .lt. 2) then
-            call die('[advance_vof] velocity requires >= 2 ghost cells')
-         end if
-      end block check_ghost_cells
-
-      
       ! Get cell size
-      dx = this%amr%dx(lvl)
-      dy = this%amr%dy(lvl)
-      dz = this%amr%dz(lvl)
+      dx = this%amr%dx(lvl); dxi=1.0_WP/dx
+      dy = this%amr%dy(lvl); dyi=1.0_WP/dy
+      dz = this%amr%dz(lvl); dzi=1.0_WP/dz
       vol = dx * dy * dz
       
       ! Iterate over boxes
@@ -1539,7 +1524,7 @@ contains
          jlo_ = lbound(pU,2); jhi_ = ubound(pU,2) - 1
          klo_ = lbound(pU,3); khi_ = ubound(pU,3) - 1
          
-         ! Determine upwind cell for pure-cell fast path
+         ! Determine upwind cell
          if (dir .eq. 1) then
             if (fv .ge. 0.0_WP) then
                src_i = fi-1; src_j = fj; src_k = fk
@@ -1582,15 +1567,15 @@ contains
             face(:,4) = [this%amr%xlo + real(fi,WP)*dx, this%amr%ylo + real(fj  ,WP)*dy, this%amr%zlo + real(fk  ,WP)*dz]
             vol_expected = -fv * dt * dy * dz
          else if (dir .eq. 2) then
-            face(:,1) = [this%amr%xlo + real(fi+1,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk+1,WP)*dz]
-            face(:,2) = [this%amr%xlo + real(fi  ,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk+1,WP)*dz]
-            face(:,3) = [this%amr%xlo + real(fi  ,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk  ,WP)*dz]
-            face(:,4) = [this%amr%xlo + real(fi+1,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk  ,WP)*dz]
+            face(:,1) = [this%amr%xlo + real(fi+1,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk  ,WP)*dz]
+            face(:,2) = [this%amr%xlo + real(fi  ,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk  ,WP)*dz]
+            face(:,3) = [this%amr%xlo + real(fi  ,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk+1,WP)*dz]
+            face(:,4) = [this%amr%xlo + real(fi+1,WP)*dx, this%amr%ylo + real(fj,WP)*dy, this%amr%zlo + real(fk+1,WP)*dz]
             vol_expected = -fv * dt * dx * dz
          else
-            face(:,1) = [this%amr%xlo + real(fi+1,WP)*dx, this%amr%ylo + real(fj  ,WP)*dy, this%amr%zlo + real(fk,WP)*dz]
+            face(:,1) = [this%amr%xlo + real(fi  ,WP)*dx, this%amr%ylo + real(fj+1,WP)*dy, this%amr%zlo + real(fk,WP)*dz]
             face(:,2) = [this%amr%xlo + real(fi  ,WP)*dx, this%amr%ylo + real(fj  ,WP)*dy, this%amr%zlo + real(fk,WP)*dz]
-            face(:,3) = [this%amr%xlo + real(fi  ,WP)*dx, this%amr%ylo + real(fj+1,WP)*dy, this%amr%zlo + real(fk,WP)*dz]
+            face(:,3) = [this%amr%xlo + real(fi+1,WP)*dx, this%amr%ylo + real(fj  ,WP)*dy, this%amr%zlo + real(fk,WP)*dz]
             face(:,4) = [this%amr%xlo + real(fi+1,WP)*dx, this%amr%ylo + real(fj+1,WP)*dy, this%amr%zlo + real(fk,WP)*dz]
             vol_expected = -fv * dt * dx * dy
          end if
@@ -1613,24 +1598,24 @@ contains
             call volume_correct_z(vol_expected)
          end if
          
-         ! Determine upwind cell for flux sign
-         if (dir .eq. 1) then
-            src_i = merge(fi-1, fi, fv.ge.0.0_WP)
-         else if (dir .eq. 2) then
-            src_j = merge(fj-1, fj, fv.ge.0.0_WP)
-         else
-            src_k = merge(fk-1, fk, fv.ge.0.0_WP)
-         end if
-         
          ! Process each of the 8 tets with recursive cutting
          do ntet = 1, 8
             ! Build tet from face vertices
             do nn = 1, 4
                tetra(:,nn) = face(:,tet_map(nn,ntet))
-               ! Compute cell index for each vertex
-               myijk(1,nn) = min(max(floor((tetra(1,nn) - this%amr%xlo) * dxi), ilo_), ihi_)
-               myijk(2,nn) = min(max(floor((tetra(2,nn) - this%amr%ylo) * dyi), jlo_), jhi_)
-               myijk(3,nn) = min(max(floor((tetra(3,nn) - this%amr%zlo) * dzi), klo_), khi_)
+               if (dir .eq. 1) then
+                  myijk(1,nn) = src_i
+                  myijk(2,nn) = min(max(floor((tetra(2,nn) - this%amr%ylo) * dyi), jlo_), jhi_)
+                  myijk(3,nn) = min(max(floor((tetra(3,nn) - this%amr%zlo) * dzi), klo_), khi_)
+               else if (dir .eq. 2) then
+                  myijk(1,nn) = min(max(floor((tetra(1,nn) - this%amr%xlo) * dxi), ilo_), ihi_)
+                  myijk(2,nn) = src_j
+                  myijk(3,nn) = min(max(floor((tetra(3,nn) - this%amr%zlo) * dzi), klo_), khi_)
+               else
+                  myijk(1,nn) = min(max(floor((tetra(1,nn) - this%amr%xlo) * dxi), ilo_), ihi_)
+                  myijk(2,nn) = min(max(floor((tetra(2,nn) - this%amr%ylo) * dyi), jlo_), jhi_)
+                  myijk(3,nn) = src_k
+               end if
             end do
             
             ! Compute tet sign
@@ -1814,7 +1799,7 @@ contains
             c = vert(:, cut_vtet(3, n1, icase)) - vert(:, cut_vtet(4, n1, icase))
             my_vol = abs(a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
             bary = 0.25_WP * (vert(:, cut_vtet(1, n1, icase)) + vert(:, cut_vtet(2, n1, icase)) &
-                           + vert(:, cut_vtet(3, n1, icase)) + vert(:, cut_vtet(4, n1, icase)))
+            &               + vert(:, cut_vtet(3, n1, icase)) + vert(:, cut_vtet(4, n1, icase)))
             myflux(2) = myflux(2) + my_vol
             myflux(6:8) = myflux(6:8) + my_vol * bary
          end do
@@ -1826,23 +1811,21 @@ contains
             c = vert(:, cut_vtet(3, n1, icase)) - vert(:, cut_vtet(4, n1, icase))
             my_vol = abs(a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
             bary = 0.25_WP * (vert(:, cut_vtet(1, n1, icase)) + vert(:, cut_vtet(2, n1, icase)) &
-                           + vert(:, cut_vtet(3, n1, icase)) + vert(:, cut_vtet(4, n1, icase)))
+            &               + vert(:, cut_vtet(3, n1, icase)) + vert(:, cut_vtet(4, n1, icase)))
             myflux(1) = myflux(1) + my_vol
             myflux(3:5) = myflux(3:5) + my_vol * bary
          end do
          
       end function tet2flux_plic
       
-
       !> RK2 vertex projection back in time
-      function project(p1, mydt) result(p2)
+      function project(p1,mydt) result(p2)
+         implicit none
          real(WP), dimension(3), intent(in) :: p1
-         real(WP), intent(in) :: mydt
-         real(WP), dimension(3) :: p2, vel1, vel_mid
-         vel1 = interp_velocity(p1)
-         p2 = p1 + mydt * vel1
-         vel_mid = interp_velocity(0.5_WP * (p1 + p2))
-         p2 = p1 + mydt * vel_mid
+         real(WP), dimension(3)             :: p2
+         real(WP),               intent(in) :: mydt
+         p2=p1+mydt*interp_velocity(        p1    )
+         p2=p1+mydt*interp_velocity(0.5_WP*(p1+p2))
       end function project
       
       !> Trilinear interpolation of velocity (handles staggered or collocated)
@@ -1903,108 +1886,7 @@ contains
             &             wy2*(wx1*pW(ip+1,jp  ,kp  ,1)+wx2*pW(ip,jp  ,kp  ,1)))
          end if
       end function interp_velocity
-      
-      !> Volume correction for X-flux (analytical from noirl)
-      subroutine volume_correct_x(volume)
-         real(WP), intent(inout) :: volume
-         real(WP), dimension(3) :: va, vb, vc
-         integer :: ntet_
-         ! Compute current volume mismatch using first 6 tets
-         do ntet_ = 1, 6
-            va = face(:,tet_map(1,ntet_)) - face(:,tet_map(4,ntet_))
-            vb = face(:,tet_map(2,ntet_)) - face(:,tet_map(4,ntet_))
-            vc = face(:,tet_map(3,ntet_)) - face(:,tet_map(4,ntet_))
-            volume = volume + (va(1)*(vb(2)*vc(3)-vc(2)*vb(3)) - va(2)*(vb(1)*vc(3)-vc(1)*vb(3)) + va(3)*(vb(1)*vc(2)-vc(1)*vb(2))) / 6.0_WP
-         end do
-         ! Analytical correction for x-component of 9th point
-         face(1,9) = (-6.0_WP*volume + face(1,5)*((face(2,8)-face(2,9))*(face(3,6)-face(3,9))-(face(2,6)-face(2,9))*(face(3,8)-face(3,9))) + &
-         &   face(2,5)*((face(3,8)-face(3,9))*face(1,6)-(face(3,6)-face(3,9))*face(1,8)) + &
-         &   face(2,9)*((face(3,6)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,6)) + &
-         &   face(3,5)*((face(2,6)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,6)) + &
-         &   face(3,9)*((face(2,8)-face(2,9))*face(1,6)-(face(2,6)-face(2,9))*face(1,8)) + &
-         &   face(1,6)*((face(2,8)-face(2,9))*(face(3,7)-face(3,9))-(face(2,7)-face(2,9))*(face(3,8)-face(3,9))) + &
-         &   face(2,6)*((face(3,8)-face(3,9))*face(1,7)-(face(3,7)-face(3,9))*face(1,8)) + &
-         &   face(2,9)*((face(3,7)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,7)) + &
-         &   face(3,6)*((face(2,7)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,7)) + &
-         &   face(3,9)*((face(2,8)-face(2,9))*face(1,7)-(face(2,7)-face(2,9))*face(1,8))) / &
-         &  (-(face(2,6)-face(2,9))*(face(3,8)-face(3,9))+(face(2,8)-face(2,9))*(face(3,6)-face(3,9)) - &
-         &   face(2,5)*(face(3,6)-face(3,9))+face(2,5)*(face(3,8)-face(3,9))+face(2,9)*(face(3,6)-face(3,9))-face(2,9)*(face(3,8)-face(3,9)) - &
-         &   face(3,5)*(face(2,8)-face(2,9))+face(3,5)*(face(2,6)-face(2,9))+face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,6)-face(2,9)) - &
-         &   (face(2,7)-face(2,9))*(face(3,8)-face(3,9))+(face(2,8)-face(2,9))*(face(3,7)-face(3,9)) - &
-         &   face(2,6)*(face(3,7)-face(3,9))+face(2,6)*(face(3,8)-face(3,9))+face(2,9)*(face(3,7)-face(3,9))-face(2,9)*(face(3,8)-face(3,9)) - &
-         &   face(3,6)*(face(2,8)-face(2,9))+face(3,6)*(face(2,7)-face(2,9))+face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,7)-face(2,9)))
-         face(2,9) = 0.25_WP * sum(face(2,5:8))
-         face(3,9) = 0.25_WP * sum(face(3,5:8))
-      end subroutine volume_correct_x
-      
-      !> Volume correction for Y-flux (analytical from noirl)
-      subroutine volume_correct_y(volume)
-         real(WP), intent(inout) :: volume
-         real(WP), dimension(3) :: va, vb, vc
-         integer :: ntet_
-         ! Compute current volume mismatch (negative sign for Y)
-         do ntet_ = 1, 6
-            va = face(:,tet_map(1,ntet_)) - face(:,tet_map(4,ntet_))
-            vb = face(:,tet_map(2,ntet_)) - face(:,tet_map(4,ntet_))
-            vc = face(:,tet_map(3,ntet_)) - face(:,tet_map(4,ntet_))
-            volume = volume - (va(1)*(vb(2)*vc(3)-vc(2)*vb(3)) - va(2)*(vb(1)*vc(3)-vc(1)*vb(3)) + va(3)*(vb(1)*vc(2)-vc(1)*vb(2))) / 6.0_WP
-         end do
-         ! Analytical correction for y-component of 9th point
-         face(1,9) = 0.25_WP * sum(face(1,5:8))
-         face(2,9) = (6.0_WP*volume + face(1,5)*((face(3,6)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,6)) + &
-         &   face(1,9)*((face(3,8)-face(3,9))*face(2,6)-(face(3,6)-face(3,9))*face(2,8)) + &
-         &   face(2,5)*((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9))) + &
-         &   face(3,5)*((face(1,8)-face(1,9))*face(2,6)-(face(1,6)-face(1,9))*face(2,8)) + &
-         &   face(3,9)*((face(1,6)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,6)) + &
-         &   face(1,6)*((face(3,7)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,7)) + &
-         &   face(1,9)*((face(3,8)-face(3,9))*face(2,7)-(face(3,7)-face(3,9))*face(2,8)) + &
-         &   face(2,6)*((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9))) + &
-         &   face(3,6)*((face(1,8)-face(1,9))*face(2,7)-(face(1,7)-face(1,9))*face(2,8)) + &
-         &   face(3,9)*((face(1,7)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,7))) / &
-         &  (face(1,5)*((face(3,6)-face(3,9))-(face(3,8)-face(3,9))) + &
-         &   face(1,9)*((face(3,8)-face(3,9))-(face(3,6)-face(3,9))) + &
-         &   ((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9))) + &
-         &   face(3,5)*((face(1,8)-face(1,9))-(face(1,6)-face(1,9)))+face(3,9)*((face(1,6)-face(1,9))-(face(1,8)-face(1,9))) + &
-         &   face(1,9)*((face(3,8)-face(3,9))-(face(3,7)-face(3,9))) + &
-         &   ((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9))) + &
-         &   face(3,6)*((face(1,8)-face(1,9))-(face(1,7)-face(1,9)))+face(3,9)*((face(1,7)-face(1,9))-(face(1,8)-face(1,9))))
-         face(3,9) = 0.25_WP * sum(face(3,5:8))
-      end subroutine volume_correct_y
-      
-      !> Volume correction for Z-flux (analytical from noirl)
-      subroutine volume_correct_z(volume)
-         real(WP), intent(inout) :: volume
-         real(WP), dimension(3) :: va, vb, vc
-         integer :: ntet_
-         ! Compute current volume mismatch
-         do ntet_ = 1, 6
-            va = face(:,tet_map(1,ntet_)) - face(:,tet_map(4,ntet_))
-            vb = face(:,tet_map(2,ntet_)) - face(:,tet_map(4,ntet_))
-            vc = face(:,tet_map(3,ntet_)) - face(:,tet_map(4,ntet_))
-            volume = volume + (va(1)*(vb(2)*vc(3)-vc(2)*vb(3)) - va(2)*(vb(1)*vc(3)-vc(1)*vb(3)) + va(3)*(vb(1)*vc(2)-vc(1)*vb(2))) / 6.0_WP
-         end do
-         ! Analytical correction for z-component
-         face(1,9) = 0.25_WP * sum(face(1,5:8))
-         face(2,9) = 0.25_WP * sum(face(2,5:8))
-         face(3,9) = (6.0_WP*volume + &
-         &   face(1,5)*face(2,6)*face(3,8) - face(1,5)*face(3,6)*face(2,8) - &
-         &   face(2,5)*face(1,6)*face(3,8) + face(2,5)*face(3,6)*face(1,8) + &
-         &   face(3,5)*face(1,6)*face(2,8) - face(3,5)*face(2,6)*face(1,8) + &
-         &   face(1,5)*face(3,6)*face(2,5) - face(2,5)*face(3,6)*face(1,5) - &
-         &   face(3,5)*face(1,6)*face(2,5) + face(3,5)*face(2,6)*face(1,5) + &
-         &   face(1,6)*face(2,7)*face(3,8) - face(1,6)*face(3,7)*face(2,8) - &
-         &   face(2,6)*face(1,7)*face(3,8) + face(2,6)*face(3,7)*face(1,8) + &
-         &   face(3,6)*face(1,7)*face(2,8) - face(3,6)*face(2,7)*face(1,8) - &
-         &   face(1,5)*face(3,8)*face(2,5) + face(2,5)*face(3,8)*face(1,5) + &
-         &   face(3,5)*face(1,8)*face(2,5) - face(3,5)*face(2,8)*face(1,5) + &
-         &   face(1,6)*face(3,7)*face(2,5) - face(2,6)*face(3,7)*face(1,5) - &
-         &   face(3,6)*face(1,7)*face(2,5) + face(3,6)*face(2,7)*face(1,5) + &
-         &   face(1,7)*face(3,8)*face(2,5) - face(2,7)*face(3,8)*face(1,5) - &
-         &   face(3,7)*face(1,8)*face(2,5) + face(3,7)*face(2,8)*face(1,5)) / &
-         &  (face(1,5)*face(2,6) - face(2,5)*face(1,6) - face(1,5)*face(2,8) + face(2,5)*face(1,8) + &
-         &   face(1,6)*face(2,7) - face(2,6)*face(1,7) + face(1,7)*face(2,8) - face(2,7)*face(1,8))
-      end subroutine volume_correct_z
-      
+
    end subroutine advance_vof
 
 
@@ -2059,6 +1941,29 @@ contains
       call io%read_data(dirname, this%Cgas, 'Cgas')
       call io%read_data(dirname, this%PLIC, 'PLIC')
    end subroutine restore_checkpoint
+
+   !> Compute advective CFL at finest level
+   !> Takes external staggered velocity MultiFabs and returns max CFL
+   subroutine get_cfl(this, U, V, W, dt, cfl)
+      class(amrvof), intent(inout) :: this
+      type(amrex_multifab), intent(in) :: U, V, W  !< Staggered velocity at clvl
+      real(WP), intent(in) :: dt
+      real(WP), intent(out) :: cfl
+      real(WP) :: Umax, Vmax, Wmax, CFLx, CFLy, CFLz
+      integer :: lvl
+      ! Get finest level metrics
+      lvl = this%amr%clvl()
+      ! Get max velocity norms
+      Umax = U%norm0()
+      Vmax = V%norm0()
+      Wmax = W%norm0()
+      ! Compute directional CFLs
+      CFLx = dt * Umax / this%amr%dx(lvl)
+      CFLy = dt * Vmax / this%amr%dy(lvl)
+      CFLz = dt * Wmax / this%amr%dz(lvl)
+      ! Return max CFL
+      cfl = max(CFLx, CFLy, CFLz)
+   end subroutine get_cfl
 
    !> Print solver info to screen
    subroutine amrvof_print(this)

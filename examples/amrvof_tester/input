@@ -1,5 +1,5 @@
-# Select which test to run: geometry, plic, all
-Test: plic
+# Select which test to run: geometry, plic, advect, all
+Test: advect
 
 # Mesh parameters
 Base nx: 32
@@ -7,5 +7,18 @@ Base ny: 32
 Base nz: 32
 Max level: 2
 
-# Sphere parameters (for plic test)
-Sphere radius: 0.25
+# Regridding parameters
+Regrid nsteps: 0
+
+# Sphere parameters
+Sphere radius: 0.1
+
+# Time integration
+Max time: 1.0
+Max dt:   5e-3
+Max CFL:  0.9
+
+# Output
+Output period: 0.1
+
+

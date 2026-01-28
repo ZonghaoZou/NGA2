@@ -3405,6 +3405,19 @@ contains
                call get_normal(moments,normal)
                normal=normalize(normal)
                ! Rotate normal vector to original octant
+               if (direction2.eq.1) then
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               else if (direction2.eq.2) then
+                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
+               else if (direction2.eq.3) then
+                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
+               else if (direction2.eq.4) then
+                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               else if (direction2.eq.5) then
+                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               end if
                if (direction.eq.1) then
                   normal(0)=-normal(0)
                else if (direction.eq.2) then
@@ -3424,20 +3437,6 @@ contains
                   normal(0)=-normal(0)
                   normal(1)=-normal(1)
                   normal(2)=-normal(2)
-               end if
-               ! Undo direction2 rotation (Cartesian plane swaps)
-               if (direction2.eq.1) then
-                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
-               else if (direction2.eq.2) then
-                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
-               else if (direction2.eq.3) then
-                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
-               else if (direction2.eq.4) then
-                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
-                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
-               else if (direction2.eq.5) then
-                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
-                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
                end if
                if (.not.flip) then
                   normal(0)=-normal(0)
@@ -3646,6 +3645,19 @@ contains
             ! Get PLIC normal vector from neural network
             call get_normal(moments,normal); normal=normalize(normal)
             ! Rotate normal vector to original octant
+            if (direction2.eq.1) then
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            else if (direction2.eq.2) then
+               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
+            else if (direction2.eq.3) then
+               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
+            else if (direction2.eq.4) then
+               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            else if (direction2.eq.5) then
+               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            end if
             if (direction.eq.1) then
                normal(0)=-normal(0)
             else if (direction.eq.2) then
@@ -3665,20 +3677,6 @@ contains
                normal(0)=-normal(0)
                normal(1)=-normal(1)
                normal(2)=-normal(2)
-            end if
-            ! Undo direction2 rotation (Cartesian plane swaps)
-            if (direction2.eq.1) then
-               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
-            else if (direction2.eq.2) then
-               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
-            else if (direction2.eq.3) then
-               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
-            else if (direction2.eq.4) then
-               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
-               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
-            else if (direction2.eq.5) then
-               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
-               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
             end if
             if (.not.flip) then
                normal(0)=-normal(0)
