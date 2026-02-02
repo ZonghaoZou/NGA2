@@ -119,7 +119,9 @@ module tpcons_class
       real(WP), dimension(:,:,:,:), allocatable :: itpr_x,itpr_y,itpr_z   !< Interpolation for density
       real(WP), dimension(:,:,:,:), allocatable :: divp_x,divp_y,divp_z   !< Divergence for P-cell
       real(WP), dimension(:,:,:,:), allocatable :: divu_x,divv_y,divw_z   !< Divergence for W-cell
-      
+      real(WP), dimension(:,:,:,:), allocatable :: grdu_x,grdu_y,grdu_z   !< Velocity gradient for U
+      real(WP), dimension(:,:,:,:), allocatable :: grdv_x,grdv_y,grdv_z   !< Velocity gradient for V
+      real(WP), dimension(:,:,:,:), allocatable :: grdw_x,grdw_y,grdw_z   !< Velocity gradient for W
       ! Masking info for metric modification
       integer, dimension(:,:,:), allocatable ::  mask                     !< Integer array used for modifying P metrics
       integer, dimension(:,:,:), allocatable :: umask                     !< Integer array used for modifying U metrics
@@ -150,7 +152,7 @@ module tpcons_class
       procedure :: get_cfl                                !< Calculate maximum CFL
       procedure :: get_max                                !< Calculate maximum field values
       ! procedure :: get_strainrate                         !< Calculate deviatoric part of strain rate tensor
-      ! procedure :: get_gradU                              !< Calculate velocity gradient tensor
+      procedure :: get_gradU                              !< Calculate velocity gradient tensor
       ! procedure :: get_ugradu                             !< Calculate (u.grad)u vector
       ! procedure :: get_vorticity                          !< Calculate vorticity vector
       procedure :: get_mfr                                !< Calculate outgoing MFR through each bcond
@@ -165,11 +167,13 @@ module tpcons_class
       procedure :: add_surface_tension_jump_twoVF         !< Add surface tension jump - two decomposed VF fields
       procedure :: add_static_contact                     !< Add static contact line model to surface tension jump
       procedure :: update_faceU
-      procedure :: update_faceP
-      procedure :: get_STjump_cellcenter
-      procedure :: get_pgrad_cellcenter                   !< Calculate pressure gradient for collocated grid
+      ! procedure :: update_faceP
+      ! procedure :: get_STjump_cellcenter
+      ! procedure :: get_pgrad_cellcenter                   !< Calculate pressure gradient for collocated grid
       procedure :: viscosity_explict
-      procedure :: apply_hydrostatic_pressure
+      ! procedure :: apply_hydrostatic_pressure
+      procedure :: get_cell_pgrad
+      procedure :: get_rhie_chow_correction
    end type tpcons
    
    
@@ -388,6 +392,53 @@ contains
             end do
          end do
       end do
+      ! Allocate finite difference velocity gradient operators
+      allocate(this%grdu_x( 0:+1,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Cell-centered
+      allocate(this%grdv_y( 0:+1,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Cell-centered
+      allocate(this%grdw_z( 0:+1,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Cell-centered
+      allocate(this%grdv_x(-1: 0,this%cfg%imino_+1:this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Edge-centered (xy)
+      allocate(this%grdw_x(-1: 0,this%cfg%imino_+1:this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Edge-centered (zx)
+      allocate(this%grdu_y(-1: 0,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_+1:this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Edge-centered (xy)
+      allocate(this%grdw_y(-1: 0,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_+1:this%cfg%jmaxo_,this%cfg%kmino_  :this%cfg%kmaxo_)) !< Edge-centered (yz)
+      allocate(this%grdu_z(-1: 0,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_+1:this%cfg%kmaxo_)) !< Edge-centered (zx)
+      allocate(this%grdv_z(-1: 0,this%cfg%imino_  :this%cfg%imaxo_,this%cfg%jmino_  :this%cfg%jmaxo_,this%cfg%kmino_+1:this%cfg%kmaxo_)) !< Edge-centered (yz)
+      ! Create gradient coefficients to cell center [xm,ym,zm]
+      do k=this%cfg%kmino_,this%cfg%kmaxo_
+         do j=this%cfg%jmino_,this%cfg%jmaxo_
+            do i=this%cfg%imino_,this%cfg%imaxo_
+               this%grdu_x(:,i,j,k)=this%cfg%dxi(i)*[-1.0_WP,+1.0_WP] !< FD gradient in x of U from [x ,ym,zm]
+               this%grdv_y(:,i,j,k)=this%cfg%dyi(j)*[-1.0_WP,+1.0_WP] !< FD gradient in y of V from [xm,y ,zm]
+               this%grdw_z(:,i,j,k)=this%cfg%dzi(k)*[-1.0_WP,+1.0_WP] !< FD gradient in z of W from [xm,ym,z ]
+            end do
+         end do
+      end do
+      ! Create gradient coefficients to cell edge in x
+      do k=this%cfg%kmino_  ,this%cfg%kmaxo_
+         do j=this%cfg%jmino_  ,this%cfg%jmaxo_
+            do i=this%cfg%imino_+1,this%cfg%imaxo_
+               this%grdv_x(:,i,j,k)=this%cfg%dxmi(i)*[-1.0_WP,+1.0_WP] !< FD gradient in x of V from [xm,y ,zm]
+               this%grdw_x(:,i,j,k)=this%cfg%dxmi(i)*[-1.0_WP,+1.0_WP] !< FD gradient in x of W from [xm,ym,z ]
+            end do
+         end do
+      end do
+      ! Create gradient coefficients to cell edge in z
+      do k=this%cfg%kmino_+1,this%cfg%kmaxo_
+         do j=this%cfg%jmino_  ,this%cfg%jmaxo_
+            do i=this%cfg%imino_  ,this%cfg%imaxo_
+               this%grdu_z(:,i,j,k)=this%cfg%dzmi(k)*[-1.0_WP,+1.0_WP] !< FD gradient in z of U from [x ,ym,zm]
+               this%grdv_z(:,i,j,k)=this%cfg%dzmi(k)*[-1.0_WP,+1.0_WP] !< FD gradient in z of V from [xm,y ,zm]
+            end do
+         end do
+      end do
+      
+      do k=this%cfg%kmino_+1,this%cfg%kmaxo_
+         do j=this%cfg%jmino_  ,this%cfg%jmaxo_
+            do i=this%cfg%imino_  ,this%cfg%imaxo_
+               this%grdu_z(:,i,j,k)=this%cfg%dzmi(k)*[-1.0_WP,+1.0_WP] !< FD gradient in z of U from [x ,ym,zm]
+               this%grdv_z(:,i,j,k)=this%cfg%dzmi(k)*[-1.0_WP,+1.0_WP] !< FD gradient in z of V from [xm,y ,zm]
+            end do
+         end do
+      end do
    end subroutine init_metrics
    
    
@@ -473,18 +524,118 @@ contains
          end do
       end do
       
+
+      ! Adjust gradient coefficients to cell edge in x
+      do k=this%cfg%kmino_  ,this%cfg%kmaxo_
+         do j=this%cfg%jmino_  ,this%cfg%jmaxo_
+            do i=this%cfg%imino_+1,this%cfg%imaxo_
+               ! FD gradient in x of V from [xm,y ,zm]
+               if (maxval(this%vmask(i-1:i,j,k)).gt.0) then
+                  delta=0.0_WP
+                  if (this%vmask(i  ,j,k).eq.0) delta=delta+(this%cfg%xm(i)-this%cfg%x (i  ))
+                  if (this%vmask(i-1,j,k).eq.0) delta=delta+(this%cfg%x (i)-this%cfg%xm(i-1))
+                  if (delta.gt.0.0_WP) then
+                     this%grdv_x(:,i,j,k)=[-1.0_WP,+1.0_WP]/delta
+                  else
+                     this%grdv_x(:,i,j,k)=0.0_WP
+                  end if
+               end if
+               ! FD gradient in x of W from [xm,ym,z ]
+               if (maxval(this%wmask(i-1:i,j,k)).gt.0) then
+                  delta=0.0_WP
+                  if (this%wmask(i  ,j,k).eq.0) delta=delta+(this%cfg%xm(i)-this%cfg%x (i  ))
+                  if (this%wmask(i-1,j,k).eq.0) delta=delta+(this%cfg%x (i)-this%cfg%xm(i-1))
+                  if (delta.gt.0.0_WP) then
+                     this%grdw_x(:,i,j,k)=[-1.0_WP,+1.0_WP]/delta
+                  else
+                     this%grdw_x(:,i,j,k)=0.0_WP
+                  end if
+               end if
+            end do
+         end do
+      end do
+      
+      ! Adjust gradient coefficients to cell edge in y
+      do k=this%cfg%kmino_  ,this%cfg%kmaxo_
+         do j=this%cfg%jmino_+1,this%cfg%jmaxo_
+            do i=this%cfg%imino_  ,this%cfg%imaxo_
+               ! FD gradient in y of U from [x ,ym,zm]
+               if (maxval(this%umask(i,j-1:j,k)).gt.0) then
+                  delta=0.0_WP
+                  if (this%umask(i,j  ,k).eq.0) delta=delta+(this%cfg%ym(j)-this%cfg%y (j  ))
+                  if (this%umask(i,j-1,k).eq.0) delta=delta+(this%cfg%y (j)-this%cfg%ym(j-1))
+                  if (delta.gt.0.0_WP) then
+                     this%grdu_y(:,i,j,k)=[-1.0_WP,+1.0_WP]/delta
+                  else
+                     this%grdu_y(:,i,j,k)=0.0_WP
+                  end if
+               end if
+               ! FD gradient in y of W from [xm,ym,z ]
+               if (maxval(this%wmask(i,j-1:j,k)).gt.0) then
+                  delta=0.0_WP
+                  if (this%wmask(i,j  ,k).eq.0) delta=delta+(this%cfg%ym(j)-this%cfg%y (j  ))
+                  if (this%wmask(i,j-1,k).eq.0) delta=delta+(this%cfg%y (j)-this%cfg%ym(j-1))
+                  if (delta.gt.0.0_WP) then
+                     this%grdw_y(:,i,j,k)=[-1.0_WP,+1.0_WP]/delta
+                  else
+                     this%grdw_y(:,i,j,k)=0.0_WP
+                  end if
+               end if
+            end do
+         end do
+      end do
+      
+      ! Adjust gradient coefficients to cell edge in z
+      do k=this%cfg%kmino_+1,this%cfg%kmaxo_
+         do j=this%cfg%jmino_  ,this%cfg%jmaxo_
+            do i=this%cfg%imino_  ,this%cfg%imaxo_
+               ! FD gradient in z of U from [x ,ym,zm]
+               if (maxval(this%umask(i,j,k-1:k)).gt.0) then
+                  delta=0.0_WP
+                  if (this%umask(i,j,k  ).eq.0) delta=delta+(this%cfg%zm(k)-this%cfg%z (k  ))
+                  if (this%umask(i,j,k-1).eq.0) delta=delta+(this%cfg%z (k)-this%cfg%zm(k-1))
+                  if (delta.gt.0.0_WP) then
+                     this%grdu_z(:,i,j,k)=[-1.0_WP,+1.0_WP]/delta
+                  else
+                     this%grdu_z(:,i,j,k)=0.0_WP
+                  end if
+               end if
+               ! FD gradient in z of V from [xm,y ,zm]
+               if (maxval(this%vmask(i,j,k-1:k)).gt.0) then
+                  delta=0.0_WP
+                  if (this%vmask(i,j,k  ).eq.0) delta=delta+(this%cfg%zm(k)-this%cfg%z (k  ))
+                  if (this%vmask(i,j,k-1).eq.0) delta=delta+(this%cfg%z (k)-this%cfg%zm(k-1))
+                  if (delta.gt.0.0_WP) then
+                     this%grdv_z(:,i,j,k)=[-1.0_WP,+1.0_WP]/delta
+                  else
+                     this%grdv_z(:,i,j,k)=0.0_WP
+                  end if
+               end if
+            end do
+         end do
+      end do
+
       ! Adjust metrics to account for lower dimensionality
       if (this%cfg%nx.eq.1) then
          this%divp_x=0.0_WP
          this%divu_x=0.0_WP
+         this%grdu_x=0.0_WP
+         this%grdv_x=0.0_WP
+         this%grdw_x=0.0_WP
       end if
       if (this%cfg%ny.eq.1) then
          this%divp_y=0.0_WP
          this%divv_y=0.0_WP
+         this%grdu_y=0.0_WP
+         this%grdv_y=0.0_WP
+         this%grdw_y=0.0_WP
       end if
       if (this%cfg%nz.eq.1) then
          this%divp_z=0.0_WP
          this%divw_z=0.0_WP
+         this%grdu_z=0.0_WP
+         this%grdv_z=0.0_WP
+         this%grdw_z=0.0_WP
       end if
       
    end subroutine adjust_metrics
@@ -885,68 +1036,68 @@ contains
    end subroutine apply_bcond
    
    
-   !> Enforce boundary conditions on face pressure with Hydrostatic Correction
-   subroutine apply_hydrostatic_pressure(this, Px, Py, Pz)
-      implicit none
-      class(tpcons), intent(inout) :: this
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Px, Py, Pz
-      integer :: i,j,k
-      real(WP) :: hydro_inc, dist
-      ! ---------------------------------------------------------
-      ! X-Faces (Loop over i range)
-      ! ---------------------------------------------------------
-      do k = this%cfg%kmin_, this%cfg%kmax_
-         do j = this%cfg%jmin_, this%cfg%jmax_
-            do i = this%cfg%imin_, this%cfg%imax_
-               ! Check X-
-               if (this%mask(i,j,k).eq.0.and.this%mask(i-1,j,k).gt.0) then
-                  dist = -0.5_WP * this%cfg%dx(i)
-                  hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
-                  Px(i,j,k) = this%P(i,j,k) + hydro_inc
-               end if
+   ! !> Enforce boundary conditions on face pressure with Hydrostatic Correction
+   ! subroutine apply_hydrostatic_pressure(this, Px, Py, Pz)
+   !    implicit none
+   !    class(tpcons), intent(inout) :: this
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Px, Py, Pz
+   !    integer :: i,j,k
+   !    real(WP) :: hydro_inc, dist
+   !    ! ---------------------------------------------------------
+   !    ! X-Faces (Loop over i range)
+   !    ! ---------------------------------------------------------
+   !    do k = this%cfg%kmin_, this%cfg%kmax_
+   !       do j = this%cfg%jmin_, this%cfg%jmax_
+   !          do i = this%cfg%imin_, this%cfg%imax_
+   !             ! Check X-
+   !             if (this%mask(i,j,k).eq.0.and.this%mask(i-1,j,k).gt.0) then
+   !                dist = -0.5_WP * this%cfg%dx(i)
+   !                hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
+   !                Px(i,j,k) = this%P(i,j,k) + hydro_inc
+   !             end if
 
-               ! Check X+
-               if (this%mask(i,j,k).eq.0.and.this%mask(i+1,j,k).gt.0) then
-                  dist = +0.5_WP * this%cfg%dx(i)
-                  hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
-                  Px(i+1,j,k) = this%P(i,j,k) + hydro_inc
-               end if
+   !             ! Check X+
+   !             if (this%mask(i,j,k).eq.0.and.this%mask(i+1,j,k).gt.0) then
+   !                dist = +0.5_WP * this%cfg%dx(i)
+   !                hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
+   !                Px(i+1,j,k) = this%P(i,j,k) + hydro_inc
+   !             end if
 
-               ! Check Y-
-               if (this%mask(i,j,k).eq.0.and.this%mask(i,j-1,k).gt.0) then
-                  dist = -0.5_WP * this%cfg%dy(j)
-                  hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
-                  Py(i,j,k) = this%P(i,j,k) + hydro_inc
-               end if
+   !             ! Check Y-
+   !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j-1,k).gt.0) then
+   !                dist = -0.5_WP * this%cfg%dy(j)
+   !                hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
+   !                Py(i,j,k) = this%P(i,j,k) + hydro_inc
+   !             end if
 
-               ! Check Y+
-               if (this%mask(i,j,k).eq.0.and.this%mask(i,j+1,k).gt.0) then
-                  dist = +0.5_WP * this%cfg%dy(j)
-                  hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
-                  Py(i,j+1,k) = this%P(i,j,k) + hydro_inc
-               end if
+   !             ! Check Y+
+   !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j+1,k).gt.0) then
+   !                dist = +0.5_WP * this%cfg%dy(j)
+   !                hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
+   !                Py(i,j+1,k) = this%P(i,j,k) + hydro_inc
+   !             end if
 
-               ! Check Z-
-               if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k-1).gt.0) then
-                  dist = -0.5_WP * this%cfg%dz(k)
-                  hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
-                  Pz(i,j,k) = this%P(i,j,k) + hydro_inc
-               end if
+   !             ! Check Z-
+   !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k-1).gt.0) then
+   !                dist = -0.5_WP * this%cfg%dz(k)
+   !                hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
+   !                Pz(i,j,k) = this%P(i,j,k) + hydro_inc
+   !             end if
 
-               ! Check Z+
-               if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k+1).gt.0) then
-                  dist = +0.5_WP * this%cfg%dz(k)
-                  hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
-                  Pz(i,j,k+1) = this%P(i,j,k) + hydro_inc
-               end if
-            end do
-         end do
-      end do
-      ! Sync fields to ensure ghosts are consistent
-      call this%cfg%sync(Px)
-      call this%cfg%sync(Py)
-      call this%cfg%sync(Pz)
-   end subroutine apply_hydrostatic_pressure
+   !             ! Check Z+
+   !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k+1).gt.0) then
+   !                dist = +0.5_WP * this%cfg%dz(k)
+   !                hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
+   !                Pz(i,j,k+1) = this%P(i,j,k) + hydro_inc
+   !             end if
+   !          end do
+   !       end do
+   !    end do
+   !    ! Sync fields to ensure ghosts are consistent
+   !    call this%cfg%sync(Px)
+   !    call this%cfg%sync(Py)
+   !    call this%cfg%sync(Pz)
+   ! end subroutine apply_hydrostatic_pressure
 
    !> Calculate the explicit time derivative of momentum given rhoU, U, and P
    subroutine get_dmomdt(this,vf,drhoUdt,drhoVdt,drhoWdt)
@@ -959,11 +1110,12 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: drhoWdt !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k,ii,jj,kk
       real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
-      ! real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
+      real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
       ! ! Allocate flux arrays
-      ! allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
-      ! allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
-      ! allocate(PZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PZ=0.0_WP
+      allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
+      allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
+      allocate(PZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PZ=0.0_WP
+      call this%get_cell_pgrad(vf,this%P,PX,PY,PZ)
       ! call this%update_faceP(vf,this%P,PX,PY,PZ)
       ! call this%get_STjump_cellcenter(vf,PX,PY,PZ,1)
       ! Zero out drhoUVW/dt arrays
@@ -1010,6 +1162,7 @@ contains
          end do
       end do
       ! Sync it
+      drhoUdt=drhoUdt-PX
       call this%cfg%sync(drhoUdt)
 
       ! Flux of rhoV
@@ -1048,6 +1201,7 @@ contains
          end do
       end do
       ! Sync it
+      drhoVdt=drhoVdt-PY
       call this%cfg%sync(drhoVdt)
 
       ! Flux of rhoW
@@ -1086,6 +1240,7 @@ contains
          end do
       end do
       ! Sync it
+      drhoWdt=drhoWdt-PZ
       call this%cfg%sync(drhoWdt)
 
       ! Deallocate flux arrays
@@ -1219,9 +1374,9 @@ contains
       ! this%dPjx=this%Pjx-this%dPjx
       ! this%dPjy=this%Pjy-this%dPjy
       ! this%dPjz=this%Pjz-this%dPjz
-      this%dPjx=this%Pjx!-this%dPjx
-      this%dPjy=this%Pjy!-this%dPjy
-      this%dPjz=this%Pjz!-this%dPjz
+      this%dPjx=this%Pjx-this%dPjx
+      this%dPjy=this%Pjy-this%dPjy
+      this%dPjz=this%Pjz-this%dPjz
       
       ! Add div(Pjump) to RP
       do k=this%cfg%kmin_,this%cfg%kmax_
@@ -1680,8 +1835,7 @@ contains
       call this%cfg%sync(Pgradz)
    end subroutine get_pgrad
 
-   !> Calculate the pressure gradient based on P
-   subroutine get_pgrad_cellcenter(this,vf,P,Pgradx,Pgrady,Pgradz)
+   subroutine get_cell_pgrad(this,vf,P,Pgradx,Pgrady,Pgradz)
       use vfs_class, only: vfs
       implicit none
       class(tpcons), intent(inout) :: this
@@ -1697,68 +1851,115 @@ contains
       allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
       allocate(PZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PZ=0.0_WP
 
-      call this%update_faceP(vf,P,PX,PY,PZ)
-      call this%apply_hydrostatic_pressure(PX,PY,PZ)
-      
-      Pgradx=0.0_WP; Pgrady=0.0_WP; Pgradz=0.0_WP
-      do k=this%cfg%kmin_,this%cfg%kmax_
-         do j=this%cfg%jmin_,this%cfg%jmax_
-            do i=this%cfg%imin_,this%cfg%imax_
-               if (this%mask(i,j,k).gt.0) cycle
-               Pgradx(i,j,k)=sum(this%divp_x(:,i,j,k)*PX(i:i+1,j,k))
-               Pgrady(i,j,k)=sum(this%divp_y(:,i,j,k)*PY(i,j:j+1,k))
-               Pgradz(i,j,k)=sum(this%divp_z(:,i,j,k)*PZ(i,j,k:k+1))
-            end do
-         end do
-      end do
-      ! Sync it
-      call this%cfg%sync(Pgradx)
-      call this%cfg%sync(Pgrady)
-      call this%cfg%sync(Pgradz)
-   end subroutine get_pgrad_cellcenter
-
-
-   !> Calculate the pressure gradient based on P
-   subroutine get_STjump_cellcenter(this,vf,Pgradx,Pgrady,Pgradz,jump_type)
-      use vfs_class, only: vfs
-      implicit none
-      class(tpcons), intent(inout) :: this
-      class(vfs), intent(in) :: vf
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgradx !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgrady !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgradz !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      integer, intent(in) :: jump_type
-      integer :: i,j,k
-      real(WP) :: rho_l,rho_r
-      real(WP), dimension(0:1) :: jump
-
-      ! Pgradx=0.0_WP; Pgrady=0.0_WP; Pgradz=0.0_WP
-      select case(jump_type)
-      case(1)
-         do k=this%cfg%kmin_,this%cfg%kmax_
-            do j=this%cfg%jmin_,this%cfg%jmax_
-               do i=this%cfg%imin_,this%cfg%imax_
-               rho_l=sum(vf%Gvol(0,:,:,i,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i,j,k))*this%rho_l
-               rho_r=sum(vf%Gvol(1,:,:,i,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i,j,k))*this%rho_l
-               jump(0)=rho_l*this%Pjx(i  ,j,k)/(this%RHOX(i  ,j,k)*this%cfg%vol(i,j,k))
-               jump(1)=rho_r*this%Pjx(i+1,j,k)/(this%RHOX(i+1,j,k)*this%cfg%vol(i,j,k))
-               Pgradx(i,j,k)=Pgradx(i,j,k)-sum(jump)
-               ! Pressure jump, gradient for y
-               rho_l=sum(vf%Gvol(:,0,:,i,j,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j,k))*this%rho_l
-               rho_r=sum(vf%Gvol(:,1,:,i,j,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j,k))*this%rho_l
-               jump(0)=rho_l*this%Pjy(i,j  ,k)/(this%RHOY(i,j  ,k)*this%cfg%vol(i,j,k))
-               jump(1)=rho_r*this%Pjy(i,j+1,k)/(this%RHOY(i,j+1,k)*this%cfg%vol(i,j,k))
-               Pgrady(i,j,k)=Pgrady(i,j,k)-sum(jump)
-               ! Pressure jump, gradient for z
-               rho_l=sum(vf%Gvol(:,:,0,i,j,k))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k))*this%rho_l
-               rho_r=sum(vf%Gvol(:,:,1,i,j,k))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k))*this%rho_l
-               jump(0)=rho_l*this%Pjz(i,j,k  )/(this%RHOZ(i,j,k  )*this%cfg%vol(i,j,k))
-               jump(1)=rho_r*this%Pjz(i,j,k+1)/(this%RHOZ(i,j,k+1)*this%cfg%vol(i,j,k))
-               Pgradz(i,j,k)=Pgradz(i,j,k)-sum(jump)
+      update_faceP: block
+         real(WP), dimension(0:1) :: rho_f
+         real(WP) :: vol_l,vol_r
+         do k=this%cfg%kmin_,this%cfg%kmax_+1
+            do j=this%cfg%jmin_,this%cfg%jmax_+1
+               do i=this%cfg%imin_,this%cfg%imax_+1
+                  ! Update face pressure and density in X
+                  rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(0,:,:,i  ,j,k)+vf%Lvol(0,:,:,i  ,j,k))
+                  if (vol_r.gt.0.0_WP.and.this%mask(i  ,j,k).eq.0) rho_f(1)=(sum(vf%Gvol(0,:,:,i  ,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i  ,j,k))*this%rho_l)
+                  rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(1,:,:,i-1,j,k)+vf%Lvol(1,:,:,i-1,j,k))
+                  if (vol_l.gt.0.0_WP.and.this%mask(i-1,j,k).eq.0) rho_f(0)=(sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l)
+                  if (sum(rho_f).gt.0.0_WP) then
+                     PX(i,j,k)=2.0_WP*sum(this%itpr_x(:,i,j,k)*P(i-1:i,j,k))&
+                        -sum(this%itpr_x(:,i,j,k)*rho_f*P(i-1:i,j,k))/(sum(this%itpr_x(:,i,j,k)*rho_f) + tiny(1.0_WP))
+                  end if
+                  ! Update face pressure and density in Y
+                  rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
+                  if (vol_r.gt.0.0_WP.and.this%mask(i,j  ,k).eq.0) rho_f(1)=(sum(vf%Gvol(:,0,:,i,j  ,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j  ,k))*this%rho_l)
+                  rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,1,:,i,j-1,k)+vf%Lvol(:,1,:,i,j-1,k))
+                  if (vol_l.gt.0.0_WP.and.this%mask(i,j-1,k).eq.0) rho_f(0)=(sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l)
+                  if (sum(rho_f).gt.0.0_WP) then
+                     PY(i,j,k)=2.0_WP*sum(this%itpr_y(:,i,j,k)*P(i,j-1:j,k))&
+                        -sum(this%itpr_y(:,i,j,k)*rho_f*P(i,j-1:j,k))/(sum(this%itpr_y(:,i,j,k)*rho_f) + tiny(1.0_WP))
+                  end if
+                  ! Update face pressure and density in Z
+                  rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
+                  if (vol_r.gt.0.0_WP.and.this%mask(i,j,k  ).eq.0) rho_f(1)=(sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l)
+                  rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,:,1,i,j,k-1)+vf%Lvol(:,:,1,i,j,k-1))
+                  if (vol_l.gt.0.0_WP.and.this%mask(i,j,k-1).eq.0) rho_f(0)=(sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l)
+                  if (sum(rho_f).gt.0.0_WP) then
+                     PZ(i,j,k)=2.0_WP*sum(this%itpr_z(:,i,j,k)*P(i,j,k-1:k))&
+                        -sum(this%itpr_z(:,i,j,k)*rho_f*P(i,j,k-1:k))/(sum(this%itpr_z(:,i,j,k)*rho_f) + tiny(1.0_WP))
+                  end if
                end do
             end do
          end do
-      case(2)
+      end block update_faceP
+
+      apply_hydrostatic_pressure: block
+         real(WP) :: hydro_inc, dist
+         do k = this%cfg%kmin_, this%cfg%kmax_
+            do j = this%cfg%jmin_, this%cfg%jmax_
+               do i = this%cfg%imin_, this%cfg%imax_
+                  ! Check X-
+                  if (this%mask(i,j,k).eq.0.and.this%mask(i-1,j,k).eq.1) then
+                     dist = -0.5_WP * this%cfg%dx(i)
+                     hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
+                     Px(i,j,k) = this%P(i,j,k) + hydro_inc
+                  end if
+                  ! Check X+
+                  if (this%mask(i,j,k).eq.0.and.this%mask(i+1,j,k).eq.1) then
+                     dist = +0.5_WP * this%cfg%dx(i)
+                     hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
+                     Px(i+1,j,k) = this%P(i,j,k) + hydro_inc
+                  end if
+                  ! Check Y-
+                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j-1,k).eq.1) then
+                     dist = -0.5_WP * this%cfg%dy(j)
+                     hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
+                     Py(i,j,k) = this%P(i,j,k) + hydro_inc
+                  end if
+                  ! Check Y+
+                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j+1,k).eq.1) then
+                     dist = +0.5_WP * this%cfg%dy(j)
+                     hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
+                     Py(i,j+1,k) = this%P(i,j,k) + hydro_inc
+                  end if
+                  ! Check Z-
+                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k-1).eq.1) then
+                     dist = -0.5_WP * this%cfg%dz(k)
+                     hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
+                     Pz(i,j,k) = this%P(i,j,k) + hydro_inc
+                  end if
+                  ! Check Z+
+                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k+1).eq.1) then
+                     dist = +0.5_WP * this%cfg%dz(k)
+                     hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
+                     Pz(i,j,k+1) = this%P(i,j,k) + hydro_inc
+                  end if
+               end do
+            end do
+         end do
+         call this%cfg%sync(Px)
+         call this%cfg%sync(Py)
+         call this%cfg%sync(Pz)
+      end block apply_hydrostatic_pressure
+
+      get_pgrad_cellcenter: block
+         Pgradx=0.0_WP; Pgrady=0.0_WP; Pgradz=0.0_WP
+         do k=this%cfg%kmin_,this%cfg%kmax_
+            do j=this%cfg%jmin_,this%cfg%jmax_
+               do i=this%cfg%imin_,this%cfg%imax_
+                  if (this%mask(i,j,k).gt.0) cycle
+                  Pgradx(i,j,k)=sum(this%divp_x(:,i,j,k)*PX(i:i+1,j,k))
+                  Pgrady(i,j,k)=sum(this%divp_y(:,i,j,k)*PY(i,j:j+1,k))
+                  Pgradz(i,j,k)=sum(this%divp_z(:,i,j,k)*PZ(i,j,k:k+1))
+               end do
+            end do
+         end do
+         ! Sync it
+         call this%cfg%sync(Pgradx)
+         call this%cfg%sync(Pgrady)
+         call this%cfg%sync(Pgradz)
+      end block get_pgrad_cellcenter
+
+      
+      get_STjump_cellcenter: block  
+         real(WP), dimension(0:1) :: jump
+         real(WP) :: rho_l,rho_r
          do k=this%cfg%kmin_,this%cfg%kmax_
             do j=this%cfg%jmin_,this%cfg%jmax_
                do i=this%cfg%imin_,this%cfg%imax_
@@ -1782,12 +1983,197 @@ contains
                end do
             end do
          end do
-      end select
-      ! Sync it
+      end block get_STjump_cellcenter
+
+      ! Copy this over so that the get_dmomdt gets the correct update next iteration
+      this%dPjx=this%Pjx
+      this%dPjy=this%Pjy
+      this%dPjz=this%Pjz
+
       call this%cfg%sync(Pgradx)
       call this%cfg%sync(Pgrady)
       call this%cfg%sync(Pgradz)
-   end subroutine get_STjump_cellcenter
+   end subroutine get_cell_pgrad
+
+
+   subroutine get_rhie_chow_correction(this,vf,dt)
+      use vfs_class, only: vfs
+      implicit none
+      class(tpcons), intent(inout) :: this
+      class(vfs), intent(in) :: vf
+      real(WP), intent(in) :: dt
+      
+      integer :: i,j,k
+      ! Face-centered forces (Pressure Gradient - Surface Tension)
+      real(WP), dimension(:,:,:), allocatable :: Fx, Fy, Fz
+      real(WP) :: F_smooth, defect
+      
+      ! 1. Allocate work arrays (Size of the domain)
+      allocate(Fx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(Fy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(Fz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+
+      ! 2. Get the Net Force at Faces (Grad P - Surface Tension)
+      !    This uses the EXACT same logic as your momentum solver, so it is consistent.
+      call this%get_pgrad(this%P,Fx,Fy,Fz)
+
+      ! 3. Apply Rhie-Chow Filter
+      !    Defect = F_face - Interpolate(F_cell)
+      !    Mathematically equivalent to: Defect = -0.25 * (F_next - 2*F_curr + F_prev)
+      
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               
+               ! --- X-Face Correction ---
+               ! Only apply if we have neighbors to smooth with (internal faces)
+               if (this%umask(i,j,k).eq.0 .and. this%umask(i-1,j,k).eq.0 .and. this%umask(i+1,j,k).eq.0) then
+                  ! if (this%RHOX(i,j,k) > 1.0e-10_WP) then
+                     ! Calculate smoothed force (Average of current, left, and right faces)
+                     F_smooth = 0.25_WP * (Fx(i-1,j,k) + 2.0_WP*Fx(i,j,k) + Fx(i+1,j,k))
+                     
+                     ! Subtract the high-frequency noise
+                     this%Uf(i,j,k) = this%Uf(i,j,k) - (dt / this%RHOX(i,j,k)) * (Fx(i,j,k) - F_smooth)
+                  ! end if
+               end if
+
+               ! --- Y-Face Correction ---
+               if (this%vmask(i,j,k).eq.0 .and. this%vmask(i,j-1,k).eq.0 .and. this%vmask(i,j+1,k).eq.0) then
+                  ! if (this%RHOY(i,j,k) > 1.0e-10_WP) then
+                     F_smooth = 0.25_WP * (Fy(i,j-1,k) + 2.0_WP*Fy(i,j,k) + Fy(i,j+1,k))
+                     this%Vf(i,j,k) = this%Vf(i,j,k) - (dt / this%RHOY(i,j,k)) * (Fy(i,j,k) - F_smooth)
+                  ! end if
+               end if
+
+               ! --- Z-Face Correction ---
+               if (this%wmask(i,j,k).eq.0 .and. this%wmask(i,j,k-1).eq.0 .and. this%wmask(i,j,k+1).eq.0) then
+                  ! if (this%RHOZ(i,j,k) > 1.0e-10_WP) then
+                     F_smooth = 0.25_WP * (Fz(i,j,k-1) + 2.0_WP*Fz(i,j,k) + Fz(i,j,k+1))
+                     this%Wf(i,j,k) = this%Wf(i,j,k) - (dt / this%RHOZ(i,j,k)) * (Fz(i,j,k) - F_smooth)
+                  ! end if
+               end if
+
+            end do
+         end do
+      end do
+
+      ! 4. Sync Ghosts and Clean Up
+      call this%cfg%sync(this%Uf)
+      call this%cfg%sync(this%Vf)
+      call this%cfg%sync(this%Wf)
+
+      deallocate(Fx, Fy, Fz)
+
+   end subroutine get_rhie_chow_correction
+
+   ! !> Calculate the pressure gradient based on P
+   ! subroutine get_pgrad_cellcenter(this,vf,P,Pgradx,Pgrady,Pgradz)
+   !    use vfs_class, only: vfs
+   !    implicit none
+   !    class(tpcons), intent(inout) :: this
+   !    class(vfs), intent(in) :: vf
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: P !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgradx !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgrady !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgradz !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    integer :: i,j,k
+   !    real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
+   !    ! Allocate flux arrays
+   !    allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
+   !    allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
+   !    allocate(PZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PZ=0.0_WP
+
+   !    call this%update_faceP(vf,P,PX,PY,PZ)
+   !    call this%apply_hydrostatic_pressure(PX,PY,PZ)
+      
+   !    Pgradx=0.0_WP; Pgrady=0.0_WP; Pgradz=0.0_WP
+   !    do k=this%cfg%kmin_,this%cfg%kmax_
+   !       do j=this%cfg%jmin_,this%cfg%jmax_
+   !          do i=this%cfg%imin_,this%cfg%imax_
+   !             if (this%mask(i,j,k).gt.0) cycle
+   !             Pgradx(i,j,k)=sum(this%divp_x(:,i,j,k)*PX(i:i+1,j,k))
+   !             Pgrady(i,j,k)=sum(this%divp_y(:,i,j,k)*PY(i,j:j+1,k))
+   !             Pgradz(i,j,k)=sum(this%divp_z(:,i,j,k)*PZ(i,j,k:k+1))
+   !          end do
+   !       end do
+   !    end do
+   !    ! Sync it
+   !    call this%cfg%sync(Pgradx)
+   !    call this%cfg%sync(Pgrady)
+   !    call this%cfg%sync(Pgradz)
+   ! end subroutine get_pgrad_cellcenter
+
+
+   ! !> Calculate the pressure gradient based on P
+   ! subroutine get_STjump_cellcenter(this,vf,Pgradx,Pgrady,Pgradz,jump_type)
+   !    use vfs_class, only: vfs
+   !    implicit none
+   !    class(tpcons), intent(inout) :: this
+   !    class(vfs), intent(in) :: vf
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgradx !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgrady !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Pgradz !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    integer, intent(in) :: jump_type
+   !    integer :: i,j,k
+   !    real(WP) :: rho_l,rho_r
+   !    real(WP), dimension(0:1) :: jump
+
+   !    ! Pgradx=0.0_WP; Pgrady=0.0_WP; Pgradz=0.0_WP
+   !    select case(jump_type)
+   !    case(1)
+   !       do k=this%cfg%kmin_,this%cfg%kmax_
+   !          do j=this%cfg%jmin_,this%cfg%jmax_
+   !             do i=this%cfg%imin_,this%cfg%imax_
+   !             rho_l=sum(vf%Gvol(0,:,:,i,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i,j,k))*this%rho_l
+   !             rho_r=sum(vf%Gvol(1,:,:,i,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i,j,k))*this%rho_l
+   !             jump(0)=rho_l*this%Pjx(i  ,j,k)/(this%RHOX(i  ,j,k)*this%cfg%vol(i,j,k))
+   !             jump(1)=rho_r*this%Pjx(i+1,j,k)/(this%RHOX(i+1,j,k)*this%cfg%vol(i,j,k))
+   !             Pgradx(i,j,k)=Pgradx(i,j,k)-sum(jump)
+   !             ! Pressure jump, gradient for y
+   !             rho_l=sum(vf%Gvol(:,0,:,i,j,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j,k))*this%rho_l
+   !             rho_r=sum(vf%Gvol(:,1,:,i,j,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j,k))*this%rho_l
+   !             jump(0)=rho_l*this%Pjy(i,j  ,k)/(this%RHOY(i,j  ,k)*this%cfg%vol(i,j,k))
+   !             jump(1)=rho_r*this%Pjy(i,j+1,k)/(this%RHOY(i,j+1,k)*this%cfg%vol(i,j,k))
+   !             Pgrady(i,j,k)=Pgrady(i,j,k)-sum(jump)
+   !             ! Pressure jump, gradient for z
+   !             rho_l=sum(vf%Gvol(:,:,0,i,j,k))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k))*this%rho_l
+   !             rho_r=sum(vf%Gvol(:,:,1,i,j,k))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k))*this%rho_l
+   !             jump(0)=rho_l*this%Pjz(i,j,k  )/(this%RHOZ(i,j,k  )*this%cfg%vol(i,j,k))
+   !             jump(1)=rho_r*this%Pjz(i,j,k+1)/(this%RHOZ(i,j,k+1)*this%cfg%vol(i,j,k))
+   !             Pgradz(i,j,k)=Pgradz(i,j,k)-sum(jump)
+   !             end do
+   !          end do
+   !       end do
+   !    case(2)
+   !       do k=this%cfg%kmin_,this%cfg%kmax_
+   !          do j=this%cfg%jmin_,this%cfg%jmax_
+   !             do i=this%cfg%imin_,this%cfg%imax_
+   !             rho_l=sum(vf%Gvol(0,:,:,i,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i,j,k))*this%rho_l
+   !             rho_r=sum(vf%Gvol(1,:,:,i,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i,j,k))*this%rho_l
+   !             jump(0)=rho_l*this%dPjx(i  ,j,k)/(this%RHOX(i  ,j,k)*this%cfg%vol(i,j,k))
+   !             jump(1)=rho_r*this%dPjx(i+1,j,k)/(this%RHOX(i+1,j,k)*this%cfg%vol(i,j,k))
+   !             Pgradx(i,j,k)=Pgradx(i,j,k)-sum(jump)
+   !             ! Pressure jump, gradient for y
+   !             rho_l=sum(vf%Gvol(:,0,:,i,j,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j,k))*this%rho_l
+   !             rho_r=sum(vf%Gvol(:,1,:,i,j,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j,k))*this%rho_l
+   !             jump(0)=rho_l*this%dPjy(i,j  ,k)/(this%RHOY(i,j  ,k)*this%cfg%vol(i,j,k))
+   !             jump(1)=rho_r*this%dPjy(i,j+1,k)/(this%RHOY(i,j+1,k)*this%cfg%vol(i,j,k))
+   !             Pgrady(i,j,k)=Pgrady(i,j,k)-sum(jump)
+   !             ! Pressure jump, gradient for z
+   !             rho_l=sum(vf%Gvol(:,:,0,i,j,k))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k))*this%rho_l
+   !             rho_r=sum(vf%Gvol(:,:,1,i,j,k))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k))*this%rho_l
+   !             jump(0)=rho_l*this%dPjz(i,j,k  )/(this%RHOZ(i,j,k  )*this%cfg%vol(i,j,k))
+   !             jump(1)=rho_r*this%dPjz(i,j,k+1)/(this%RHOZ(i,j,k+1)*this%cfg%vol(i,j,k))
+   !             Pgradz(i,j,k)=Pgradz(i,j,k)-sum(jump)
+   !             end do
+   !          end do
+   !       end do
+   !    end select
+   !    ! Sync it
+   !    call this%cfg%sync(Pgradx)
+   !    call this%cfg%sync(Pgrady)
+   !    call this%cfg%sync(Pgradz)
+   ! end subroutine get_STjump_cellcenter
    
    !> Calculate the deviatoric part of the strain rate tensor from U/V/W
    !> 1: du/dx-div/3
@@ -1985,94 +2371,94 @@ contains
 
    !> Calculate the velocity gradient tensor from U/V/W
    !> Note that gradU(i,j)=duj/dxi
-   ! subroutine get_gradU(this,gradU)
-   !    use messager, only: die
-   !    implicit none
-   !    class(tpcons), intent(inout) :: this
-   !    real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradU  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-   !    integer :: i,j,k
-   !    real(WP), dimension(:,:,:), allocatable :: dudy,dudz,dvdx,dvdz,dwdx,dwdy
+   subroutine get_gradU(this,gradU)
+      use messager, only: die
+      implicit none
+      class(tpcons), intent(inout) :: this
+      real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradU  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      integer :: i,j,k
+      real(WP), dimension(:,:,:), allocatable :: dudy,dudz,dvdx,dvdz,dwdx,dwdy
       
-   !    ! Check gradU's first two dimensions
-	!    if (size(gradU,dim=1).ne.3.or.size(gradU,dim=2).ne.3) call die('[tpcons get_gradU] gradU should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
+      ! Check gradU's first two dimensions
+	   if (size(gradU,dim=1).ne.3.or.size(gradU,dim=2).ne.3) call die('[tpcons get_gradU] gradU should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
       
-   !    ! Compute dudx, dvdy, and dwdz first
-	!    do k=this%cfg%kmin_,this%cfg%kmax_
-   !       do j=this%cfg%jmin_,this%cfg%jmax_
-   !          do i=this%cfg%imin_,this%cfg%imax_
-   !             gradU(1,1,i,j,k)=sum(this%grdu_x(:,i,j,k)*this%U(i:i+1,j,k))
-   !             gradU(2,2,i,j,k)=sum(this%grdv_y(:,i,j,k)*this%V(i,j:j+1,k))
-   !             gradU(3,3,i,j,k)=sum(this%grdw_z(:,i,j,k)*this%W(i,j,k:k+1))
-   !          end do
-   !       end do
-   !    end do
+      ! Compute dudx, dvdy, and dwdz first
+	   do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               gradU(1,1,i,j,k)=sum(this%grdu_x(:,i,j,k)*this%Uf(i:i+1,j,k))
+               gradU(2,2,i,j,k)=sum(this%grdv_y(:,i,j,k)*this%Vf(i,j:j+1,k))
+               gradU(3,3,i,j,k)=sum(this%grdw_z(:,i,j,k)*this%Wf(i,j,k:k+1))
+            end do
+         end do
+      end do
       
-   !    ! Allocate velocity gradient components
-	!    allocate(dudy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-   !    allocate(dudz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-   !    allocate(dvdx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-   !    allocate(dvdz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-   !    allocate(dwdx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-   !    allocate(dwdy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      ! Allocate velocity gradient components
+	   allocate(dudy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dudz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dvdx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dvdz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dwdx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dwdy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       
-   !    ! Calculate components of the velocity gradient at their natural locations with an extra cell for interpolation
-	!    do k=this%cfg%kmin_,this%cfg%kmax_+1
-   !       do j=this%cfg%jmin_,this%cfg%jmax_+1
-   !          do i=this%cfg%imin_,this%cfg%imax_+1
-   !             dudy(i,j,k)=sum(this%grdu_y(:,i,j,k)*this%U(i,j-1:j,k))
-   !             dudz(i,j,k)=sum(this%grdu_z(:,i,j,k)*this%U(i,j,k-1:k))
-   !             dvdx(i,j,k)=sum(this%grdv_x(:,i,j,k)*this%V(i-1:i,j,k))
-   !             dvdz(i,j,k)=sum(this%grdv_z(:,i,j,k)*this%V(i,j,k-1:k))
-   !             dwdx(i,j,k)=sum(this%grdw_x(:,i,j,k)*this%W(i-1:i,j,k))
-   !             dwdy(i,j,k)=sum(this%grdw_y(:,i,j,k)*this%W(i,j-1:j,k))
-   !          end do
-   !       end do
-   !    end do
+      ! Calculate components of the velocity gradient at their natural locations with an extra cell for interpolation
+	   do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               dudy(i,j,k)=sum(this%grdu_y(:,i,j,k)*this%Uf(i,j-1:j,k))
+               dudz(i,j,k)=sum(this%grdu_z(:,i,j,k)*this%Uf(i,j,k-1:k))
+               dvdx(i,j,k)=sum(this%grdv_x(:,i,j,k)*this%Vf(i-1:i,j,k))
+               dvdz(i,j,k)=sum(this%grdv_z(:,i,j,k)*this%Vf(i,j,k-1:k))
+               dwdx(i,j,k)=sum(this%grdw_x(:,i,j,k)*this%Wf(i-1:i,j,k))
+               dwdy(i,j,k)=sum(this%grdw_y(:,i,j,k)*this%Wf(i,j-1:j,k))
+            end do
+         end do
+      end do
       
-   !    ! Interpolate off-diagonal components of the velocity gradient to the cell center
-	!    do k=this%cfg%kmin_,this%cfg%kmax_
-   !       do j=this%cfg%jmin_,this%cfg%jmax_
-   !          do i=this%cfg%imin_,this%cfg%imax_
-   !             gradU(2,1,i,j,k)=0.25_WP*sum(dudy(i:i+1,j:j+1,k))
-   !             gradU(3,1,i,j,k)=0.25_WP*sum(dudz(i:i+1,j,k:k+1))
-   !             gradU(1,2,i,j,k)=0.25_WP*sum(dvdx(i:i+1,j:j+1,k))
-   !             gradU(3,2,i,j,k)=0.25_WP*sum(dvdz(i,j:j+1,k:k+1))
-   !             gradU(1,3,i,j,k)=0.25_WP*sum(dwdx(i:i+1,j,k:k+1))
-   !             gradU(2,3,i,j,k)=0.25_WP*sum(dwdy(i,j:j+1,k:k+1))
-   !          end do
-   !       end do
-   !    end do
+      ! Interpolate off-diagonal components of the velocity gradient to the cell center
+	   do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               gradU(2,1,i,j,k)=0.25_WP*sum(dudy(i:i+1,j:j+1,k))
+               gradU(3,1,i,j,k)=0.25_WP*sum(dudz(i:i+1,j,k:k+1))
+               gradU(1,2,i,j,k)=0.25_WP*sum(dvdx(i:i+1,j:j+1,k))
+               gradU(3,2,i,j,k)=0.25_WP*sum(dvdz(i,j:j+1,k:k+1))
+               gradU(1,3,i,j,k)=0.25_WP*sum(dwdx(i:i+1,j,k:k+1))
+               gradU(2,3,i,j,k)=0.25_WP*sum(dwdy(i,j:j+1,k:k+1))
+            end do
+         end do
+      end do
       
-   !    ! Apply a Neumann condition in non-periodic directions
-	!    if (.not.this%cfg%xper) then
-   !       if (this%cfg%iproc.eq.1)            gradU(:,:,this%cfg%imin-1,:,:)=gradU(:,:,this%cfg%imin,:,:)
-   !       if (this%cfg%iproc.eq.this%cfg%npx) gradU(:,:,this%cfg%imax+1,:,:)=gradU(:,:,this%cfg%imax,:,:)
-   !    end if
-   !    if (.not.this%cfg%yper) then
-   !       if (this%cfg%jproc.eq.1)            gradU(:,:,:,this%cfg%jmin-1,:)=gradU(:,:,:,this%cfg%jmin,:)
-   !       if (this%cfg%jproc.eq.this%cfg%npy) gradU(:,:,:,this%cfg%jmax+1,:)=gradU(:,:,:,this%cfg%jmax,:)
-   !    end if
-   !    if (.not.this%cfg%zper) then
-   !       if (this%cfg%kproc.eq.1)            gradU(:,:,:,:,this%cfg%kmin-1)=gradU(:,:,:,:,this%cfg%kmin)
-   !       if (this%cfg%kproc.eq.this%cfg%npz) gradU(:,:,:,:,this%cfg%kmax+1)=gradU(:,:,:,:,this%cfg%kmax)
-   !    end if
+      ! Apply a Neumann condition in non-periodic directions
+	   if (.not.this%cfg%xper) then
+         if (this%cfg%iproc.eq.1)            gradU(:,:,this%cfg%imin-1,:,:)=gradU(:,:,this%cfg%imin,:,:)
+         if (this%cfg%iproc.eq.this%cfg%npx) gradU(:,:,this%cfg%imax+1,:,:)=gradU(:,:,this%cfg%imax,:,:)
+      end if
+      if (.not.this%cfg%yper) then
+         if (this%cfg%jproc.eq.1)            gradU(:,:,:,this%cfg%jmin-1,:)=gradU(:,:,:,this%cfg%jmin,:)
+         if (this%cfg%jproc.eq.this%cfg%npy) gradU(:,:,:,this%cfg%jmax+1,:)=gradU(:,:,:,this%cfg%jmax,:)
+      end if
+      if (.not.this%cfg%zper) then
+         if (this%cfg%kproc.eq.1)            gradU(:,:,:,:,this%cfg%kmin-1)=gradU(:,:,:,:,this%cfg%kmin)
+         if (this%cfg%kproc.eq.this%cfg%npz) gradU(:,:,:,:,this%cfg%kmax+1)=gradU(:,:,:,:,this%cfg%kmax)
+      end if
       
-   !    ! Ensure zero in walls
-	!    do k=this%cfg%kmino_,this%cfg%kmaxo_
-   !       do j=this%cfg%jmino_,this%cfg%jmaxo_
-   !          do i=this%cfg%imino_,this%cfg%imaxo_
-   !             if (this%mask(i,j,k).eq.1) gradU(:,:,i,j,k)=0.0_WP
-   !          end do
-   !       end do
-   !    end do
+      ! Ensure zero in walls
+	   do k=this%cfg%kmino_,this%cfg%kmaxo_
+         do j=this%cfg%jmino_,this%cfg%jmaxo_
+            do i=this%cfg%imino_,this%cfg%imaxo_
+               if (this%mask(i,j,k).eq.1) gradU(:,:,i,j,k)=0.0_WP
+            end do
+         end do
+      end do
       
-   !    ! Sync it
-	!    call this%cfg%sync(gradU)
+      ! Sync it
+	   call this%cfg%sync(gradU)
       
-   !    ! Deallocate velocity gradient storage
-	!    deallocate(dudy,dudz,dvdx,dvdz,dwdx,dwdy)
+      ! Deallocate velocity gradient storage
+	   deallocate(dudy,dudz,dvdx,dvdz,dwdx,dwdy)
       
-   ! end subroutine get_gradU
+   end subroutine get_gradU
    
    
    !> Calculate vorticity vector
@@ -2587,7 +2973,7 @@ contains
    end subroutine update_faceRHO
 
 
-   !> Compute U/V/Wf from U/V/W field based on Michael's code
+   ! !> Compute U/V/Wf from U/V/W field based on Michael's code
    subroutine update_faceU(this,vf,U,V,W,Uface,Vface,Wface,use_masks)
       use vfs_class, only : vfs
       implicit none
@@ -2646,58 +3032,58 @@ contains
    end subroutine update_faceU
 
 
-   !> Compute U/V/Wf from U/V/W field based on Michael's code
-   subroutine update_faceP(this,vf,P,PX,PY,PZ)
-      use vfs_class, only : vfs
-      implicit none
-      class(tpcons), intent(inout) :: this
-      class(vfs),  intent(in):: vf
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: P
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: PX
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: PY
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: PZ
-      integer :: i,j,k
-      real(WP), dimension(0:1) :: rho_f
-      real(WP) :: vol_l,vol_r
-      do k=this%cfg%kmin_,this%cfg%kmax_+1
-         do j=this%cfg%jmin_,this%cfg%jmax_+1
-            do i=this%cfg%imin_,this%cfg%imax_+1
-               ! Update face pressure and density in X
-               rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(0,:,:,i  ,j,k)+vf%Lvol(0,:,:,i  ,j,k))
-               if (vol_r.gt.0.0_WP.and.this%mask(i  ,j,k).eq.0) rho_f(1)=(sum(vf%Gvol(0,:,:,i  ,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i  ,j,k))*this%rho_l)
-               rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(1,:,:,i-1,j,k)+vf%Lvol(1,:,:,i-1,j,k))
-               if (vol_l.gt.0.0_WP.and.this%mask(i-1,j,k).eq.0) rho_f(0)=(sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l)
-               if (sum(rho_f).gt.0.0_WP) then
-                  PX(i,j,k)=2.0_WP*sum(this%itpr_x(:,i,j,k)*P(i-1:i,j,k))&
-                       -sum(this%itpr_x(:,i,j,k)*rho_f*P(i-1:i,j,k))/(sum(this%itpr_x(:,i,j,k)*rho_f) + tiny(1.0_WP))
-               end if
-               ! Update face pressure and density in Y
-               rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
-               if (vol_r.gt.0.0_WP.and.this%mask(i,j  ,k).eq.0) rho_f(1)=(sum(vf%Gvol(:,0,:,i,j  ,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j  ,k))*this%rho_l)
-               rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,1,:,i,j-1,k)+vf%Lvol(:,1,:,i,j-1,k))
-               if (vol_l.gt.0.0_WP.and.this%mask(i,j-1,k).eq.0) rho_f(0)=(sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l)
-               if (sum(rho_f).gt.0.0_WP) then
-                  PY(i,j,k)=2.0_WP*sum(this%itpr_y(:,i,j,k)*P(i,j-1:j,k))&
-                       -sum(this%itpr_y(:,i,j,k)*rho_f*P(i,j-1:j,k))/(sum(this%itpr_y(:,i,j,k)*rho_f) + tiny(1.0_WP))
-               end if
-               ! Update face pressure and density in Z
-               rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
-               if (vol_r.gt.0.0_WP.and.this%mask(i,j,k  ).eq.0) rho_f(1)=(sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l)
-               rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,:,1,i,j,k-1)+vf%Lvol(:,:,1,i,j,k-1))
-               if (vol_l.gt.0.0_WP.and.this%mask(i,j,k-1).eq.0) rho_f(0)=(sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l)
-               if (sum(rho_f).gt.0.0_WP) then
-                  PZ(i,j,k)=2.0_WP*sum(this%itpr_z(:,i,j,k)*P(i,j,k-1:k))&
-                       -sum(this%itpr_z(:,i,j,k)*rho_f*P(i,j,k-1:k))/(sum(this%itpr_z(:,i,j,k)*rho_f) + tiny(1.0_WP))
-               end if
+   ! !> Compute U/V/Wf from U/V/W field based on Michael's code
+   ! subroutine update_faceP(this,vf,P,PX,PY,PZ)
+   !    use vfs_class, only : vfs
+   !    implicit none
+   !    class(tpcons), intent(inout) :: this
+   !    class(vfs),  intent(in):: vf
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: P
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: PX
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: PY
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: PZ
+   !    integer :: i,j,k
+   !    real(WP), dimension(0:1) :: rho_f
+   !    real(WP) :: vol_l,vol_r
+   !    do k=this%cfg%kmin_,this%cfg%kmax_+1
+   !       do j=this%cfg%jmin_,this%cfg%jmax_+1
+   !          do i=this%cfg%imin_,this%cfg%imax_+1
+   !             ! Update face pressure and density in X
+   !             rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(0,:,:,i  ,j,k)+vf%Lvol(0,:,:,i  ,j,k))
+   !             if (vol_r.gt.0.0_WP.and.this%mask(i  ,j,k).eq.0) rho_f(1)=(sum(vf%Gvol(0,:,:,i  ,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i  ,j,k))*this%rho_l)
+   !             rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(1,:,:,i-1,j,k)+vf%Lvol(1,:,:,i-1,j,k))
+   !             if (vol_l.gt.0.0_WP.and.this%mask(i-1,j,k).eq.0) rho_f(0)=(sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l)
+   !             if (sum(rho_f).gt.0.0_WP) then
+   !                PX(i,j,k)=2.0_WP*sum(this%itpr_x(:,i,j,k)*P(i-1:i,j,k))&
+   !                     -sum(this%itpr_x(:,i,j,k)*rho_f*P(i-1:i,j,k))/(sum(this%itpr_x(:,i,j,k)*rho_f) + tiny(1.0_WP))
+   !             end if
+   !             ! Update face pressure and density in Y
+   !             rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
+   !             if (vol_r.gt.0.0_WP.and.this%mask(i,j  ,k).eq.0) rho_f(1)=(sum(vf%Gvol(:,0,:,i,j  ,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j  ,k))*this%rho_l)
+   !             rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,1,:,i,j-1,k)+vf%Lvol(:,1,:,i,j-1,k))
+   !             if (vol_l.gt.0.0_WP.and.this%mask(i,j-1,k).eq.0) rho_f(0)=(sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l)
+   !             if (sum(rho_f).gt.0.0_WP) then
+   !                PY(i,j,k)=2.0_WP*sum(this%itpr_y(:,i,j,k)*P(i,j-1:j,k))&
+   !                     -sum(this%itpr_y(:,i,j,k)*rho_f*P(i,j-1:j,k))/(sum(this%itpr_y(:,i,j,k)*rho_f) + tiny(1.0_WP))
+   !             end if
+   !             ! Update face pressure and density in Z
+   !             rho_f(1)=0.0_WP; vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
+   !             if (vol_r.gt.0.0_WP.and.this%mask(i,j,k  ).eq.0) rho_f(1)=(sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l)
+   !             rho_f(0)=0.0_WP; vol_l=sum(vf%Gvol(:,:,1,i,j,k-1)+vf%Lvol(:,:,1,i,j,k-1))
+   !             if (vol_l.gt.0.0_WP.and.this%mask(i,j,k-1).eq.0) rho_f(0)=(sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l)
+   !             if (sum(rho_f).gt.0.0_WP) then
+   !                PZ(i,j,k)=2.0_WP*sum(this%itpr_z(:,i,j,k)*P(i,j,k-1:k))&
+   !                     -sum(this%itpr_z(:,i,j,k)*rho_f*P(i,j,k-1:k))/(sum(this%itpr_z(:,i,j,k)*rho_f) + tiny(1.0_WP))
+   !             end if
                
-            end do
-         end do
-      end do
+   !          end do
+   !       end do
+   !    end do
 
-      call this%cfg%sync(PX)
-      call this%cfg%sync(PY)
-      call this%cfg%sync(PZ)
-   end subroutine update_faceP
+   !    call this%cfg%sync(PX)
+   !    call this%cfg%sync(PY)
+   !    call this%cfg%sync(PZ)
+   ! end subroutine update_faceP
    
    
    !> Prepare viscosity arrays from vfs object
