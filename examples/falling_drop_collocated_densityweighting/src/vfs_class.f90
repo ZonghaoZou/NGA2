@@ -1257,9 +1257,6 @@ contains
                      ! Extract volume and interpolated momentum
                      lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0); 
                      gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1); 
-                     ! Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
-                     ! Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
-                     ! Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
                      Utmp=Uc(ind(1),ind(2),ind(3))
                      Vtmp=Vc(ind(1),ind(2),ind(3))
                      Wtmp=Wc(ind(1),ind(2),ind(3))
@@ -1312,9 +1309,6 @@ contains
                      ! Extract volume and interpolated momentum
                      lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0)
                      gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1)
-                     ! Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
-                     ! Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
-                     ! Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
                      Utmp=Uc(ind(1),ind(2),ind(3))
                      Vtmp=Vc(ind(1),ind(2),ind(3))
                      Wtmp=Wc(ind(1),ind(2),ind(3))
@@ -1367,9 +1361,6 @@ contains
                      ! Extract volume and interpolated momentum
                      lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0)
                      gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1)
-                     ! Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
-                     ! Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
-                     ! Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
                      Utmp=Uc(ind(1),ind(2),ind(3))
                      Vtmp=Vc(ind(1),ind(2),ind(3))
                      Wtmp=Wc(ind(1),ind(2),ind(3))
@@ -1462,13 +1453,16 @@ contains
 
    
    !> Perform flux-based transport of VF based on U/V/W and dt
-   subroutine advance_tmp(this,dt,U,V,W,rho_l,rho_g)
+   subroutine advance_tmp(this,dt,U,V,W,Uc,Vc,Wc,rho_l,rho_g)
       implicit none
       class(vfs), intent(inout) :: this
       real(WP), intent(inout) :: dt  !< Timestep size over which to advance
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: V     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: W     !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Uc    !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Vc    !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Wc    !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       real(WP), intent(in) :: rho_l,rho_g
       integer :: i,j,k,index,n
       integer , dimension(3) :: ind
@@ -1537,9 +1531,9 @@ contains
                      ! Extract volume and interpolated momentum
                      lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0); 
                      gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1); 
-                     Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
-                     Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
-                     Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
+                     Utmp=Uc(ind(1),ind(2),ind(3))
+                     Vtmp=Vc(ind(1),ind(2),ind(3))
+                     Wtmp=Wc(ind(1),ind(2),ind(3))
                      lmom=lmom+lvol*rho_l*[Utmp,Vtmp,Wtmp]
                      gmom=gmom+gvol*rho_g*[Utmp,Vtmp,Wtmp]
                      tlvol=tlvol+lvol;tgvol=tgvol+gvol
@@ -1588,9 +1582,9 @@ contains
                      ! Extract volume and interpolated momentum
                      lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0)
                      gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1)
-                     Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
-                     Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
-                     Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
+                     Utmp=Uc(ind(1),ind(2),ind(3))
+                     Vtmp=Vc(ind(1),ind(2),ind(3))
+                     Wtmp=Wc(ind(1),ind(2),ind(3))
                      lmom=lmom+lvol*rho_l*[Utmp,Vtmp,Wtmp]
                      gmom=gmom+gvol*rho_g*[Utmp,Vtmp,Wtmp]
                      tlvol=tlvol+lvol;tgvol=tgvol+gvol
@@ -1639,9 +1633,9 @@ contains
                      ! Extract volume and interpolated momentum
                      lvol=getVolume(my_SepVM,0); lbar=getCentroid(my_SepVM,0)
                      gvol=getVolume(my_SepVM,1); gbar=getCentroid(my_SepVM,1)
-                     Utmp=(U(ind(1),ind(2),ind(3))+U(ind(1)+1,ind(2),ind(3)))*0.5_WP
-                     Vtmp=(V(ind(1),ind(2),ind(3))+V(ind(1),ind(2)+1,ind(3)))*0.5_WP
-                     Wtmp=(W(ind(1),ind(2),ind(3))+W(ind(1),ind(2),ind(3)+1))*0.5_WP
+                     Utmp=Uc(ind(1),ind(2),ind(3))
+                     Vtmp=Vc(ind(1),ind(2),ind(3))
+                     Wtmp=Wc(ind(1),ind(2),ind(3))
                      lmom=lmom+lvol*rho_l*[Utmp,Vtmp,Wtmp]
                      gmom=gmom+gvol*rho_g*[Utmp,Vtmp,Wtmp]
                      tlvol=tlvol+lvol;tgvol=tgvol+gvol

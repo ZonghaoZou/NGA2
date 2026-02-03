@@ -230,16 +230,14 @@ contains
             call fs%shift_p(fs%psolv%sol)
             call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
             fs%P=fs%psolv%sol
-
             fs%Uf=fs%Uf-time%dt*resU/fs%RHOX
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
             ! call output_info()
             call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW)
-
-            fs%U=fs%U-resU/fs%rho
-            fs%V=fs%V-resV/fs%rho
-            fs%W=fs%W-resW/fs%rho
+            fs%U=fs%U-resU/fs%rho; call cfg%sync(fs%U)
+            fs%V=fs%V-resV/fs%rho; call cfg%sync(fs%V)
+            fs%W=fs%W-resW/fs%rho; call cfg%sync(fs%W)
             call fs%apply_bcond(time%dt,'cell')
             ! call output_info()
             ! fs%V=0.0_WP
@@ -395,7 +393,6 @@ contains
          
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
-          
             ! Build mid-time velocity =========================================
             fs%U=0.5_WP*(fs%U+fs%Uold)
             fs%V=0.5_WP*(fs%V+fs%Vold)
@@ -422,9 +419,11 @@ contains
 
             ! Update viscosity explictly
             call fs%viscosity_explict(vf,time%dt)
+
             ! Solve Poisson equation
             call fs%update_laplacian()
             call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
+            call fs%update_pgrad_all(vf,time%dt)
             ! call fs%get_rhie_chow_correction(vf, time%dt)
             call fs%apply_bcond(time%dt,'face')
             call fs%correct_mfr()
@@ -443,8 +442,6 @@ contains
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
 
-            ! call fs%get_pgrad_cellcenter(vf,fs%psolv%sol,resU,resV,resW)
-            ! call fs%get_STjump_cellcenter(vf,resU,resV,resW,2)
             call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW)
             fs%U=fs%U-time%dt*resU/fs%rho
             fs%V=fs%V-time%dt*resV/fs%rho
