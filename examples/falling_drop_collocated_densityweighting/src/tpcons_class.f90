@@ -132,6 +132,7 @@ module tpcons_class
       real(WP) :: CFLst                                                   !< Surface tension CFL
       real(WP) :: CFLc_x,CFLc_y,CFLc_z                                    !< Convective CFL numbers
       real(WP) :: CFLv_x,CFLv_y,CFLv_z                                    !< Viscous CFL numbers
+      real(WP) :: CFLg                                                    !< Gravitational CFL numbers
       
       ! Monitoring quantities
       real(WP) :: Umax,Vmax,Wmax,Pmax,divmax                              !< Maximum velocity, pressure, divergence
@@ -161,7 +162,7 @@ module tpcons_class
       procedure :: update_faceRHO                         !< Calculate face densities from provided density
       procedure :: get_viscosity                          !< Calculate viscosity fields from subcell phasic volume data in a vfs object
       procedure :: solve_implicit                         !< Solve for the velocity residuals implicitly
-      procedure :: addsrc_gravity                         !< Add gravitational body force
+      ! procedure :: addsrc_gravity                         !< Add gravitational body force
       procedure :: add_surface_tension_jump               !< Add surface tension jump
       procedure :: add_surface_tension_jump_thin          !< Add surface tension jump - thin region version
       procedure :: add_surface_tension_jump_twoVF         !< Add surface tension jump - two decomposed VF fields
@@ -170,7 +171,8 @@ module tpcons_class
       ! procedure :: update_faceP
       ! procedure :: get_STjump_cellcenter
       ! procedure :: get_pgrad_cellcenter                   !< Calculate pressure gradient for collocated grid
-      procedure :: viscosity_explict
+      procedure :: viscosity_gravity_explict
+      procedure :: update_faceU_correction
       procedure :: apply_bcond_facepressure
       procedure :: get_cell_pgrad
       procedure :: update_pgrad_all
@@ -1131,12 +1133,12 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: drhoWdt !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k,ii,jj,kk
       real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
-      real(WP), dimension(:,:,:), allocatable :: PX,PY,PZ
+      real(WP), dimension(:,:,:), allocatable :: PgradX,PgradY,PgradZ
       ! ! Allocate flux arrays
-      allocate(PX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PX=0.0_WP
-      allocate(PY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PY=0.0_WP
-      allocate(PZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PZ=0.0_WP
-      ! call this%get_cell_pgrad(vf,this%P,PX,PY,PZ)
+      allocate(PgradX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PgradX=0.0_WP
+      allocate(PgradY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PgradY=0.0_WP
+      allocate(PgradZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));PgradZ=0.0_WP
+      call this%get_cell_pgrad(vf,this%P,PgradX,PgradY,PgradZ)
       ! Zero out drhoUVW/dt arrays
       drhoUdt=0.0_WP; drhoVdt=0.0_WP; drhoWdt=0.0_WP
       
@@ -1181,7 +1183,7 @@ contains
          end do
       end do
       ! Sync it
-      drhoUdt=drhoUdt-PX
+      drhoUdt=drhoUdt-PgradX
       call this%cfg%sync(drhoUdt)
 
       ! Flux of rhoV
@@ -1220,7 +1222,7 @@ contains
          end do
       end do
       ! Sync it
-      drhoVdt=drhoVdt-PY
+      drhoVdt=drhoVdt-PgradY
       call this%cfg%sync(drhoVdt)
 
       ! Flux of rhoW
@@ -1259,7 +1261,7 @@ contains
          end do
       end do
       ! Sync it
-      drhoWdt=drhoWdt-PZ
+      drhoWdt=drhoWdt-PgradZ
       call this%cfg%sync(drhoWdt)
 
       ! Deallocate flux arrays
@@ -1934,58 +1936,58 @@ contains
          end do
       end block update_faceP
 
-      ! Apply hydrostatic pressure correction at solid walls
-      apply_hydrostatic_pressure: block
-         real(WP) :: hydro_inc, dist
-         do k = this%cfg%kmin_, this%cfg%kmax_
-            do j = this%cfg%jmin_, this%cfg%jmax_
-               do i = this%cfg%imin_, this%cfg%imax_
-                  ! Check X-
-                  if (this%mask(i,j,k).eq.0.and.this%mask(i-1,j,k).eq.1) then
-                     dist = -0.5_WP * this%cfg%dx(i)
-                     hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
-                     Px(i,j,k) = this%P(i,j,k) + hydro_inc
-                  end if
-                  ! Check X+
-                  if (this%mask(i,j,k).eq.0.and.this%mask(i+1,j,k).eq.1) then
-                     dist = +0.5_WP * this%cfg%dx(i)
-                     hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
-                     Px(i+1,j,k) = this%P(i,j,k) + hydro_inc
-                  end if
-                  ! Check Y-
-                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j-1,k).eq.1) then
-                     dist = -0.5_WP * this%cfg%dy(j)
-                     hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
-                     Py(i,j,k) = this%P(i,j,k) + hydro_inc
-                  end if
-                  ! Check Y+
-                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j+1,k).eq.1) then
-                     dist = +0.5_WP * this%cfg%dy(j)
-                     hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
-                     Py(i,j+1,k) = this%P(i,j,k) + hydro_inc
-                  end if
-                  ! Check Z-
-                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k-1).eq.1) then
-                     dist = -0.5_WP * this%cfg%dz(k)
-                     hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
-                     Pz(i,j,k) = this%P(i,j,k) + hydro_inc
-                  end if
-                  ! Check Z+
-                  if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k+1).eq.1) then
-                     dist = +0.5_WP * this%cfg%dz(k)
-                     hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
-                     Pz(i,j,k+1) = this%P(i,j,k) + hydro_inc
-                  end if
-               end do
-            end do
-         end do
-         call this%cfg%sync(Px)
-         call this%cfg%sync(Py)
-         call this%cfg%sync(Pz)
-      end block apply_hydrostatic_pressure
+      ! ! Apply hydrostatic pressure correction at solid walls
+      ! apply_hydrostatic_pressure: block
+      !    real(WP) :: hydro_inc, dist
+      !    do k = this%cfg%kmin_, this%cfg%kmax_
+      !       do j = this%cfg%jmin_, this%cfg%jmax_
+      !          do i = this%cfg%imin_, this%cfg%imax_
+      !             ! Check X-
+      !             if (this%mask(i,j,k).eq.0.and.this%mask(i-1,j,k).eq.1) then
+      !                dist = -0.5_WP * this%cfg%dx(i)
+      !                hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
+      !                Px(i,j,k) = this%P(i,j,k) + hydro_inc
+      !             end if
+      !             ! Check X+
+      !             if (this%mask(i,j,k).eq.0.and.this%mask(i+1,j,k).eq.1) then
+      !                dist = +0.5_WP * this%cfg%dx(i)
+      !                hydro_inc = this%rho(i,j,k) * this%gravity(1) * dist
+      !                Px(i+1,j,k) = this%P(i,j,k) + hydro_inc
+      !             end if
+      !             ! Check Y-
+      !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j-1,k).eq.1) then
+      !                dist = -0.5_WP * this%cfg%dy(j)
+      !                hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
+      !                Py(i,j,k) = this%P(i,j,k) + hydro_inc
+      !             end if
+      !             ! Check Y+
+      !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j+1,k).eq.1) then
+      !                dist = +0.5_WP * this%cfg%dy(j)
+      !                hydro_inc = this%rho(i,j,k) * this%gravity(2) * dist
+      !                Py(i,j+1,k) = this%P(i,j,k) + hydro_inc
+      !             end if
+      !             ! Check Z-
+      !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k-1).eq.1) then
+      !                dist = -0.5_WP * this%cfg%dz(k)
+      !                hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
+      !                Pz(i,j,k) = this%P(i,j,k) + hydro_inc
+      !             end if
+      !             ! Check Z+
+      !             if (this%mask(i,j,k).eq.0.and.this%mask(i,j,k+1).eq.1) then
+      !                dist = +0.5_WP * this%cfg%dz(k)
+      !                hydro_inc = this%rho(i,j,k) * this%gravity(3) * dist
+      !                Pz(i,j,k+1) = this%P(i,j,k) + hydro_inc
+      !             end if
+      !          end do
+      !       end do
+      !    end do
+      !    call this%cfg%sync(Px)
+      !    call this%cfg%sync(Py)
+      !    call this%cfg%sync(Pz)
+      ! end block apply_hydrostatic_pressure
 
-      ! Apply boundary conditions on boundary faces (free-slip walls and clipped neuman bcs)
-      call this%apply_bcond_facepressure(Px,PY,PZ)
+      ! ! Apply boundary conditions on boundary faces (free-slip walls and clipped neuman bcs)
+      ! call this%apply_bcond_facepressure(Px,PY,PZ)
 
       ! Compute the pressure gradient at cell centers
       get_pgrad_cellcenter: block
@@ -2045,6 +2047,79 @@ contains
       call this%cfg%sync(Pgrady)
       call this%cfg%sync(Pgradz)
    end subroutine get_cell_pgrad
+
+
+   subroutine update_faceU_correction(this,vf,dt)
+      use vfs_class, only: vfs
+      implicit none
+      class(tpcons), intent(inout) :: this
+      class(vfs), intent(in) :: vf
+      real(WP), intent(in) :: dt
+      integer :: i,j,k
+      real(WP) :: vol_r,vol_l,rho_r,rho_l,add
+      real(WP), dimension(:,:,:), allocatable :: FgradX, FgradY, FgradZ
+      allocate(FgradX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FgradY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FgradZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+
+
+      call this%get_cell_pgrad(vf,this%P,FgradX,FgradY,FgradZ)
+      FgradX=FgradX/this%rho
+      FgradY=FgradY/this%rho
+      FgradZ=FgradZ/this%rho
+      
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               ! X face
+               vol_r=sum(vf%Gvol(0,:,:,i  ,j,k)+vf%Lvol(0,:,:,i  ,j,k))
+               vol_l=sum(vf%Gvol(1,:,:,i-1,j,k)+vf%Lvol(1,:,:,i-1,j,k))
+               rho_r=sum(vf%Gvol(0,:,:,i  ,j,k))*this%rho_g+sum(vf%Lvol(0,:,:,i  ,j,k))*this%rho_l
+               rho_l=sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l
+               if (min(vol_l,vol_r).gt.0.0_WP) then
+                  if (this%umask(i,j,k).ne.2) then
+                     this%Uf(i,j,k)=sum(this%itpr_x(:,i,j,k)*[rho_l,rho_r]*(this%U(i-1:i,j,k)+dt*FgradX(i-1:i,j,k)))/(sum(this%itpr_x(:,i,j,k)*[rho_l,rho_r]))&
+                     &             -dt*(sum(this%divu_x(:,i,j,k)*this%P(i-1:i,j,k))-this%dPjx(i,j,k))/this%RHOX(i,j,k)
+                  end if
+               else
+                  this%Uf(i,j,k)=0.0_WP
+               end if
+               ! Y face
+               vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
+               vol_l=sum(vf%Gvol(:,1,:,i,j-1,k)+vf%Lvol(:,1,:,i,j-1,k))
+               rho_r=sum(vf%Gvol(:,0,:,i,j  ,k))*this%rho_g+sum(vf%Lvol(:,0,:,i,j  ,k))*this%rho_l
+               rho_l=sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l
+               if (min(vol_l,vol_r).gt.0.0_WP) then
+                  if (this%vmask(i,j,k).ne.2) then 
+                     this%Vf(i,j,k)=sum(this%itpr_y(:,i,j,k)*[rho_l,rho_r]*(this%V(i,j-1:j,k)+dt*FgradY(i,j-1:j,k)))/(sum(this%itpr_y(:,i,j,k)*[rho_l,rho_r]))&
+                     &             -dt*(sum(this%divv_y(:,i,j,k)*this%P(i,j-1:j,k))-this%dPjy(i,j,k))/this%RHOY(i,j,k)
+                  end if 
+               else
+                  this%Vf(i,j,k)=0.0_WP
+               end if
+               ! Z face
+               vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
+               vol_l=sum(vf%Gvol(:,:,1,i,j,k-1)+vf%Lvol(:,:,1,i,j,k-1))
+               rho_r=sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l
+               rho_l=sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l
+               if (min(vol_l,vol_r).gt.0.0_WP) then
+                  if (this%wmask(i,j,k).ne.2) then
+                     this%Wf(i,j,k)=sum(this%itpr_z(:,i,j,k)*[rho_l,rho_r]*(this%W(i,j,k-1:k)+dt*FgradZ(i,j,k-1:k)))/(sum(this%itpr_y(:,i,j,k)*[rho_l,rho_r]))&
+                     &             -dt*(sum(this%divw_z(:,i,j,k)*this%P(i,j,k-1:k))-this%dPjz(i,j,k))/this%RHOZ(i,j,k)
+                  end if 
+               else
+                  this%Wf(i,j,k)=0.0_WP
+               end if
+            end do
+         end do
+      end do
+
+      deallocate(FgradX,FgradY,FgradZ)
+      call this%cfg%sync(this%Uf)
+      call this%cfg%sync(this%Vf)
+      call this%cfg%sync(this%Wf)
+
+   end subroutine update_faceU_correction
 
 
    subroutine get_rhie_chow_correction(this,vf,dt)
@@ -2600,7 +2675,7 @@ contains
       real(WP), intent(out) :: cflc
       real(WP), optional :: cfl
       integer :: i,j,k,ierr
-      real(WP) :: my_CFLc_x,my_CFLc_y,my_CFLc_z,my_CFLv_x,my_CFLv_y,my_CFLv_z,my_CFLst
+      real(WP) :: my_CFLc_x,my_CFLc_y,my_CFLc_z,my_CFLv_x,my_CFLv_y,my_CFLv_z,my_CFLst,my_CFLg
       real(WP) :: max_nu
       
       ! Get surface tension CFL first
@@ -2632,11 +2707,15 @@ contains
                my_CFLv_x=max(my_CFLv_x,4.0_WP*max_nu*this%cfg%dxi(i)**2)
                my_CFLv_y=max(my_CFLv_y,4.0_WP*max_nu*this%cfg%dyi(j)**2)
                my_CFLv_z=max(my_CFLv_z,4.0_WP*max_nu*this%cfg%dzi(k)**2)
+               my_CFLg  =max(my_CFLg,dt*abs(this%gravity(1))*this%cfg%dxi(i),&
+               &                     dt*abs(this%gravity(2))*this%cfg%dyi(j),&
+               &                     dt*abs(this%gravity(3))*this%cfg%dzi(k))  
             end do
          end do
       end do
       my_CFLc_x=my_CFLc_x*dt; my_CFLc_y=my_CFLc_y*dt; my_CFLc_z=my_CFLc_z*dt
       my_CFLv_x=my_CFLv_x*dt; my_CFLv_y=my_CFLv_y*dt; my_CFLv_z=my_CFLv_z*dt
+      my_CFLg  =my_CFLg  *dt
       
       ! Get the parallel max
       call MPI_ALLREDUCE(my_CFLc_x,this%CFLc_x,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
@@ -2645,6 +2724,7 @@ contains
       call MPI_ALLREDUCE(my_CFLv_x,this%CFLv_x,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(my_CFLv_y,this%CFLv_y,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(my_CFLv_z,this%CFLv_z,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(my_CFLg,  this%CFLg  ,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       
       ! Return the maximum convective + surface tension CFL
       cflc=max(this%CFLc_x,this%CFLc_y,this%CFLc_z,this%CFLst)
@@ -3046,7 +3126,6 @@ contains
       else
          flag = .false.
       end if
-      Uface=0.0_WP;Vface=0.0_WP;Wface=0.0_WP
       do k=this%cfg%kmin_,this%cfg%kmax_+1
          do j=this%cfg%jmin_,this%cfg%jmax_+1
             do i=this%cfg%imin_,this%cfg%imax_+1
@@ -3057,6 +3136,8 @@ contains
                rho_l=sum(vf%Gvol(1,:,:,i-1,j,k))*this%rho_g+sum(vf%Lvol(1,:,:,i-1,j,k))*this%rho_l
                if (min(vol_l,vol_r).gt.0.0_WP) then
                   if (this%umask(i,j,k).ne.2.or.flag) Uface(i,j,k)=sum(this%itpr_x(:,i,j,k)*[rho_l,rho_r]*U(i-1:i,j,k))/(sum(this%itpr_x(:,i,j,k)*[rho_l,rho_r]))
+               else
+                  Uface(i,j,k)=0.0_WP
                end if
                ! Y face
                vol_r=sum(vf%Gvol(:,0,:,i,j  ,k)+vf%Lvol(:,0,:,i,j  ,k))
@@ -3065,6 +3146,8 @@ contains
                rho_l=sum(vf%Gvol(:,1,:,i,j-1,k))*this%rho_g+sum(vf%Lvol(:,1,:,i,j-1,k))*this%rho_l
                if (min(vol_l,vol_r).gt.0.0_WP) then
                   if (this%vmask(i,j,k).ne.2.or.flag) Vface(i,j,k)=sum(this%itpr_y(:,i,j,k)*[rho_l,rho_r]*V(i,j-1:j,k))/(sum(this%itpr_y(:,i,j,k)*[rho_l,rho_r]))
+               else
+                  Vface(i,j,k)=0.0_WP
                end if
                ! Z face
                vol_r=sum(vf%Gvol(:,:,0,i,j,k  )+vf%Lvol(:,:,0,i,j,k  ))
@@ -3073,6 +3156,8 @@ contains
                rho_l=sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l
                if (min(vol_l,vol_r).gt.0.0_WP) then
                   if (this%wmask(i,j,k).ne.2.or.flag) Wface(i,j,k)=sum(this%itpr_z(:,i,j,k)*[rho_l,rho_r]*W(i,j,k-1:k))/(sum(this%itpr_y(:,i,j,k)*[rho_l,rho_r]))
+               else
+                  Wface(i,j,k)=0.0_WP
                end if
             end do
          end do
@@ -3230,24 +3315,24 @@ contains
    end subroutine get_viscosity
    
    !> Update the viscosity term to cell centered velocities
-   subroutine viscosity_explict(this,vf,dt)
+   subroutine viscosity_gravity_explict(this,vf,dt)
       use vfs_class, only: vfs
       implicit none
       class(tpcons), intent(inout) :: this
       class(vfs), intent(inout) :: vf
       real(WP), intent(in) :: dt
-      real (WP) :: visc_CFL,mydt
+      real (WP) :: CFL,mydt
       integer :: nCFL,n
       ! Decide how many substep we need to take for viscosity
-      visc_CFL=max(max(this%CFLv_x,this%CFLv_y),this%CFLv_z)
-      nCFL=ceiling(visc_CFL)
+      CFL=max(max(this%CFLv_x,this%CFLv_y),this%CFLv_z,this%CFLg)
+      nCFL=ceiling(CFL)
       mydt=dt/(real(nCFL,WP)+epsilon(1.0_WP))
       do n=1,nCFL
-         call viscosity_substep()
+         call viscosity_gravity_substep()
       end do
       call this%apply_bcond(dt, scope='cell')
       contains
-         subroutine viscosity_substep()
+         subroutine viscosity_gravity_substep()
             implicit none
             integer :: i,j,k
             real(WP) :: dUdx,dUdy,dUdz,dVdx,dVdy,dVdz,dWdx,dWdy,dWdz
@@ -3340,34 +3425,34 @@ contains
                  end do 
                end do 
             end do
-            this%U=this%U+mydt*VISCforceX/this%rho
-            this%V=this%V+mydt*VISCforceY/this%rho
-            this%W=this%W+mydt*VISCforceZ/this%rho
+            this%U=this%U+mydt*(VISCforceX/this%rho+this%gravity(1)); call this%cfg%sync(this%U)
+            this%V=this%V+mydt*(VISCforceY/this%rho+this%gravity(2)); call this%cfg%sync(this%V)
+            this%W=this%W+mydt*(VISCforceZ/this%rho+this%gravity(3)); call this%cfg%sync(this%W)
 
-         end subroutine viscosity_substep
+         end subroutine viscosity_gravity_substep
          
-   end subroutine viscosity_explict
+   end subroutine viscosity_gravity_explict
 
-   !> Add gravity source term
-   subroutine addsrc_gravity(this,resU,resV,resW)
-      implicit none
-      class(tpcons), intent(inout) :: this
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resU !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resV !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resW !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-      integer :: i,j,k
-      do k=this%cfg%kmin_,this%cfg%kmax_
-         do j=this%cfg%jmin_,this%cfg%jmax_
-            do i=this%cfg%imin_,this%cfg%imax_
-               if (this%mask(i,j,k).eq.0) then
-                  resU(i,j,k)=resU(i,j,k)+this%gravity(1)*this%rho(i,j,k)
-                  resV(i,j,k)=resV(i,j,k)+this%gravity(2)*this%rho(i,j,k)
-                  resW(i,j,k)=resW(i,j,k)+this%gravity(3)*this%rho(i,j,k)
-               end if
-            end do
-         end do
-      end do
-   end subroutine addsrc_gravity
+   ! !> Add gravity source term
+   ! subroutine addsrc_gravity(this,resU,resV,resW)
+   !    implicit none
+   !    class(tpcons), intent(inout) :: this
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resU !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resV !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: resW !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+   !    integer :: i,j,k
+   !    do k=this%cfg%kmin_,this%cfg%kmax_
+   !       do j=this%cfg%jmin_,this%cfg%jmax_
+   !          do i=this%cfg%imin_,this%cfg%imax_
+   !             if (this%mask(i,j,k).eq.0) then
+   !                resU(i,j,k)=resU(i,j,k)+this%gravity(1)*this%rho(i,j,k)
+   !                resV(i,j,k)=resV(i,j,k)+this%gravity(2)*this%rho(i,j,k)
+   !                resW(i,j,k)=resW(i,j,k)+this%gravity(3)*this%rho(i,j,k)
+   !             end if
+   !          end do
+   !       end do
+   !    end do
+   ! end subroutine addsrc_gravity
    
    
    !> Add a static contact line model
