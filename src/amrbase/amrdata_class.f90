@@ -12,6 +12,7 @@ module amrdata_class
 
    public :: amrdata
    public :: amrdata_on_init,amrdata_on_coarse,amrdata_on_remake,amrdata_on_clear,amrdata_fillbc
+   public :: default_fillbc
 
    ! Special interpolation modes for amrdata
    integer, parameter, public :: amrex_interp_none   = -1  !< Workspace: allocate but don't fill
@@ -77,6 +78,8 @@ module amrdata_class
       procedure :: norm0            !< L-infinity norm at level
       procedure :: norm1            !< L1 norm at level
       procedure :: norm2            !< L2 norm at level
+      ! Vector operations
+      procedure :: get_magnitude    !< C = sqrt(A²+B²+C²) from 3 sources
       ! Iteration helper
       procedure :: mfiter_build     !< Build MFIter from this data's MultiFab
    end type amrdata
@@ -644,7 +647,7 @@ contains
       call get_level_range(this, lvl, lbase, l0, l1)
       ic = 1; if (present(comp)) ic = comp
       nc = this%ncomp; if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = this%ng; if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%plus(val, ic, nc, ng)
       end do
@@ -661,7 +664,7 @@ contains
       call get_level_range(this, lvl, lbase, l0, l1)
       ic = 1; if (present(comp)) ic = comp
       nc = this%ncomp; if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = this%ng; if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%mult(val, ic, nc, ng)
       end do
@@ -683,7 +686,7 @@ contains
       sc = 1; if (present(srccomp)) sc = srccomp
       dc = 1; if (present(dstcomp)) dc = dstcomp
       nc = min(this%ncomp, src%ncomp); if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = min(this%ng, src%ng); if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%add(src%mf(l), sc, dc, nc, ng)
       end do
@@ -701,7 +704,7 @@ contains
       sc = 1; if (present(srccomp)) sc = srccomp
       dc = 1; if (present(dstcomp)) dc = dstcomp
       nc = min(this%ncomp, src%ncomp); if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = min(this%ng, src%ng); if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%subtract(src%mf(l), sc, dc, nc, ng)
       end do
@@ -719,7 +722,7 @@ contains
       sc = 1; if (present(srccomp)) sc = srccomp
       dc = 1; if (present(dstcomp)) dc = dstcomp
       nc = min(this%ncomp, src%ncomp); if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = min(this%ng, src%ng); if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%multiply(src%mf(l), sc, dc, nc, ng)
       end do
@@ -737,7 +740,7 @@ contains
       sc = 1; if (present(srccomp)) sc = srccomp
       dc = 1; if (present(dstcomp)) dc = dstcomp
       nc = min(this%ncomp, src%ncomp); if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = min(this%ng, src%ng); if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%divide(src%mf(l), sc, dc, nc, ng)
       end do
@@ -755,7 +758,7 @@ contains
       sc = 1; if (present(srccomp)) sc = srccomp
       dc = 1; if (present(dstcomp)) dc = dstcomp
       nc = min(this%ncomp, src%ncomp); if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = min(this%ng, src%ng); if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%copy(src%mf(l), sc, dc, nc, ng)
       end do
@@ -778,7 +781,7 @@ contains
       sc = 1; if (present(srccomp)) sc = srccomp
       dc = 1; if (present(dstcomp)) dc = dstcomp
       nc = min(this%ncomp, src%ncomp); if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = min(this%ng, src%ng); if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%saxpy(a, src%mf(l), sc, dc, nc, ng)
       end do
@@ -798,7 +801,7 @@ contains
       sc2 = 1; if (present(srccomp2)) sc2 = srccomp2
       dc = 1; if (present(dstcomp)) dc = dstcomp
       nc = min(this%ncomp, min(src1%ncomp, src2%ncomp)); if (present(ncomp)) nc = ncomp
-      ng = 0; if (present(nghost)) ng = nghost
+      ng = min(this%ng, min(src1%ng, src2%ng)); if (present(nghost)) ng = nghost
       do l = l0, l1
          call this%mf(l)%lincomb(a, src1%mf(l), sc1, b, src2%mf(l), sc2, dc, nc, ng)
       end do
@@ -885,6 +888,37 @@ contains
       ic = 1; if (present(comp)) ic = comp
       val = this%mf(lvl)%norm2(ic)
    end function norm2
+
+   !> Compute magnitude: this = sqrt(srcX² + srcY² + srcZ²)
+   subroutine get_magnitude(this,srcX,srcY,srcZ,nghost)
+      use amrex_amr_module, only: amrex_mfiter,amrex_mfiter_build,amrex_mfiter_destroy,amrex_box
+      class(amrdata), intent(inout) :: this
+      class(amrdata), intent(in) :: srcX,srcY,srcZ
+      integer, intent(in), optional :: nghost
+      type(amrex_mfiter) :: mfi
+      type(amrex_box) :: bx
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pM,pX,pY,pZ
+      integer :: i,j,k,n,lvl,ng
+      ng=min(this%ng,srcX%ng,srcY%ng,srcZ%ng); if (present(nghost)) ng=nghost
+      do lvl=0,this%amr%clvl()
+         call amrex_mfiter_build(mfi,this%mf(lvl),tiling=.true.)
+         do while (mfi%next())
+            ! Get pointers to the data
+            pM=>this%mf(lvl)%dataptr(mfi)
+            pX=>srcX%mf(lvl)%dataptr(mfi)
+            pY=>srcY%mf(lvl)%dataptr(mfi)
+            pZ=>srcZ%mf(lvl)%dataptr(mfi)
+            ! Loop over grown tile
+            bx=mfi%growntilebox(ng)
+            do n=1,this%ncomp
+               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+                  pM(i,j,k,n)=sqrt(pX(i,j,k,n)**2+pY(i,j,k,n)**2+pZ(i,j,k,n)**2)
+               end do; end do; end do
+            end do
+         end do
+         call amrex_mfiter_destroy(mfi)
+      end do
+   end subroutine get_magnitude
 
    ! ============================================================================
    ! HELPER ROUTINES

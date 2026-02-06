@@ -3,7 +3,7 @@ module mod_test_amrvof
    use precision,         only: WP
    use amrviz_class,      only: amrviz
    use amrgrid_class,     only: amrgrid
-   use amrvof_class,      only: amrvof
+   use amrvof_class,      only: amrvof, VFlo
    use amrdata_class,     only: amrdata
    use timetracker_class, only: timetracker
    use event_class,       only: event
@@ -37,7 +37,7 @@ module mod_test_amrvof
    type(event) :: regrid_evt
 
    ! Monitoring
-   type(monitor) :: mfile
+   type(monitor) :: mfile, gridfile
 
 contains
 
@@ -46,7 +46,6 @@ contains
       use amrex_amr_module, only: amrex_mfiter, amrex_box, amrex_boxarray, amrex_distromap, &
       &                           amrex_mfiter_build, amrex_mfiter_destroy
       use mms_geom,         only: initialize_volume_moments
-      use amrvof_geometry,  only: VFlo
       class(amrvof), intent(inout) :: solver
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -112,14 +111,14 @@ contains
       create_amrgrid: block
          use param, only: param_read
          amr%name = 'vof_advect'
-         call param_read('Base nx', amr%nx, default=32)
-         call param_read('Base ny', amr%ny, default=32)
-         call param_read('Base nz', amr%nz, default=32)
+         call param_read('Base nx', amr%nx)
+         call param_read('Base ny', amr%ny)
+         call param_read('Base nz', amr%nz)
          amr%xlo = 0.0_WP; amr%xhi = 1.0_WP
          amr%ylo = 0.0_WP; amr%yhi = 1.0_WP
          amr%zlo = 0.0_WP; amr%zhi = 1.0_WP
          amr%xper = .true.; amr%yper = .true.; amr%zper = .true.
-         call param_read('Max level', amr%maxlvl, default=0)
+         call param_read('Max level', amr%maxlvl)
          call amr%initialize()
       end block create_amrgrid
 
@@ -127,23 +126,19 @@ contains
       initialize_timetracker: block
          use param, only: param_read
          time = timetracker(amRoot=amr%amRoot)
-         call param_read('Max time', time%tmax, default=1.0_WP)
-         call param_read('Max dt', time%dtmax, default=0.01_WP)
-         call param_read('Max CFL', time%cflmax, default=0.5_WP)
+         call param_read('Max time', time%tmax)
+         call param_read('Max dt', time%dtmax)
+         call param_read('Max CFL', time%cflmax)
          time%dt = time%dtmax
          time%itmax = 1  ! No sub-iterations
       end block initialize_timetracker
 
       ! Setup sphere parameters
       setup_sphere: block
-         use param, only: param_read
-         call param_read('Sphere radius', sphere_radius, default=0.25_WP)
-         sphere_xc = 0.5_WP * (amr%xlo + amr%xhi)
-         sphere_yc = 0.5_WP * (amr%ylo + amr%yhi)
-         sphere_zc = 0.5_WP * (amr%zlo + amr%zhi)
-         call log("  Sphere center: ("//trim(rtoa(sphere_xc))//", "// &
-         &        trim(rtoa(sphere_yc))//", "//trim(rtoa(sphere_zc))//")")
-         call log("  Sphere radius: "//trim(rtoa(sphere_radius)))
+         sphere_radius = 0.15_WP
+         sphere_xc = 0.35_WP
+         sphere_yc = 0.35_WP
+         sphere_zc = 0.35_WP
       end block setup_sphere
 
       ! Create VOF solver
@@ -157,30 +152,12 @@ contains
          call amr%init_from_scratch(time=time%t)
       end block initialize
 
-      ! Build initial PLIC
-      build_initial_plic: block
+      ! Build initial PLIC and reset moments for consistency
+      build_plic_and_reset_moments: block
          call vof%build_plic(time%t)
+         call vof%reset_moments()
          call log("  Initial PLIC constructed")
-      end block build_initial_plic
-
-      ! Create velocity MultiFabs at finest level (staggered)
-      create_velocity: block
-         integer :: lvl
-         
-         lvl = amr%clvl()
-         
-         ! Build staggered MultiFabs: U (x-face), V (y-face), W (z-face)
-         call amr%mfab_build(lvl, U, ncomp=1, nover=vel_ng, atface=[.true., .false., .false.])
-         call amr%mfab_build(lvl, V, ncomp=1, nover=vel_ng, atface=[.false., .true., .false.])
-         call amr%mfab_build(lvl, W, ncomp=1, nover=vel_ng, atface=[.false., .false., .true.])
-         
-         ! Initialize: uniform translation U=1, V=0, W=0
-         call U%setval(1.0_WP)
-         call V%setval(0.0_WP)
-         call W%setval(0.0_WP)
-         
-         call log("  Velocity field initialized: U=1, V=W=0")
-      end block create_velocity
+      end block build_plic_and_reset_moments
 
       ! Create visualization
       create_visualization: block
@@ -204,19 +181,96 @@ contains
 
       ! Create monitor
       create_monitor: block
+         ! Create VOF monitor
          call vof%get_info()
-         mfile = monitor(amRoot=amr%amRoot, name='vof_advect')
+         mfile = monitor(amRoot=amr%amRoot, name='simulation')
          call mfile%add_column(time%n, 'Timestep')
          call mfile%add_column(time%t, 'Time')
          call mfile%add_column(time%dt, 'dt')
+         call mfile%add_column(time%cfl, 'CFL')
          call mfile%add_column(vof%VFint, 'VFint')
          call mfile%add_column(vof%VFmin, 'VFmin')
          call mfile%add_column(vof%VFmax, 'VFmax')
          call mfile%write()
+         ! Create grid monitor
+         gridfile = monitor(amRoot=amr%amRoot, name='grid')
+         call gridfile%add_column(time%n, 'Timestep')
+         call gridfile%add_column(time%t, 'Time')
+         call gridfile%add_column(amr%nlevels, 'Nlvl')
+         call gridfile%add_column(amr%nboxes, 'Nbox')
+         call gridfile%add_column(amr%ncells, 'Ncell')
+         call gridfile%add_column(amr%compression, 'Compression')
+         call gridfile%add_column(amr%maxRSS,'Maximum RSS')
+         call gridfile%add_column(amr%minRSS,'Minimum RSS')
+         call gridfile%add_column(amr%avgRSS,'Average RSS')
+         call gridfile%write()
       end block create_monitor
 
       ! Time integration loop
       time_loop: do while (.not.time%done())
+
+         ! Build velocity and set LeVeque vortex field
+         set_velocity: block
+            use amrex_amr_module, only: amrex_mfiter, amrex_box, amrex_multifab
+            use mathtools, only: Pi, twoPi
+            type(amrex_mfiter) :: mfi
+            type(amrex_box) :: bx
+            type(amrex_multifab) :: A  ! Cell-centered vector potential (3 components)
+            real(WP), dimension(:,:,:,:), contiguous, pointer :: pU, pV, pW, pA
+            real(WP) :: x, y, z, dx, dy, dz, dxi, dyi, dzi, T, tfac
+            integer :: i, j, k
+            T = 3.0_WP
+            tfac = cos(Pi*time%t/T) / Pi
+            dx = amr%dx(amr%clvl()); dxi=1.0_WP/dx
+            dy = amr%dy(amr%clvl()); dyi=1.0_WP/dy
+            dz = amr%dz(amr%clvl()); dzi=1.0_WP/dz
+            ! Build velocity MultiFabs
+            call amr%mfab_build(amr%clvl(), U, ncomp=1, nover=vel_ng, atface=[.true. , .false., .false.])
+            call amr%mfab_build(amr%clvl(), V, ncomp=1, nover=vel_ng, atface=[.false., .true. , .false.])
+            call amr%mfab_build(amr%clvl(), W, ncomp=1, nover=vel_ng, atface=[.false., .false., .true. ])
+            ! Build cell-centered MultiFab for vector potential (Ax, Ay, Az)
+            call amr%mfab_build(amr%clvl(), A, ncomp=3, nover=vel_ng+1)
+            ! Fill vector potential at cell centers
+            call amr%mfiter_build(amr%clvl(), mfi)
+            do while (mfi%next())
+               pA => A%dataptr(mfi)
+               bx = mfi%growntilebox(vel_ng+1)
+               do k = bx%lo(3), bx%hi(3); do j = bx%lo(2), bx%hi(2); do i = bx%lo(1), bx%hi(1)
+                  x = amr%xlo + (real(i,WP)+0.5_WP)*dx
+                  y = amr%ylo + (real(j,WP)+0.5_WP)*dy
+                  z = amr%zlo + (real(k,WP)+0.5_WP)*dz
+                  pA(i,j,k,1) =  0.0_WP
+                  pA(i,j,k,2) = -tfac * sin(Pi*x)**2 * sin(twoPi*y) * sin(Pi*z)**2
+                  pA(i,j,k,3) = +tfac * sin(Pi*x)**2 * sin(Pi*y)**2 * sin(twoPi*z)
+               end do; end do; end do
+            end do
+            call amr%mfiter_destroy(mfi)
+            ! Compute velocity from curl of vector potential using 4-point averaging
+            call amr%mfiter_build(amr%clvl(), mfi)
+            do while (mfi%next())
+               pU => U%dataptr(mfi); pV => V%dataptr(mfi); pW => W%dataptr(mfi); pA => A%dataptr(mfi)
+               ! U = dAz/dy - dAy/dz at X-faces
+               bx = mfi%grownnodaltilebox(1-1, vel_ng) ! bug amrex's fortran interface!
+               do k = bx%lo(3), bx%hi(3); do j = bx%lo(2), bx%hi(2); do i = bx%lo(1), bx%hi(1)
+                  pU(i,j,k,1) = 0.25_WP*dyi*(pA(i-1,j+1,k,3)+pA(i,j+1,k,3)-pA(i-1,j-1,k,3)-pA(i,j-1,k,3)) &
+                  &           - 0.25_WP*dzi*(pA(i-1,j,k+1,2)+pA(i,j,k+1,2)-pA(i-1,j,k-1,2)-pA(i,j,k-1,2))
+               end do; end do; end do
+               ! V = dAx/dz - dAz/dx at Y-faces
+               bx = mfi%grownnodaltilebox(2-1, vel_ng) ! bug amrex's fortran interface!
+               do k = bx%lo(3), bx%hi(3); do j = bx%lo(2), bx%hi(2); do i = bx%lo(1), bx%hi(1)
+                  pV(i,j,k,1) = 0.25_WP*dzi*(pA(i,j-1,k+1,1)+pA(i,j,k+1,1)-pA(i,j-1,k-1,1)-pA(i,j,k-1,1)) &
+                  &           - 0.25_WP*dxi*(pA(i+1,j-1,k,3)+pA(i+1,j,k,3)-pA(i-1,j-1,k,3)-pA(i-1,j,k,3))
+               end do; end do; end do
+               ! W = dAy/dx - dAx/dy at Z-faces
+               bx = mfi%grownnodaltilebox(3-1, vel_ng) ! bug amrex's fortran interface!
+               do k = bx%lo(3), bx%hi(3); do j = bx%lo(2), bx%hi(2); do i = bx%lo(1), bx%hi(1)
+                  pW(i,j,k,1) = 0.25_WP*dxi*(pA(i+1,j,k-1,2)+pA(i+1,j,k,2)-pA(i-1,j,k-1,2)-pA(i-1,j,k,2)) &
+                  &           - 0.25_WP*dyi*(pA(i,j+1,k-1,1)+pA(i,j+1,k,1)-pA(i,j-1,k-1,1)-pA(i,j-1,k,1))
+               end do; end do; end do
+            end do
+            call amr%mfiter_destroy(mfi)
+            call amrex_multifab_destroy(A)
+         end block set_velocity
 
          ! Compute CFL and update dt based on CFL constraint
          call vof%get_cfl(U=U, V=V, W=W, dt=time%dt, cfl=time%cfl)
@@ -232,6 +286,11 @@ contains
          ! Advect VOF
          call vof%advance_vof(U=U, V=V, W=W, dt=time%dt, time=time%t)
 
+         ! Destroy velocity
+         call amrex_multifab_destroy(U)
+         call amrex_multifab_destroy(V)
+         call amrex_multifab_destroy(W)
+
          ! Rebuild PLIC and reset moments for consistency
          call vof%build_plic(time%t)
          call vof%reset_moments()
@@ -239,6 +298,7 @@ contains
          ! Regrid if event triggers (disabled by default)
          if (regrid_evt%occurs()) then
             call amr%regrid(baselvl=0, time=time%t)
+            call gridfile%write()
          end if
 
          ! Monitor output
@@ -259,9 +319,6 @@ contains
 
       ! Cleanup
       cleanup: block
-         call amrex_multifab_destroy(U)
-         call amrex_multifab_destroy(V)
-         call amrex_multifab_destroy(W)
          call viz%finalize()
          call vof%finalize()
          call amr%finalize()

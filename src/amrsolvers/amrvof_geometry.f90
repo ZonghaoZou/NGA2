@@ -8,16 +8,11 @@ module amrvof_geometry
    ! Expose tables and routines
    public :: tet_map, cut_side, cut_v1, cut_v2, cut_vtet
    public :: cut_ntets, cut_nvert, cut_nntet
-   public :: VFlo, VFhi
    public :: get_plane_dist
    public :: tet_vol, tet_sign, cut_tet_vol
    public :: flux_polyhedron_vol, cut_hex_vol
-   public :: volume_correct_x, volume_correct_y, volume_correct_z
+   public :: correct_flux_poly
    public :: cut_hex_polygon, hex_poly_nvert, get_hex_poly_nvert
-
-   ! Default parameters for volume fraction
-   real(WP), parameter :: VFlo = 1.0e-12_WP    !< Minimum VF value considered
-   real(WP), parameter :: VFhi = 1.0_WP - VFlo !< Maximum VF value considered
 
    ! Cutting tables from mpcomp_class_noirl
    ! tet_map: maps a hex cell (8 vertices + center) to 8 tetrahedra
@@ -351,12 +346,24 @@ contains
       implicit none
       real(WP), dimension(3,4), intent(in) :: v
       real(WP) :: vol
-      real(WP), dimension(3) :: a, b, c
-      a = v(:,1) - v(:,4)
-      b = v(:,2) - v(:,4)
-      c = v(:,3) - v(:,4)
-      vol = abs(a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
+      real(WP), dimension(3) :: a,b,c
+      a=v(:,1)-v(:,4)
+      b=v(:,2)-v(:,4)
+      c=v(:,3)-v(:,4)
+      vol=(-a(1)*(b(2)*c(3)-c(2)*b(3))&
+      &    +a(2)*(b(1)*c(3)-c(1)*b(3))&
+      &    -a(3)*(b(1)*c(2)-c(1)*b(2)))/6.0_WP
    end function tet_vol
+
+   !> Function that calculates the sign of a tet
+   function tet_sign(vert) result(s)
+      implicit none
+      real(WP) :: s
+      real(WP), dimension(3,4), intent(in) :: vert
+      real(WP), dimension(3) :: a,b,c
+      a=vert(:,1)-vert(:,4); b=vert(:,2)-vert(:,4); c=vert(:,3)-vert(:,4)
+      s=sign(1.0_WP,-(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2))))
+   end function tet_sign
    
    !> Cut a tetrahedron by a plane and return liquid/gas volumes and barycenters
    !> Input:  v(:,1:4) = 4 tet vertices, plane(1:4) = [nx,ny,nz,d] where n.x=d defines plane
@@ -433,18 +440,6 @@ contains
       
    end subroutine cut_tet_vol
    
-   !> Compute signed volume of tetrahedron (for flux orientation)
-   pure function tet_sign(v) result(s)
-      implicit none
-      real(WP), dimension(3,4), intent(in) :: v
-      real(WP) :: s
-      real(WP), dimension(3) :: a, b, c
-      a = v(:,1) - v(:,4)
-      b = v(:,2) - v(:,4)
-      c = v(:,3) - v(:,4)
-      s = sign(1.0_WP, a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2)))
-   end function tet_sign
-   
    !> Compute signed volume of flux polyhedron
    !> face(:,1:8) = 8 vertices (4 at time t, 4 back-projected)
    !> Decomposes into 6 tets using tet_map and sums signed volumes
@@ -462,61 +457,53 @@ contains
          vol = vol + (a(1)*(b(2)*c(3)-c(2)*b(3)) - a(2)*(b(1)*c(3)-c(1)*b(3)) + a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
       end do
    end function flux_polyhedron_vol
-   
-   !> Correct 9th vertex of flux polyhedron to enforce exact volume (x-flux)
-   subroutine volume_correct_x(face, volume)
-      implicit none
-      real(WP), dimension(3,9), intent(inout) :: face
-      real(WP) :: volume
-      real(WP), dimension(3) :: a,b,c
-      integer :: ntet
-      ! Compute volume mismatch
-      do ntet=1,6
-         a=face(:,tet_map(1,ntet))-face(:,tet_map(4,ntet)); b=face(:,tet_map(2,ntet))-face(:,tet_map(4,ntet)); c=face(:,tet_map(3,ntet))-face(:,tet_map(4,ntet))
-         volume=volume+(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2)))/6.0_WP
-      end do
-      ! Use analytical correction
-      face(1,9)=(-6.0_WP*volume+face(1,5)*((face(2,8)-face(2,9))*(face(3,6)-face(3,9))-(face(2,6)-face(2,9))*(face(3,8)-face(3,9)))+face(2,5)*((face(3,8)-face(3,9))*face(1,6)-(face(3,6)-face(3,9))*face(1,8))+face(2,9)*((face(3,6)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,6))+face(3,5)*((face(2,6)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,6))+face(3,9)*((face(2,8)-face(2,9))*face(1,6)-(face(2,6)-face(2,9))*face(1,8))+face(1,6)*((face(2,8)-face(2,9))*(face(3,7)-face(3,9))-(face(2,7)-face(2,9))*(face(3,8)-face(3,9)))+face(2,6)*((face(3,8)-face(3,9))*face(1,7)-(face(3,7)-face(3,9))*face(1,8))+face(2,9)*((face(3,7)-face(3,9))*face(1,8)-(face(3,8)-face(3,9))*face(1,7))+face(3,6)*((face(2,7)-face(2,9))*face(1,8)-(face(2,8)-face(2,9))*face(1,7))+face(3,9)*((face(2,8)-face(2,9))*face(1,7)-(face(2,7)-face(2,9))*face(1,8)))/(-(face(2,6)-face(2,9))*(face(3,8)-face(3,9))+(face(2,8)-face(2,9))*(face(3,6)-face(3,9))-face(2,5)*(face(3,6)-face(3,9))+face(2,5)*(face(3,8)-face(3,9))+face(2,9)*(face(3,6)-face(3,9))-face(2,9)*(face(3,8)-face(3,9))-face(3,5)*(face(2,8)-face(2,9))+face(3,5)*(face(2,6)-face(2,9))+face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,6)-face(2,9))-(face(2,7)-face(2,9))*(face(3,8)-face(3,9))+(face(2,8)-face(2,9))*(face(3,7)-face(3,9))-face(2,6)*(face(3,7)-face(3,9))+face(2,6)*(face(3,8)-face(3,9))+face(2,9)*(face(3,7)-face(3,9))-face(2,9)*(face(3,8)-face(3,9))-face(3,6)*(face(2,8)-face(2,9))+face(3,6)*(face(2,7)-face(2,9))+face(3,9)*(face(2,8)-face(2,9))-face(3,9)*(face(2,7)-face(2,9)))
-      face(2,9)=0.25_WP*sum(face(2,5:8))
-      face(3,9)=0.25_WP*sum(face(3,5:8))
-   end subroutine volume_correct_x
 
-   !> Correct 9th vertex of flux polyhedron to enforce exact volume (y-flux)
-   subroutine volume_correct_y(face, volume)
+   !> Adjust flux polyhedron to enforce target volume
+   !> Uses IRL's direction-independent approach: moves vertex 9 along back-face normal
+   subroutine correct_flux_poly(poly,target_volume)
       implicit none
-      real(WP), dimension(3,9), intent(inout) :: face
-      real(WP) :: volume
-      real(WP), dimension(3) :: a,b,c
-      integer :: ntet
-      ! Compute volume mismatch
-      do ntet=1,6
-         a=face(:,tet_map(1,ntet))-face(:,tet_map(4,ntet)); b=face(:,tet_map(2,ntet))-face(:,tet_map(4,ntet)); c=face(:,tet_map(3,ntet))-face(:,tet_map(4,ntet))
-         volume=volume-(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2)))/6.0_WP
-      end do
-      ! Use analytical correction
-      face(1,9)=0.25_WP*sum(face(1,5:8))
-      face(2,9)=(6.0_WP*volume+face(1,5)*((face(3,6)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,6))+face(1,9)*((face(3,8)-face(3,9))*face(2,6)-(face(3,6)-face(3,9))*face(2,8))+face(2,5)*((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9)))+face(3,5)*((face(1,8)-face(1,9))*face(2,6)-(face(1,6)-face(1,9))*face(2,8))+face(3,9)*((face(1,6)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,6))+face(1,6)*((face(3,7)-face(3,9))*face(2,8)-(face(3,8)-face(3,9))*face(2,7))+face(1,9)*((face(3,8)-face(3,9))*face(2,7)-(face(3,7)-face(3,9))*face(2,8))+face(2,6)*((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9)))+face(3,6)*((face(1,8)-face(1,9))*face(2,7)-(face(1,7)-face(1,9))*face(2,8))+face(3,9)*((face(1,7)-face(1,9))*face(2,8)-(face(1,8)-face(1,9))*face(2,7)))/(face(1,5)*((face(3,6)-face(3,9))-(face(3,8)-face(3,9)))+face(1,9)*((face(3,8)-face(3,9))-(face(3,6)-face(3,9)))+((face(3,8)-face(3,9))*(face(1,6)-face(1,9))-(face(3,6)-face(3,9))*(face(1,8)-face(1,9)))+face(3,5)*((face(1,8)-face(1,9))-(face(1,6)-face(1,9)))+face(3,9)*((face(1,6)-face(1,9))-(face(1,8)-face(1,9)))+face(1,9)*((face(3,8)-face(3,9))-(face(3,7)-face(3,9)))+((face(3,8)-face(3,9))*(face(1,7)-face(1,9))-(face(3,7)-face(3,9))*(face(1,8)-face(1,9)))+face(3,6)*((face(1,8)-face(1,9))-(face(1,7)-face(1,9)))+face(3,9)*((face(1,7)-face(1,9))-(face(1,8)-face(1,9))))
-      face(3,9)=0.25_WP*sum(face(3,5:8))
-   end subroutine volume_correct_y
-   
-   !> Correct 9th vertex of flux polyhedron to enforce exact volume (z-flux)
-   subroutine volume_correct_z(face, volume)
-      implicit none
-      real(WP), dimension(3,9), intent(inout) :: face
-      real(WP) :: volume
-      real(WP), dimension(3) :: a,b,c
-      integer :: ntet
-      ! Compute volume mismatch
-      do ntet=1,6
-         a=face(:,tet_map(1,ntet))-face(:,tet_map(4,ntet)); b=face(:,tet_map(2,ntet))-face(:,tet_map(4,ntet)); c=face(:,tet_map(3,ntet))-face(:,tet_map(4,ntet))
-         volume=volume+(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2)))/6.0_WP
-      end do
-      ! Use analytical correction
-      face(1,9)=0.25_WP*sum(face(1,5:8))
-      face(2,9)=0.25_WP*sum(face(2,5:8))
-      face(3,9)=(6.0_WP*volume+face(1,5)*face(2,6)*face(3,8)-face(1,5)*face(3,6)*face(2,8)-face(2,5)*face(1,6)*face(3,8)+face(2,5)*face(3,6)*face(1,8)+face(3,5)*face(1,6)*face(2,8)-face(3,5)*face(2,6)*face(1,8)+face(1,5)*face(3,6)*face(2,5)-face(2,5)*face(3,6)*face(1,5)-face(3,5)*face(1,6)*face(2,5)+face(3,5)*face(2,6)*face(1,5)+face(1,6)*face(2,7)*face(3,8)-face(1,6)*face(3,7)*face(2,8)-face(2,6)*face(1,7)*face(3,8)+face(2,6)*face(3,7)*face(1,8)+face(3,6)*face(1,7)*face(2,8)-face(3,6)*face(2,7)*face(1,8)-face(1,5)*face(3,8)*face(2,5)+face(2,5)*face(3,8)*face(1,5)+face(3,5)*face(1,8)*face(2,5)-face(3,5)*face(2,8)*face(1,5)+face(1,6)*face(3,7)*face(2,5)-face(2,6)*face(3,7)*face(1,5)-face(3,6)*face(1,7)*face(2,5)+face(3,6)*face(2,7)*face(1,5)+face(1,7)*face(3,8)*face(2,5)-face(2,7)*face(3,8)*face(1,5)-face(3,7)*face(1,8)*face(2,5)+face(3,7)*face(2,8)*face(1,5))/(face(1,5)*face(2,6)-face(2,5)*face(1,6)-face(1,5)*face(2,8)+face(2,5)*face(1,8)+face(1,6)*face(2,7)-face(2,6)*face(1,7)+face(1,7)*face(2,8)-face(2,7)*face(1,8))
-   end subroutine volume_correct_z
-   
+      real(WP), dimension(3,9), intent(inout) :: poly
+      real(WP), intent(in) :: target_volume
+      real(WP) :: starting_volume,needed_change,mag,adjustment
+      real(WP), dimension(3) :: cross_sum,dir
+      real(WP), dimension(3) :: e1,e2,c1,c2
+      integer :: n
+      ! Compute starting volume
+      starting_volume=0.0_WP
+      do n=1,8; starting_volume=starting_volume+tet_vol([poly(:,tet_map(1,n)),poly(:,tet_map(2,n)),poly(:,tet_map(3,n)),poly(:,tet_map(4,n))]); end do
+      needed_change=target_volume-starting_volume
+      ! Compute volume gradient for tets 7 and 8 (the only tets using vertex 9)
+      ! For tet (A,B,C,D), gradient w.r.t. D is -(1/6)*((B-A)×(C-A))
+      ! Tet 7 = (5,6,8,9): gradient = -((v6-v5)×(v8-v5)). Take edges from vertex 5
+      e1=poly(:,6)-poly(:,5); e2=poly(:,8)-poly(:,5)
+      c1=[e1(2)*e2(3)-e1(3)*e2(2),e1(3)*e2(1)-e1(1)*e2(3),e1(1)*e2(2)-e1(2)*e2(1)]
+      ! Tet 8 = (6,7,8,9): gradient = -((v7-v6)×(v8-v6)). Take edges from vertex 6
+      e1=poly(:,7)-poly(:,6); e2=poly(:,8)-poly(:,6)
+      c2=[e1(2)*e2(3)-e1(3)*e2(2),e1(3)*e2(1)-e1(1)*e2(3),e1(1)*e2(2)-e1(2)*e2(1)]
+      ! Total gradient (negative sign absorbed into adjustment formula)
+      cross_sum=c1+c2
+      ! Compute adjustment along normal direction
+      mag=sqrt(cross_sum(1)**2+cross_sum(2)**2+cross_sum(3)**2)
+      adjustment=6.0_WP*needed_change/max(mag,tiny(1.0_WP))
+      dir=cross_sum/max(mag,tiny(1.0_WP))
+      ! Move vertex 9
+      poly(:,9)=poly(:,9)+adjustment*dir
+      ! DEBUG: Verify corrected volume matches target
+      block
+         real(WP) :: final_vol
+         integer :: ntet
+         final_vol = 0.0_WP
+         do ntet = 1,8
+            final_vol = final_vol + tet_vol([poly(:,tet_map(1,ntet)), poly(:,tet_map(2,ntet)), &
+            &                                poly(:,tet_map(3,ntet)), poly(:,tet_map(4,ntet))])
+         end do
+         if (abs(final_vol - target_volume) > 1.0e-10_WP) then
+            print*, 'correct_flux_poly FAILED: target=', target_volume, 'got=', final_vol, 'diff=', final_vol-target_volume
+         end if
+      end block
+
+   end subroutine correct_flux_poly
+
    !> Cut a hex cell by a plane and compute liquid/gas volumes and barycenters
    !> hex(:,1:8) = 8 vertices of hex cell (standard ordering)
    !> plane(1:3) = normal, plane(4) = distance (n·x = d)

@@ -84,6 +84,7 @@ module amrincomp_class
       ! Physics procedures
       procedure :: get_dmomdt                 !< Compute momentum advection RHS
       procedure :: get_cfl                    !< Compute CFL numbers
+      procedure :: correct_outflow            !< Correct outflow for global mass conservation
       procedure :: print => amrincomp_print   !< Print solver info
    end type amrincomp
 
@@ -117,7 +118,7 @@ module amrincomp_class
          import :: amrincomp, amrex_box, amrex_geometry, WP
          class(amrincomp), intent(in) :: solver
          type(amrex_box), intent(in) :: bx          !< Boundary region to fill
-         real(WP), dimension(:,:,:,:), intent(inout) :: p
+         real(WP), dimension(:,:,:,:), pointer, intent(inout) :: p
          character(len=1), intent(in) :: comp       !< 'U', 'V', or 'W'
          integer, intent(in) :: face                !< 1=xlo,2=xhi,3=ylo,4=yhi,5=zlo,6=zhi
          real(WP), intent(in) :: time
@@ -133,6 +134,7 @@ contains
 
    !> Dispatch on_init: calls type-bound method then user callback
    subroutine amrincomp_on_init(ctx, lvl, time, ba, dm)
+      implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -146,6 +148,7 @@ contains
 
    !> Dispatch on_coarse: calls type-bound method
    subroutine amrincomp_on_coarse(ctx, lvl, time, ba, dm)
+      implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -158,6 +161,7 @@ contains
 
    !> Dispatch on_remake: calls type-bound method
    subroutine amrincomp_on_remake(ctx, lvl, time, ba, dm)
+      implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -170,6 +174,7 @@ contains
 
    !> Dispatch on_clear: calls type-bound method
    subroutine amrincomp_on_clear(ctx, lvl)
+      implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
       type(amrincomp), pointer :: this
@@ -179,6 +184,7 @@ contains
 
    !> Dispatch tagging: calls user callback if set
    subroutine amrincomp_tagging(ctx, lvl, tags, time)
+      implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
       type(c_ptr), intent(in) :: tags
@@ -190,6 +196,7 @@ contains
 
    !> Dispatch post_regrid: calls type-bound method
    subroutine amrincomp_postregrid(ctx, lbase, time)
+      implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lbase
       real(WP), intent(in) :: time
@@ -204,6 +211,7 @@ contains
 
    !> Initialize the incompressible solver
    subroutine initialize(this, amr, name)
+      implicit none
       class(amrincomp), target, intent(inout) :: this
       class(amrgrid), target, intent(in) :: amr
       character(len=*), intent(in), optional :: name
@@ -262,12 +270,32 @@ contains
 
    end subroutine initialize
 
+   !> Finalize the incompressible solver
+   subroutine finalize(this)
+      implicit none
+      class(amrincomp), intent(inout) :: this
+      call this%U%finalize()
+      call this%V%finalize()
+      call this%W%finalize()
+      call this%Uold%finalize()
+      call this%Vold%finalize()
+      call this%Wold%finalize()
+      call this%P%finalize()
+      call this%div%finalize()
+      call this%psolver%finalize()
+      nullify(this%amr)
+      nullify(this%user_init)
+      nullify(this%user_tagging)
+      nullify(this%user_dirichlet)
+   end subroutine finalize
+
    ! ============================================================================
    ! INTERNAL CALLBACK OVERRIDES
    ! ============================================================================
 
    !> Override on_init: reset levels and set to zero
    subroutine on_init(this, lvl, time, ba, dm)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -295,6 +323,7 @@ contains
 
    !> Override on_coarse: create new fine level from coarse using divergence-free interpolation
    subroutine on_coarse(this, lvl, time, ba, dm)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -318,6 +347,7 @@ contains
    !> Override on_remake: migrate data on regrid using divergence-free interpolation
    subroutine on_remake(this, lvl, time, ba, dm)
       use amrex_amr_module, only: amrex_multifab_build, amrex_multifab_destroy
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -353,6 +383,7 @@ contains
 
    !> Override on_clear: delete level
    subroutine on_clear(this, lvl)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       call this%U%clear_level(lvl)
@@ -367,6 +398,7 @@ contains
 
    !> Override post_regrid: average down for C/F consistency
    subroutine post_regrid(this, lbase, time)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lbase
       real(WP), intent(in) :: time
@@ -379,6 +411,7 @@ contains
    !> Average down MAC velocity for a single level (lvl+1 -> lvl)
    !> Uses amrdata infrastructure which handles face-centered averaging correctly
    subroutine average_down_velocity_to(this, lvl)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       call this%U%average_downto(lvl)
@@ -390,6 +423,7 @@ contains
    !> Simply calls average_down_velocity_to in a loop
    !> @param lbase Optional: lowest level to average down to (default 0)
    subroutine average_down_velocity(this, lbase)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in), optional :: lbase
       integer :: lvl, lb
@@ -404,6 +438,7 @@ contains
       use iso_c_binding, only: c_loc, c_funloc, c_funptr, c_ptr
       use amrex_interface, only: amrmfab_fillpatch_single, amrmfab_fillpatch_two_faces
       use amrdata_class, only: amrdata_fillbc
+      implicit none
       class(amrincomp), target, intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -455,6 +490,7 @@ contains
 
    !> Fill velocity ghost cells on all levels
    subroutine fill_velocity(this, time)
+      implicit none
       class(amrincomp), intent(inout) :: this
       real(WP), intent(in) :: time
       integer :: lvl
@@ -469,6 +505,7 @@ contains
       use iso_c_binding, only: c_loc, c_funloc, c_funptr, c_ptr
       use amrex_interface, only: amrmfab_fillcoarsepatch_faces
       use amrdata_class, only: amrdata_fillbc
+      implicit none
       class(amrincomp), target, intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -501,6 +538,7 @@ contains
 
    !> Sync velocity ghost cells at a single level (lightweight, no C/F interpolation)
    subroutine sync_velocity_lvl(this, lvl)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       call this%U%sync_lvl(lvl)
@@ -510,6 +548,7 @@ contains
 
    !> Sync velocity ghost cells on all levels
    subroutine sync_velocity(this)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer :: lvl
       do lvl = 0, this%amr%clvl()
@@ -523,6 +562,7 @@ contains
       use iso_c_binding, only: c_loc, c_funloc, c_funptr, c_ptr
       use amrex_interface, only: amrmfab_fillpatch_single, amrmfab_fillpatch_two_faces
       use amrdata_class, only: amrdata_fillbc
+      implicit none
       class(amrincomp), target, intent(inout) :: this
       type(amrex_multifab), intent(inout) :: Udest, Vdest, Wdest
       integer, intent(in) :: lvl
@@ -576,6 +616,7 @@ contains
    !> Average down pressure for a single level (lvl+1 -> lvl)
    !> Uses amrdata infrastructure which handles cell-centered averaging correctly
    subroutine average_down_pressure_to(this, lvl)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       call this%P%average_downto(lvl)
@@ -585,6 +626,7 @@ contains
    !> Simply calls average_down_pressure_to in a loop
    !> @param lbase Optional: lowest level to average down to (default 0)
    subroutine average_down_pressure(this, lbase)
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in), optional :: lbase
       integer :: lvl, lb
@@ -594,23 +636,6 @@ contains
       end do
    end subroutine average_down_pressure
 
-   !> Finalize the incompressible solver
-   subroutine finalize(this)
-      class(amrincomp), intent(inout) :: this
-      call this%U%finalize()
-      call this%V%finalize()
-      call this%W%finalize()
-      call this%Uold%finalize()
-      call this%Vold%finalize()
-      call this%Wold%finalize()
-      call this%P%finalize()
-      call this%div%finalize()
-      call this%psolver%finalize()
-      nullify(this%amr)
-      nullify(this%user_init)
-      nullify(this%user_tagging)
-   end subroutine finalize
-
    ! ============================================================================
    ! PHYSICS METHODS
    ! ============================================================================
@@ -618,6 +643,7 @@ contains
    !> Compute divergence of velocity into internal div field, update divmax
    subroutine get_div(this)
       use amrex_interface, only: amrmfab_compute_divergence
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer :: lvl
       ! Use our wrapper to amrex's 2nd order staggered divergence
@@ -635,6 +661,7 @@ contains
 
    !> Compute pressure gradient into user-provided face amrdata
    subroutine get_pgrad(this, dPdx, dPdy, dPdz)
+      implicit none
       class(amrincomp), intent(inout) :: this
       type(amrdata), intent(inout) :: dPdx, dPdy, dPdz
       integer :: lvl, i, j, k
@@ -676,6 +703,7 @@ contains
       use amrex_interface, only: amrmask_make_fine
       use parallel, only: MPI_REAL_WP
       use mpi_f08
+      implicit none
       class(amrincomp), intent(inout) :: this
       integer :: lvl, i, j, k, ierr
       real(WP) :: dV, Uc, Vc, Wc
@@ -755,6 +783,7 @@ contains
 
    !> Compute CFL numbers (convective and viscous)
    subroutine get_cfl(this, dt, cfl, cflc)
+      implicit none
       class(amrincomp), intent(inout) :: this
       real(WP), intent(in)  :: dt
       real(WP), intent(out) :: cfl
@@ -792,6 +821,7 @@ contains
    subroutine amrincomp_print(this)
       use messager, only: log
       use string, only: str_long
+      implicit none
       class(amrincomp), intent(in) :: this
       character(len=str_long) :: message
       call log("Incompressible solver: "//trim(this%name))
@@ -803,6 +833,7 @@ contains
    !> Register solver data for checkpoint
    subroutine register_checkpoint(this, io)
       use amrio_class, only: amrio
+      implicit none
       class(amrincomp), intent(inout) :: this
       class(amrio), intent(inout) :: io
       call io%add_data(this%U, 'U')
@@ -814,6 +845,7 @@ contains
    !> Restore solver data from checkpoint
    subroutine restore_checkpoint(this, io, dirname)
       use amrio_class, only: amrio
+      implicit none
       class(amrincomp), intent(inout) :: this
       class(amrio), intent(inout) :: io
       character(len=*), intent(in) :: dirname
@@ -829,6 +861,7 @@ contains
    subroutine get_dmomdt(this, U, V, W, drhoUdt, drhoVdt, drhoWdt, time)
       use amrex_amr_module, only: amrex_multifab, amrex_multifab_destroy, amrex_mfiter, amrex_box
       use amrex_interface,  only: amrmfab_average_down_cell, amrmfab_average_down_edge
+      implicit none
       class(amrincomp), intent(inout) :: this
       class(amrdata), intent(inout) :: U, V, W                          !< Velocity state (face-centered)
       class(amrdata), intent(inout) :: drhoUdt, drhoVdt, drhoWdt        !< Output: momentum RHS (face-centered)
@@ -900,27 +933,27 @@ contains
 
             ! Diagonal fluxes
             do k = bx%lo(3)-1, bx%hi(3)+1; do j = bx%lo(2)-1, bx%hi(2)+1; do i = bx%lo(1)-1, bx%hi(1)+1
-               pFUx(i,j,k,1) = - 0.25_WP * (pU(i,j,k,1) + pU(i+1,j,k,1))**2 + 2.0_WP * this%visc * (pU(i+1,j,k,1) - pU(i,j,k,1)) * dxi
-               pFVy(i,j,k,1) = - 0.25_WP * (pV(i,j,k,1) + pV(i,j+1,k,1))**2 + 2.0_WP * this%visc * (pV(i,j+1,k,1) - pV(i,j,k,1)) * dyi
-               pFWz(i,j,k,1) = - 0.25_WP * (pW(i,j,k,1) + pW(i,j,k+1,1))**2 + 2.0_WP * this%visc * (pW(i,j,k+1,1) - pW(i,j,k,1)) * dzi
+               pFUx(i,j,k,1) = - 0.25_WP * this%rho * sum(pU(i:i+1,j,k,1))**2 + 2.0_WP * this%visc * (pU(i+1,j,k,1) - pU(i,j,k,1)) * dxi
+               pFVy(i,j,k,1) = - 0.25_WP * this%rho * sum(pV(i,j:j+1,k,1))**2 + 2.0_WP * this%visc * (pV(i,j+1,k,1) - pV(i,j,k,1)) * dyi
+               pFWz(i,j,k,1) = - 0.25_WP * this%rho * sum(pW(i,j,k:k+1,1))**2 + 2.0_WP * this%visc * (pW(i,j,k+1,1) - pW(i,j,k,1)) * dzi
             end do; end do; end do
 
             ! Edge cross-fluxes with proper bounds for each type
             ! xy-edge (FUy, FVx): nodal in x,y; cell in z -> [lo,hi] in z; [lo,hi+1] in x,y
             do k = bx%lo(3), bx%hi(3); do j = bx%lo(2), bx%hi(2)+1; do i = bx%lo(1), bx%hi(1)+1
-               pFUy(i,j,k,1) = - 0.25_WP * (pV(i-1,j,k,1) + pV(i,j,k,1)) * (pU(i,j-1,k,1) + pU(i,j,k,1)) &
+               pFUy(i,j,k,1) = - 0.25_WP * this%rho * sum(pV(i-1:i,j,k,1)) * sum(pU(i,j-1:j,k,1)) &
                &              + this%visc * ((pU(i,j,k,1) - pU(i,j-1,k,1)) * dyi + (pV(i,j,k,1) - pV(i-1,j,k,1)) * dxi)
                pFVx(i,j,k,1) = pFUy(i,j,k,1)
             end do; end do; end do
             ! yz-edge (FVz, FWy): nodal in y,z; cell in x -> [lo,hi] in x; [lo,hi+1] in y,z
             do k = bx%lo(3), bx%hi(3)+1; do j = bx%lo(2), bx%hi(2)+1; do i = bx%lo(1), bx%hi(1)
-               pFVz(i,j,k,1) = - 0.25_WP * (pW(i,j-1,k,1) + pW(i,j,k,1)) * (pV(i,j,k-1,1) + pV(i,j,k,1)) &
+               pFVz(i,j,k,1) = - 0.25_WP * this%rho * sum(pW(i,j-1:j,k,1)) * sum(pV(i,j,k-1:k,1)) &
                &              + this%visc * ((pV(i,j,k,1) - pV(i,j,k-1,1)) * dzi + (pW(i,j,k,1) - pW(i,j-1,k,1)) * dyi)
                pFWy(i,j,k,1) = pFVz(i,j,k,1)
             end do; end do; end do
             ! zx-edge (FWx, FUz): nodal in z,x; cell in y -> [lo,hi] in y; [lo,hi+1] in z,x
             do k = bx%lo(3), bx%hi(3)+1; do j = bx%lo(2), bx%hi(2); do i = bx%lo(1), bx%hi(1)+1
-               pFWx(i,j,k,1) = - 0.25_WP * (pU(i,j,k-1,1) + pU(i,j,k,1)) * (pW(i-1,j,k,1) + pW(i,j,k,1)) &
+               pFWx(i,j,k,1) = - 0.25_WP * this%rho * sum(pU(i,j,k-1:k,1)) * sum(pW(i-1:i,j,k,1)) &
                &              + this%visc * ((pW(i,j,k,1) - pW(i-1,j,k,1)) * dxi + (pU(i,j,k,1) - pU(i,j,k-1,1)) * dzi)
                pFUz(i,j,k,1) = pFWx(i,j,k,1)
             end do; end do; end do
@@ -1030,6 +1063,7 @@ contains
    subroutine velocity_fillbc(this, mf, scomp, ncomp, time, geom)
       use amrex_amr_module, only: amrex_mfiter, amrex_mfiter_build, amrex_mfiter_destroy, &
       &   amrex_bc_ext_dir, amrex_bc_foextrap, amrex_bc_hoextrap, amrex_bc_reflect_even, amrex_bc_reflect_odd
+      implicit none
       class(amrdata), intent(inout) :: this
       type(amrex_multifab), intent(inout) :: mf
       integer, intent(in) :: scomp, ncomp
@@ -1037,15 +1071,17 @@ contains
       type(amrex_geometry), intent(in) :: geom
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
+      class(amrincomp), pointer :: solver
       real(WP), dimension(:,:,:,:), contiguous, pointer :: p
-      integer :: i, j, k, dlo(3), dhi(3), flo(3), fhi(3), bnd
+      integer :: i, j, k, dlo(3), dhi(3), flo(3), fhi(3)
       integer :: ilo, ihi, jlo, jhi, klo, khi
       character(len=1) :: comp
       logical :: xper, yper, zper
 
       ! Access solver for periodicity and user callback
-      select type (solver => this%parent)
+      select type (s => this%parent)
        class is (amrincomp)
+         solver => s
          xper = solver%amr%xper; yper = solver%amr%yper; zper = solver%amr%zper
          if (xper .and. yper .and. zper) return
       end select
@@ -1079,49 +1115,18 @@ contains
 
          select type (solver => this%parent)
           class is (amrincomp)
-
             ! X-LOW BOUNDARY
-            if (.not.xper .and. ilo .lt. flo(1)) then
-               bnd = flo(1)
-               call apply_vel_bc_lo(p, 1, bnd, ilo, ihi, jlo, jhi, klo, khi, &
-               &   this%lo_bc(1,1), solver, comp, 1, time, geom)
-            end if
-
+            if (.not.xper .and. ilo .lt. flo(1)) call apply_vel_bc_lo(dir=1, bnd=flo(1), bctype=this%lo_bc(1,1), face=1)
             ! X-HIGH BOUNDARY
-            if (.not.xper .and. ihi .gt. fhi(1)) then
-               bnd = fhi(1)
-               call apply_vel_bc_hi(p, 1, bnd, ilo, ihi, jlo, jhi, klo, khi, &
-               &   this%hi_bc(1,1), solver, comp, 2, time, geom)
-            end if
-
+            if (.not.xper .and. ihi .gt. fhi(1)) call apply_vel_bc_hi(dir=1, bnd=fhi(1), bctype=this%hi_bc(1,1), face=2)
             ! Y-LOW BOUNDARY
-            if (.not.yper .and. jlo .lt. flo(2)) then
-               bnd = flo(2)
-               call apply_vel_bc_lo(p, 2, bnd, ilo, ihi, jlo, jhi, klo, khi, &
-               &   this%lo_bc(2,1), solver, comp, 3, time, geom)
-            end if
-
+            if (.not.yper .and. jlo .lt. flo(2)) call apply_vel_bc_lo(dir=2, bnd=flo(2), bctype=this%lo_bc(2,1), face=3)
             ! Y-HIGH BOUNDARY
-            if (.not.yper .and. jhi .gt. fhi(2)) then
-               bnd = fhi(2)
-               call apply_vel_bc_hi(p, 2, bnd, ilo, ihi, jlo, jhi, klo, khi, &
-               &   this%hi_bc(2,1), solver, comp, 4, time, geom)
-            end if
-
+            if (.not.yper .and. jhi .gt. fhi(2)) call apply_vel_bc_hi(dir=2, bnd=fhi(2), bctype=this%hi_bc(2,1), face=4)
             ! Z-LOW BOUNDARY
-            if (.not.zper .and. klo .lt. flo(3)) then
-               bnd = flo(3)
-               call apply_vel_bc_lo(p, 3, bnd, ilo, ihi, jlo, jhi, klo, khi, &
-               &   this%lo_bc(3,1), solver, comp, 5, time, geom)
-            end if
-
+            if (.not.zper .and. klo .lt. flo(3)) call apply_vel_bc_lo(dir=3, bnd=flo(3), bctype=this%lo_bc(3,1), face=5)
             ! Z-HIGH BOUNDARY
-            if (.not.zper .and. khi .gt. fhi(3)) then
-               bnd = fhi(3)
-               call apply_vel_bc_hi(p, 3, bnd, ilo, ihi, jlo, jhi, klo, khi, &
-               &   this%hi_bc(3,1), solver, comp, 6, time, geom)
-            end if
-
+            if (.not.zper .and. khi .gt. fhi(3)) call apply_vel_bc_hi(dir=3, bnd=fhi(3), bctype=this%hi_bc(3,1), face=6)
          end select
       end do
       call amrex_mfiter_destroy(mfi)
@@ -1131,13 +1136,9 @@ contains
       !> Apply BC at low boundary in direction dir
       !> For NORMAL component (e.g., U in x): fills boundary face + ghosts
       !> For TANGENT component (e.g., V in x): fills ghosts only
-      subroutine apply_vel_bc_lo(p, dir, bnd, ilo, ihi, jlo, jhi, klo, khi, bctype, solver, comp, face, time, geom)
-         real(WP), dimension(:,:,:,:), intent(inout) :: p
-         integer, intent(in) :: dir, bnd, ilo, ihi, jlo, jhi, klo, khi, bctype, face
-         class(amrincomp), intent(in) :: solver
-         character(len=1), intent(in) :: comp
-         real(WP), intent(in) :: time
-         type(amrex_geometry), intent(in) :: geom
+      subroutine apply_vel_bc_lo(dir, bnd, bctype, face)
+         implicit none
+         integer, intent(in) :: dir, bnd, bctype, face
          type(amrex_box) :: bc_bx
          integer :: ii, jj, kk, fill_to, src_from
          logical :: is_normal
@@ -1220,13 +1221,9 @@ contains
       !> Apply BC at high boundary in direction dir
       !> For NORMAL component (e.g., U in x): fills boundary face + ghosts
       !> For TANGENT component (e.g., V in x): fills ghosts only
-      subroutine apply_vel_bc_hi(p, dir, bnd, ilo, ihi, jlo, jhi, klo, khi, bctype, solver, comp, face, time, geom)
-         real(WP), dimension(:,:,:,:), intent(inout) :: p
-         integer, intent(in) :: dir, bnd, ilo, ihi, jlo, jhi, klo, khi, bctype, face
-         class(amrincomp), intent(in) :: solver
-         character(len=1), intent(in) :: comp
-         real(WP), intent(in) :: time
-         type(amrex_geometry), intent(in) :: geom
+      subroutine apply_vel_bc_hi(dir, bnd, bctype, face)
+         implicit none
+         integer, intent(in) :: dir, bnd, bctype, face
          type(amrex_box) :: bc_bx
          integer :: ii, jj, kk, fill_from, src_from
          logical :: is_normal
@@ -1306,5 +1303,86 @@ contains
       end subroutine apply_vel_bc_hi
 
    end subroutine velocity_fillbc
+
+   !> Correct outflow velocity to ensure global mass conservation
+   subroutine correct_outflow(this)
+      use mpi_f08,  only: MPI_ALLREDUCE, MPI_SUM, MPI_IN_PLACE
+      use parallel, only: MPI_REAL_WP
+      implicit none
+      class(amrincomp), intent(inout) :: this
+      real(WP) :: Qin, Qout, Ucorr, Aout
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pU
+      integer :: i, j, k, ilo, ihi, jlo, jhi, klo, khi
+      integer :: dlo(3), dhi(3), ilo_bnd, ihi_bnd, ierr
+      real(WP) :: dy, dz, dA
+      type(amrex_mfiter) :: mfi
+
+      if (this%amr%xper) return
+
+      ! Level 0 only
+      dlo = this%amr%geom(0)%domain%lo
+      dhi = this%amr%geom(0)%domain%hi
+      ilo_bnd = dlo(1)
+      ihi_bnd = dhi(1) + 1
+      dy = this%amr%dy(0)
+      dz = this%amr%dz(0)
+      dA = dy * dz
+
+      Qin = 0.0_WP; Qout = 0.0_WP; Aout = 0.0_WP
+
+      call this%amr%mfiter_build(0, mfi, tiling=.false.)
+      do while (mfi%next())
+         pU => this%U%mf(0)%dataptr(mfi)
+         ilo = lbound(pU,1); ihi = ubound(pU,1)
+         jlo = lbound(pU,2); jhi = ubound(pU,2)
+         klo = lbound(pU,3); khi = ubound(pU,3)
+
+         if (ilo .le. ilo_bnd .and. ilo_bnd .le. ihi) then
+            do k = max(klo,dlo(3)), min(khi,dhi(3))
+               do j = max(jlo,dlo(2)), min(jhi,dhi(2))
+                  Qin = Qin + pU(ilo_bnd,j,k,1) * dA
+               end do
+            end do
+         end if
+
+         if (ilo .le. ihi_bnd .and. ihi_bnd .le. ihi) then
+            do k = max(klo,dlo(3)), min(khi,dhi(3))
+               do j = max(jlo,dlo(2)), min(jhi,dhi(2))
+                  Qout = Qout + pU(ihi_bnd,j,k,1) * dA
+                  Aout = Aout + dA
+               end do
+            end do
+         end if
+      end do
+      call this%amr%mfiter_destroy(mfi)
+
+      call MPI_ALLREDUCE(MPI_IN_PLACE, Qin,  1, MPI_REAL_WP, MPI_SUM, this%amr%comm, ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE, Qout, 1, MPI_REAL_WP, MPI_SUM, this%amr%comm, ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE, Aout, 1, MPI_REAL_WP, MPI_SUM, this%amr%comm, ierr)
+
+      if (Aout .gt. 0.0_WP) then
+         Ucorr = (Qin - Qout) / Aout
+      else
+         return
+      end if
+
+      call this%amr%mfiter_build(0, mfi, tiling=.false.)
+      do while (mfi%next())
+         pU => this%U%mf(0)%dataptr(mfi)
+         ilo = lbound(pU,1); ihi = ubound(pU,1)
+         jlo = lbound(pU,2); jhi = ubound(pU,2)
+         klo = lbound(pU,3); khi = ubound(pU,3)
+
+         if (ilo .le. ihi_bnd .and. ihi_bnd .le. ihi) then
+            do k = max(klo,dlo(3)), min(khi,dhi(3))
+               do j = max(jlo,dlo(2)), min(jhi,dhi(2))
+                  pU(ihi_bnd,j,k,1) = pU(ihi_bnd,j,k,1) + Ucorr
+               end do
+            end do
+         end if
+      end do
+      call this%amr%mfiter_destroy(mfi)
+      
+   end subroutine correct_outflow
 
 end module amrincomp_class

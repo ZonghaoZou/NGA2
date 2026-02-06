@@ -167,6 +167,7 @@ module amrgrid_class
       procedure :: clvl                      !< Return current finest level
       procedure :: mfab_build                !< Build multifab at a given level
       procedure :: mfab_destroy              !< Destroy multifab
+      procedure :: mfab_foextrap             !< Apply fo_extrap BCs to multifab
    end type amrgrid
 
    ! Instance counter for automated AMReX lifecycle management
@@ -809,6 +810,52 @@ contains
       type(amrex_multifab), intent(inout) :: mfab
       call amrex_multifab_destroy(mfab)
    end subroutine mfab_destroy
+
+
+   !> Apply first-order extrapolation BCs to a multifab at physical boundaries
+   !> This fills ghost cells by copying from first interior cell (Neumann BC)
+   subroutine mfab_foextrap(this,lvl,mfab)
+      use amrex_amr_module, only: amrex_multifab,amrex_mfiter,amrex_mfiter_build,amrex_mfiter_destroy
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      integer, intent(in) :: lvl
+      type(amrex_multifab), intent(inout) :: mfab
+      type(amrex_mfiter) :: mfi
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: p
+      integer :: i,j,k,n,nc,ilo,ihi,jlo,jhi,klo,khi,dlo(3),dhi(3)
+      ! Skip if fully periodic
+      if (this%xper.and.this%yper.and.this%zper) return
+      ! Get domain bounds and ncomp
+      dlo=this%geom(lvl)%domain%lo
+      dhi=this%geom(lvl)%domain%hi
+      nc=mfab%ncomp()
+      ! Loop over FABs
+      call amrex_mfiter_build(mfi,mfab,tiling=.false.)
+      do while(mfi%next())
+         p=>mfab%dataptr(mfi)
+         ilo=lbound(p,1); ihi=ubound(p,1)
+         jlo=lbound(p,2); jhi=ubound(p,2)
+         klo=lbound(p,3); khi=ubound(p,3)
+         do n=1,nc
+            ! X boundaries
+            if (.not.this%xper) then
+               if (ilo.lt.dlo(1)) then; do k=klo,khi; do j=jlo,jhi; do i=ilo,dlo(1)-1; p(i,j,k,n)=p(dlo(1),j,k,n); end do; end do; end do; end if
+               if (ihi.gt.dhi(1)) then; do k=klo,khi; do j=jlo,jhi; do i=dhi(1)+1,ihi; p(i,j,k,n)=p(dhi(1),j,k,n); end do; end do; end do; end if
+            end if
+            ! Y boundaries
+            if (.not.this%yper) then
+               if (jlo.lt.dlo(2)) then; do k=klo,khi; do j=jlo,dlo(2)-1; do i=ilo,ihi; p(i,j,k,n)=p(i,dlo(2),k,n); end do; end do; end do; end if
+               if (jhi.gt.dhi(2)) then; do k=klo,khi; do j=dhi(2)+1,jhi; do i=ilo,ihi; p(i,j,k,n)=p(i,dhi(2),k,n); end do; end do; end do; end if
+            end if
+            ! Z boundaries
+            if (.not.this%zper) then
+               if (klo.lt.dlo(3)) then; do k=klo,dlo(3)-1; do j=jlo,jhi; do i=ilo,ihi; p(i,j,k,n)=p(i,j,dlo(3),n); end do; end do; end do; end if
+               if (khi.gt.dhi(3)) then; do k=dhi(3)+1,khi; do j=jlo,jhi; do i=ilo,ihi; p(i,j,k,n)=p(i,j,dhi(3),n); end do; end do; end do; end if
+            end if
+         end do
+      end do
+      call amrex_mfiter_destroy(mfi)
+   end subroutine mfab_foextrap
 
 
    !> Finalization of amrex
