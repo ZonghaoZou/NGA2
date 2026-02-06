@@ -234,7 +234,7 @@ contains
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
             ! call output_info()
-            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW)
+            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW,.false.)
             fs%U=fs%U-resU/fs%rho; call cfg%sync(fs%U)
             fs%V=fs%V-resV/fs%rho; call cfg%sync(fs%V)
             fs%W=fs%W-resW/fs%rho; call cfg%sync(fs%W)
@@ -397,13 +397,13 @@ contains
             fs%U=0.5_WP*(fs%U+fs%Uold)
             fs%V=0.5_WP*(fs%V+fs%Vold)
             fs%W=0.5_WP*(fs%W+fs%Wold)
-            
+
             ! Explicit calculation of drho*u/dt from NS
             call fs%get_dmomdt(vf,resU,resV,resW)
-            
+
             ! Add momentum source terms
-            ! call fs%addsrc_gravity(resU,resV,resW)
-            
+            call fs%addsrc_gravity(resU,resV,resW)
+
             ! Assemble explicit residual
             resU=-2.0_WP*fs%rho*fs%U+(fs%rho+fs%rhoold)*fs%Uold+time%dt*resU
             resV=-2.0_WP*fs%rho*fs%V+(fs%rho+fs%rhoold)*fs%Vold+time%dt*resV
@@ -417,18 +417,16 @@ contains
             fs%V=2.0_WP*fs%V-fs%Vold+resV; call cfg%sync(fs%V)
             fs%W=2.0_WP*fs%W-fs%Wold+resW; call cfg%sync(fs%W)
 
-            ! Update viscosity explictly
-            call fs%viscosity_gravity_explict(vf,time%dt)
+            ! ! Update viscosity explictly
+            ! call fs%viscosity_gravity_explict(vf,time%dt)
 
             ! Solve Poisson equation
             call fs%update_laplacian()
-            ! call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
-            call fs%update_faceU_correction(vf,time%dt)
-            ! call fs%update_pgrad_all(vf,time%dt)
-            ! call fs%get_rhie_chow_correction(vf, time%dt)
+            call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
+            call fs%update_pgrad_all(vf,time%dt)
+            ! call fs%update_faceU_correction(vf,time%dt)
             call fs%apply_bcond(time%dt,'face')
             call fs%correct_mfr()
-
             call fs%get_div()
             if (STflag) call fs%add_surface_tension_jump(dt=time%dt,div=fs%div,vf=vf)
             fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
@@ -437,13 +435,12 @@ contains
             call fs%shift_p(fs%psolv%sol)
             ! Corrector step
             call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
-            ! fs%P=fs%psolv%sol
             fs%P=fs%P+fs%psolv%sol
             fs%Uf=fs%Uf-time%dt*resU/fs%RHOX
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
 
-            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW)
+            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW,.true.)
             fs%U=fs%U-time%dt*resU/fs%rho; call cfg%sync(fs%U)
             fs%V=fs%V-time%dt*resV/fs%rho; call cfg%sync(fs%V)
             fs%W=fs%W-time%dt*resW/fs%rho; call cfg%sync(fs%W)
