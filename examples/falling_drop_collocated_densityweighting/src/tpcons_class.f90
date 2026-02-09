@@ -3014,7 +3014,7 @@ contains
                ! -X face   
                if (minval(abs(vf%bandold(i-1:i,j,k))).gt.advect_band) then
                   this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x( 0,i  ,j,k)*rhoUm*0.5_WP
-                  this%implicit%opr(3,i,j,k)=this%implicit%opr(2,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm*0.5_WP
+                  this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm*0.5_WP
                end if
                ! +Y face
                if (minval(abs(vf%bandold(i,j:j+1,k))).gt.advect_band) then
@@ -3080,7 +3080,7 @@ contains
                ! -X face   
                if (minval(abs(vf%bandold(i-1:i,j,k))).gt.advect_band) then
                   this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x( 0,i  ,j,k)*rhoUm*0.5_WP
-                  this%implicit%opr(3,i,j,k)=this%implicit%opr(2,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm*0.5_WP
+                  this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm*0.5_WP
                end if
                ! +Y face
                if (minval(abs(vf%bandold(i,j:j+1,k))).gt.advect_band) then
@@ -3146,7 +3146,7 @@ contains
                ! -X face   
                if (minval(abs(vf%bandold(i-1:i,j,k))).gt.advect_band) then
                   this%implicit%opr(1,i,j,k)=this%implicit%opr(1,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x( 0,i  ,j,k)*rhoUm*0.5_WP
-                  this%implicit%opr(3,i,j,k)=this%implicit%opr(2,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm*0.5_WP
+                  this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*this%divp_x( 0,i,j,k)*this%itpr_x(-1,i  ,j,k)*rhoUm*0.5_WP
                end if
                ! +Y face
                if (minval(abs(vf%bandold(i,j:j+1,k))).gt.advect_band) then
@@ -3308,7 +3308,7 @@ contains
                rho_r=sum(vf%Gvol(:,:,0,i,j,k  ))*this%rho_g+sum(vf%Lvol(:,:,0,i,j,k  ))*this%rho_l
                rho_l=sum(vf%Gvol(:,:,1,i,j,k-1))*this%rho_g+sum(vf%Lvol(:,:,1,i,j,k-1))*this%rho_l
                if (min(vol_l,vol_r).gt.0.0_WP) then
-                  if (this%wmask(i,j,k).ne.2.or.flag) Wface(i,j,k)=sum(this%itpr_z(:,i,j,k)*[rho_l,rho_r]*W(i,j,k-1:k))/(sum(this%itpr_y(:,i,j,k)*[rho_l,rho_r]))
+                  if (this%wmask(i,j,k).ne.2.or.flag) Wface(i,j,k)=sum(this%itpr_z(:,i,j,k)*[rho_l,rho_r]*W(i,j,k-1:k))/(sum(this%itpr_z(:,i,j,k)*[rho_l,rho_r]))
                else
                   Wface(i,j,k)=0.0_WP
                end if
