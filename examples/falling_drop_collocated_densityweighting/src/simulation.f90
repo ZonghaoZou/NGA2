@@ -7,7 +7,6 @@ module simulation
    use ddadi_class,       only: ddadi
    use tpcons_class,      only: tpcons
    use vfs_class,         only: vfs
-   use sgsmodel_class,    only: sgsmodel
    use timetracker_class, only: timetracker
    use ensight_class,     only: ensight
    use surfmesh_class,    only: surfmesh
@@ -15,7 +14,7 @@ module simulation
    use monitor_class,     only: monitor
    implicit none
    private
-   public :: simulation_init,simulation_run,simulation_final,output_info
+   public :: simulation_init,simulation_run,simulation_final
    
    !> Flow solver objects
    type(hypre_str),   public :: ps     !< Structured Hypre linear solver for pressure
@@ -23,10 +22,6 @@ module simulation
    type(tpcons),      public :: fs     !< Two-phase conservative flow solver
    type(vfs),         public :: vf     !< Volume fraction solver
    type(timetracker), public :: time   !< Time info
-   
-   !> SGS modeling
-   logical        :: use_sgs   !< Is an LES model used?
-   type(sgsmodel) :: sgs       !< SGS model for eddy viscosity
    
    !> Ensight postprocessing
    type(surfmesh) :: smesh     !< Surface mesh for interface
@@ -233,38 +228,20 @@ contains
             fs%Uf=fs%Uf-time%dt*resU/fs%RHOX
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
-            ! call output_info()
-            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW,.false.)
+            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW)
             fs%U=fs%U-resU/fs%rho; call cfg%sync(fs%U)
             fs%V=fs%V-resV/fs%rho; call cfg%sync(fs%V)
             fs%W=fs%W-resW/fs%rho; call cfg%sync(fs%W)
             call fs%apply_bcond(time%dt,'cell')
-            ! call output_info()
-            ! fs%V=0.0_WP
-            ! fs%U=0.0_WP
-            ! fs%Vf=0.0_WP
-            ! fs%Uf=0.0_WP
          else
             fs%V=-1.0_WP
             fs%U=3.0_WP
             fs%Vf=fs%V
             fs%Uf=fs%U
-            ! fs%U=1.0_WP
          end if
          ! Calculate cell-centered velocities and divergence
          call fs%get_div()
       end block initialize_velocity
-      
-      
-      ! ! Create an LES model
-      ! create_sgs: block
-      !    call param_read('Use SGS model',use_sgs)
-      !    if (use_sgs) then
-      !       allocate(gradU(1:3,1:3,cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-      !       sgs=sgsmodel(cfg=fs%cfg,umask=fs%umask,vmask=fs%vmask,wmask=fs%wmask)
-      !    end if
-      ! end block create_sgs
-      
       
       ! Create surfmesh object for interface polygon output
       create_smesh: block
@@ -484,26 +461,5 @@ contains
       if (use_sgs) deallocate(gradU)
       
    end subroutine simulation_final
-   
-   subroutine output_info
-      implicit none
-      integer :: i,j,k
-      do k=cfg%kmin_,cfg%kmax_
-         do j=cfg%jmin_,cfg%jmax_
-            do i=cfg%imin_,cfg%imax_
-               ! if (abs(fs%V(i,j,k)).gt.30.0_WP) then
-               if (i.eq.1.and.j.eq.128.and.k.eq.1) then
-                  print *, 'Large velocity at',i,j,k,'V=',fs%V(i,j,k), 'residual=',resV(i,j,k)
-               ! if (i.eq.58.and.j.eq.63.and.k.eq.1) then
-               !    print *, 'index',i,j,k, 'updated U',2.0_WP*fs%U(i,j,k)-fs%Uold(i,j,k)+resU(i,j,k)
-               !    print *, 'rho old', fs%rhoold(i,j,k), 'rho new', fs%rho(i,j,k), 'liquid density',fs%rho_l, 'gas density', fs%rho_g
-               !    print *, 'Superficial fluxes l', vf%UFl(1,i+1,j,k), 'Superficial fluxes g', vf%UFg(1,i,j,k)
-               !    print *,  'Velocity', fs%U(i-1:i+1,j,k)
-               end if
-            end do 
-         end do 
-      end do
-      
-   end subroutine output_info
    
 end module simulation
