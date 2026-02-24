@@ -1,6 +1,6 @@
-!> AMR Visualization class: HDF5 plotfile output with field registration
-!> Outputs Chombo-compatible HDF5 files with all registered fields in single file
-!> readable by VisIt (Chombo reader) and ParaView (VisItChomboReader)
+!> AMR Visualization class: plotfile output with field registration
+!> Outputs HDF5 (Chombo format) or native AMReX plotfiles
+!> readable by VisIt and ParaView
 module amrviz_class
    use precision,      only: WP
    use string,         only: str_medium,str_long
@@ -10,7 +10,7 @@ module amrviz_class
    use surfmesh_class, only: surfmesh
    use mpi_f08,        only: MPI_Comm,MPI_BARRIER,MPI_BCAST,MPI_INTEGER,MPI_COMM_SIZE,MPI_COMM_RANK
    use parallel,       only: MPI_REAL_WP
-   use amrex_interface, only: amrplotfile_write_hdf5,amrplotfile_read_time
+   use amrex_interface, only: amrplotfile_write_hdf5,amrplotfile_write_native,amrplotfile_read_time
    use amrex_amr_module, only: amrex_multifab,amrex_mfiter,amrex_box, &
    &                           amrex_multifab_build,amrex_multifab_destroy, &
    &                           amrex_mfiter_build,amrex_mfiter_destroy
@@ -47,6 +47,7 @@ module amrviz_class
       type(srf), pointer :: first_srf => null()  !< Registered surface meshes
       integer :: ntime = 0                       !< File counter for output
       real(WP), allocatable :: time(:)           !< Time values for each file
+      logical :: use_hdf5 = .true.               !< If true, HDF5/Chombo; if false, native AMReX
    contains
       procedure :: initialize                    !< Initialize with grid
       procedure :: add_scalar                    !< Register a scalar field
@@ -61,7 +62,7 @@ contains
 
    !> Initialize visualization handler with AMR grid
    !> If output directory already exists with files, reads their times to continue series
-   subroutine initialize(this, amr, name)
+   subroutine initialize(this, amr, name, use_hdf5)
       use filesys, only: makedir, isdir, isfile
       use mpi_f08, only: MPI_BCAST, MPI_INTEGER
       use parallel, only: MPI_REAL_WP
@@ -69,6 +70,7 @@ contains
       class(amrviz), intent(inout) :: this
       class(amrgrid), target, intent(in) :: amr
       character(len=*), intent(in) :: name
+      logical, intent(in), optional :: use_hdf5
 
       character(len=str_medium) :: filename, dirname
       integer :: ierr, n
@@ -78,6 +80,7 @@ contains
       this%name = trim(adjustl(name))
       this%ntime = 0
       this%first_scl => null()
+      if (present(use_hdf5)) this%use_hdf5 = use_hdf5
 
       ! Create output directory: amrviz/<name>/
       dirname = 'amrviz/'//trim(this%name)
@@ -377,7 +380,7 @@ contains
          allocate(mf_ptrs(0:this%amr%clvl()))
          allocate(geom_ptrs(0:this%amr%clvl()))
          allocate(level_steps(0:this%amr%clvl()))
-         allocate(ref_ratios(0:max(this%amr%clvl()-1,0)))
+         allocate(ref_ratios(0:max(3*this%amr%clvl()-1,0)))
 
          do lev = 0, this%amr%clvl()
             mf_ptrs(lev) = combined(lev)%p
@@ -385,13 +388,21 @@ contains
             level_steps(lev) = this%ntime
          end do
          do lev = 0, this%amr%clvl()-1
-            ref_ratios(lev) = this%amr%rref(lev)
+            ref_ratios(3*lev+0) = this%amr%rrefx(lev)
+            ref_ratios(3*lev+1) = this%amr%rrefy(lev)
+            ref_ratios(3*lev+2) = this%amr%rrefz(lev)
          end do
 
-         ! Write HDF5 file for this centering group
-         call amrplotfile_write_hdf5(trim(filename)//c_null_char, nlev, mf_ptrs, &
-            varname_ptrs, ncomp, geom_ptrs, real(time,c_double), level_steps, &
-            ref_ratios, c_null_char)
+         ! Write plotfile for this centering group
+         if (this%use_hdf5) then
+            call amrplotfile_write_hdf5(trim(filename)//c_null_char, nlev, mf_ptrs, &
+               varname_ptrs, ncomp, geom_ptrs, real(time,c_double), level_steps, &
+               ref_ratios, c_null_char)
+         else
+            call amrplotfile_write_native(trim(filename)//c_null_char, nlev, mf_ptrs, &
+               varname_ptrs, ncomp, geom_ptrs, real(time,c_double), level_steps, &
+               ref_ratios)
+         end if
 
          ! Cleanup for this group
          do lev = 0, this%amr%clvl()

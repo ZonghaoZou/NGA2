@@ -324,7 +324,7 @@ contains
          integer :: read_step
          call io%read_header('checkpoint_test', read_time, read_step)
          call io%get_scalar('dt', read_dt)
-         call sc%restore_checkpoint(io, 'checkpoint_test')
+         call sc%restore_checkpoint(io, 'checkpoint_test', read_time)
          call log("  Read checkpoint: time="//trim(rtoa(read_time))//" step="//trim(itoa(read_step))//" dt="//trim(rtoa(read_dt)))
       end block
 

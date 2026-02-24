@@ -11,14 +11,11 @@ module amrscalar_class
    use amrio_class,      only: amrio
    use amrex_amr_module, only: amrex_multifab, amrex_boxarray, amrex_distromap, &
    &                           amrex_mfiter, amrex_box, amrex_fab
-   use amrex_multifabutil_module, only: amrex_average_down_faces
    implicit none
    private
 
-   ! Expose type and dispatchers
+   ! Expose type
    public :: amrscalar
-   public :: amrscalar_on_init, amrscalar_on_coarse, amrscalar_on_remake
-   public :: amrscalar_on_clear, amrscalar_tagging, amrscalar_postregrid
 
    !> Constant density scalar solver object definition
    type, extends(amrsolver) :: amrscalar
@@ -245,7 +242,7 @@ contains
       call this%SC%setval(val=0.0_WP, lvl=lvl)
       call this%SCold%setval(val=0.0_WP, lvl=lvl)
       ! Reset flux register for fine levels (if using refluxing)
-      if (this%use_refluxing .and. lvl .ge. 1) call this%flux%reset_level(lvl, ba, dm, this%amr%rref(lvl-1))
+      if (this%use_refluxing .and. lvl .ge. 1) call this%flux%reset_level(lvl, ba, dm, [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)])
    end subroutine on_init
 
    !> Override on_coarse: create new fine level from coarse
@@ -260,7 +257,7 @@ contains
       ! SCold just needs geometry
       call this%SCold%reset_level(lvl, ba, dm)
       ! Reset flux register (if using refluxing)
-      if (this%use_refluxing .and. lvl .ge. 1) call this%flux%reset_level(lvl, ba, dm, this%amr%rref(lvl-1))
+      if (this%use_refluxing .and. lvl .ge. 1) call this%flux%reset_level(lvl, ba, dm, [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)])
    end subroutine on_coarse
 
 
@@ -276,7 +273,7 @@ contains
       ! SCold just needs new geometry
       call this%SCold%reset_level(lvl, ba, dm)
       ! Rebuild flux register for fine levels (if using refluxing)
-      if (this%use_refluxing .and. lvl .ge. 1) call this%flux%reset_level(lvl, ba, dm, this%amr%rref(lvl-1))
+      if (this%use_refluxing .and. lvl .ge. 1) call this%flux%reset_level(lvl, ba, dm, [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)])
    end subroutine on_remake
 
 
@@ -335,7 +332,7 @@ contains
             this%SCmin(nsc) = min(this%SCmin(nsc), this%SC%get_min(lvl=lvl, comp=nsc))
             this%SCmax(nsc) = max(this%SCmax(nsc), this%SC%get_max(lvl=lvl, comp=nsc))
          end do
-         this%SCint(nsc) = this%SC%get_sum(lvl=0, comp=nsc) * (this%amr%dx(0) * this%amr%dy(0) * this%amr%dz(0)) / this%amr%vol
+         this%SCint(nsc) = this%SC%get_sum(lvl=0, comp=nsc) * this%amr%cell_vol(0) / this%amr%vol
       end do
    end subroutine get_info
 
@@ -343,6 +340,7 @@ contains
    !> Calculate dSC/dt for all levels (all-level API)
    !> Uses flux averaging if use_refluxing=.false., FluxRegister if .true.
    subroutine get_dSCdt(this, U, V, W, SC, dSCdt)
+      use amrex_interface, only: amrmfab_average_down_faces
       implicit none
       class(amrscalar), intent(inout) :: this
       class(amrdata), intent(in) :: U, V, W        ! Face-centered velocity
@@ -429,7 +427,10 @@ contains
       if (.not.this%use_refluxing) then
          ! Flux averaging: average fine fluxes down to coarse
          do lvl = this%amr%clvl(), 1, -1
-            call amrex_average_down_faces(flx(:,lvl), flx(:,lvl-1), this%amr%geom(lvl-1), 1, this%nscalar, this%amr%rref(lvl-1))
+            call amrmfab_average_down_faces(flx(1,lvl)%p, flx(2,lvl)%p, flx(3,lvl)%p, &
+            &   flx(1,lvl-1)%p, flx(2,lvl-1)%p, flx(3,lvl-1)%p, &
+            &   this%amr%geom(lvl-1)%p, 1, this%nscalar, &
+            &   [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)])
          end do
       end if
 
@@ -522,11 +523,13 @@ contains
 
 
    !> Restore solver data from checkpoint
-   subroutine restore_checkpoint(this, io, dirname)
+   subroutine restore_checkpoint(this, io, dirname, time)
       class(amrscalar), intent(inout) :: this
       class(amrio), intent(inout) :: io
       character(len=*), intent(in) :: dirname
+      real(WP), intent(in) :: time
       call io%read_data(dirname, this%SC, 'SC')
+      call this%SC%fill(time=time)
    end subroutine restore_checkpoint
 
 end module amrscalar_class

@@ -4,11 +4,13 @@
 
 #include <AMReX_BoxArray.H>
 #include <AMReX_DistributionMapping.H>
-#include <AMReX_FAmrCore.H>
+#include <AMReX_AmrCore.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_Geometry.H>
 #include <AMReX_Interpolater.H>
+#include <AMReX_FluxRegister.H>
 #include <AMReX_MLMG.H>
+#include <AMReX_MLLinOp.H>
 #include <AMReX_MultiFab.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_PhysBCFunct.H>
@@ -41,13 +43,18 @@ using TagDispatcher = void (*)(void *owner, int lev, amrex::TagBoxArray *,
 // Post-regrid callback: owner, lbase, time
 // Called after regrid completes; lbase is the base level for regridding
 using PostRegridDispatcher = void (*)(void *owner, int lbase, double time);
+// Cost callback: owner fills per-box cost array for load balancing
+// costs array is pre-filled with 1.0 (uniform); callback overwrites with actual costs
+// ba_ptr points to the new BoxArray being distributed
+using CostDispatcher = void (*)(void *owner, int lev, int nboxes, double *costs,
+                                const void *ba_ptr);
 }
 
 //=============================================================================
-// NGA2AmrCore - extends FAmrCore with Fortran dispatcher callbacks
-// Each amrcore has ONE owner and ONE dispatcher per event type
+// NGA2AmrCore - extends AmrCore directly (bypasses FAmrCore which
+// enforces isotropic refinement ratios)
 //=============================================================================
-class NGA2AmrCore : public amrex::FAmrCore {
+class NGA2AmrCore : public amrex::AmrCore {
 public:
   void *owner = nullptr;
 
@@ -57,16 +64,52 @@ public:
   ClearDispatcher on_clear_dispatch = nullptr;
   TagDispatcher on_tag_dispatch = nullptr;
   PostRegridDispatcher on_postregrid_dispatch = nullptr;
+  CostDispatcher on_cost_dispatch = nullptr;
+  int cost_strategy = 0;  // 0=SFC (AMReX default), 1=KnapSack
 
   // Public override of regrid to call post-regrid dispatch after base class
   // Note: 'initial' parameter from AMReX is unused, we drop it
   void regrid(int lbase, amrex::Real time, bool initial = false) override {
-    amrex::FAmrCore::regrid(lbase, time, initial);
+    amrex::AmrCore::regrid(lbase, time, initial);
     if (on_postregrid_dispatch && owner) {
       on_postregrid_dispatch(owner, lbase, time);
     }
   }
 
+  // Override MakeDistributionMap for cost-aware load balancing
+  // If a cost callback is registered, calls it to get per-box costs,
+  // then distributes using the selected strategy.
+  // If no callback, falls back to default (SFC by cell count).
+  //   cost_strategy: 0 = SFC (default), 1 = KnapSack
+  amrex::DistributionMapping
+  MakeDistributionMap(int lev, amrex::BoxArray const &ba) override {
+    if (on_cost_dispatch && owner) {
+      int nboxes = static_cast<int>(ba.size());
+      amrex::Vector<amrex::Real> costs(nboxes, 1.0);
+      on_cost_dispatch(owner, lev, nboxes, costs.data(), &ba);
+      switch (cost_strategy) {
+      case 0:
+        return amrex::DistributionMapping::makeSFC(costs, ba);
+      case 1:
+        return amrex::DistributionMapping::makeKnapSack(costs);
+      default:
+        amrex::Abort("NGA2AmrCore::MakeDistributionMap: unknown cost_strategy="
+                     + std::to_string(cost_strategy)
+                     + " (valid: 0=SFC, 1=KnapSack)");
+      }
+    }
+    return amrex::AmrCore::MakeDistributionMap(lev, ba);
+  }
+
+  // Public wrapper for MakeNewLevelFromScratch (protected in AmrCore)
+  // Needed by amrcore_read_grids to build levels from checkpoint
+  void BuildLevelFromScratch(int lev, amrex::Real time,
+                             const amrex::BoxArray &ba,
+                             const amrex::DistributionMapping &dm) {
+    SetBoxArray(lev, ba);
+    SetDistributionMap(lev, dm);
+    MakeNewLevelFromScratch(lev, time, ba, dm);
+  }
 protected:
   void MakeNewLevelFromScratch(int lev, amrex::Real time,
                                const amrex::BoxArray &ba,
@@ -189,6 +232,14 @@ void amrcore_set_on_postregrid_dispatch(void *core,
   static_cast<nga2::NGA2AmrCore *>(core)->on_postregrid_dispatch = f;
 }
 
+void amrcore_set_on_cost_dispatch(void *core, nga2::CostDispatcher f) {
+  static_cast<nga2::NGA2AmrCore *>(core)->on_cost_dispatch = f;
+}
+
+void amrcore_set_cost_strategy(void *core, int strategy) {
+  static_cast<nga2::NGA2AmrCore *>(core)->cost_strategy = strategy;
+}
+
 //-----------------------------------------------------------------------------
 // Grid Operations
 //-----------------------------------------------------------------------------
@@ -227,6 +278,15 @@ void amrcore_get_ref_ratio(int *ref_ratio, void *core) {
   auto *amr = static_cast<nga2::NGA2AmrCore *>(core);
   for (int lev = 0; lev < amr->maxLevel(); ++lev) {
     ref_ratio[lev] = amr->refRatio(lev)[0];
+  }
+}
+
+void amrcore_get_ref_ratio_xyz(int *rrefx, int *rrefy, int *rrefz, void *core) {
+  auto *amr = static_cast<nga2::NGA2AmrCore *>(core);
+  for (int lev = 0; lev < amr->maxLevel(); ++lev) {
+    rrefx[lev] = amr->refRatio(lev)[0];
+    rrefy[lev] = amr->refRatio(lev)[1];
+    rrefz[lev] = amr->refRatio(lev)[2];
   }
 }
 
@@ -284,7 +344,7 @@ void amrmfab_fillpatch_two(void *mf_ptr, double time_old_c, void *mf_old_c_ptr,
                            void *mf_new_f_ptr, void *geom_f_ptr,
                            void *solver_ctx,
                            nga2::FillPatchBCDispatcher bc_dispatch, double time,
-                           int scomp, int dcomp, int ncomp, int ref_ratio,
+                           int scomp, int dcomp, int ncomp, int *ref_ratio,
                            int interp_type, int *lo_bc, int *hi_bc, int nbc) {
   auto *mf = static_cast<amrex::MultiFab *>(mf_ptr);
   auto *mf_old_c = static_cast<amrex::MultiFab *>(mf_old_c_ptr);
@@ -356,7 +416,7 @@ void amrmfab_fillpatch_two(void *mf_ptr, double time_old_c, void *mf_old_c_ptr,
   nga2::NGA2BCFunctor bc_functor_c(solver_ctx, bc_dispatch, geom_c);
   nga2::NGA2BCFunctor bc_functor_f(solver_ctx, bc_dispatch, geom_f);
 
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
 
   // Convert from 1-indexed (Fortran) to 0-indexed (C++)
   amrex::FillPatchTwoLevels(*mf, time, cmf, ctime, fmf, ftime, scomp - 1,
@@ -373,7 +433,7 @@ void amrmfab_fillcoarsepatch(void *mf_f_ptr, double time, void *mf_c_ptr,
                              void *geom_c_ptr, void *geom_f_ptr,
                              void *solver_ctx,
                              nga2::FillPatchBCDispatcher bc_dispatch, int scomp,
-                             int dcomp, int ncomp, int ref_ratio,
+                             int dcomp, int ncomp, int *ref_ratio,
                              int interp_type, int *lo_bc, int *hi_bc, int nbc) {
   auto *mf_f = static_cast<amrex::MultiFab *>(mf_f_ptr);
   auto *mf_c = static_cast<amrex::MultiFab *>(mf_c_ptr);
@@ -436,7 +496,7 @@ void amrmfab_fillcoarsepatch(void *mf_f_ptr, double time, void *mf_c_ptr,
   nga2::NGA2BCFunctor bc_functor_c(solver_ctx, bc_dispatch, geom_c);
   nga2::NGA2BCFunctor bc_functor_f(solver_ctx, bc_dispatch, geom_f);
 
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
 
   // Convert from 1-indexed (Fortran) to 0-indexed (C++)
   // Use InterpFromCoarseLevel which doesn't require fine-level source data
@@ -498,13 +558,22 @@ void amrplotfile_write_native(const char *name, int nlevels, void **mf_ptrs,
   }
   for (int lev = 0; lev < nlevels - 1; ++lev) {
     rr_vec[lev] = amrex::IntVect(
-        AMREX_D_DECL(ref_ratios[lev], ref_ratios[lev], ref_ratios[lev]));
+        AMREX_D_DECL(ref_ratios[3*lev+0], ref_ratios[3*lev+1], ref_ratios[3*lev+2]));
   }
   for (int i = 0; i < ncomp; ++i) {
     varname_vec[i] = std::string(varnames[i]);
   }
 
-  amrex::WriteMultiLevelPlotfile(std::string(name), nlevels, mf_vec,
+  // Pre-delete existing directory to avoid AMReX ".old" rename
+  std::string dirstr(name);
+  if (amrex::ParallelDescriptor::IOProcessor()) {
+    if (amrex::FileExists(dirstr)) {
+      amrex::FileSystem::RemoveAll(dirstr);
+    }
+  }
+  amrex::ParallelDescriptor::Barrier();
+
+  amrex::WriteMultiLevelPlotfile(dirstr, nlevels, mf_vec,
                                  varname_vec, geom_vec, time, steps_vec,
                                  rr_vec);
 }
@@ -528,7 +597,7 @@ void amrplotfile_write_hdf5(const char *name, int nlevels, void **mf_ptrs,
   }
   for (int lev = 0; lev < nlevels - 1; ++lev) {
     rr_vec[lev] = amrex::IntVect(
-        AMREX_D_DECL(ref_ratios[lev], ref_ratios[lev], ref_ratios[lev]));
+        AMREX_D_DECL(ref_ratios[3*lev+0], ref_ratios[3*lev+1], ref_ratios[3*lev+2]));
   }
   for (int i = 0; i < ncomp; ++i) {
     varname_vec[i] = std::string(varnames[i]);
@@ -594,6 +663,16 @@ void amrvismf_set_noutfiles(int nfiles) { amrex::VisMF::SetNOutFiles(nfiles); }
 // Get current number of output files setting
 int amrvismf_get_noutfiles() { return amrex::VisMF::GetNOutFiles(); }
 
+// Build a single level from pre-built BoxArray and DistributionMapping
+// Called from Fortran after reading box data and constructing BA/DM
+// Fires on_init callbacks (MakeNewLevelFromScratch)
+void amrcore_build_level(void *core, int lev, double time,
+                         void *ba_ptr, void *dm_ptr) {
+  auto *amrcore = static_cast<nga2::NGA2AmrCore *>(core);
+  auto &ba = *static_cast<amrex::BoxArray *>(ba_ptr);
+  auto &dm = *static_cast<amrex::DistributionMapping *>(dm_ptr);
+  amrcore->BuildLevelFromScratch(lev, time, ba, dm);
+}
 //=============================================================================
 // HDF5 Plotfile Utilities
 //=============================================================================
@@ -681,10 +760,10 @@ void amrmlmg_get_fluxes(void *mlmg, void **sol_mfs, void **flux_x,
 // If crse_geom is provided, uses ParallelCopy with periodicity to propagate
 // averaged valid cells to periodic partners, then FillBoundary for ghost cells.
 void amrmfab_average_down_cell(void *fine_mf, void *crse_mf, void *crse_geom,
-                               int ref_ratio, int ngcrse) {
+                               int *ref_ratio, int ngcrse) {
   auto *fmf = static_cast<amrex::MultiFab *>(fine_mf);
   auto *cmf = static_cast<amrex::MultiFab *>(crse_mf);
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
   int ncomp = cmf->nComp();
 
   // Always average into temp first, then copy to crse with periodicity
@@ -718,10 +797,10 @@ void amrmfab_average_down_cell(void *fine_mf, void *crse_mf, void *crse_geom,
 // If crse_geom is provided, uses ParallelCopy with periodicity to propagate
 // averaged valid cells to periodic partners, then FillBoundary for ghost cells.
 void amrmfab_average_down_face(void *fine_mf, void *crse_mf, void *crse_geom,
-                               int ref_ratio, int ngcrse) {
+                               int *ref_ratio, int ngcrse) {
   auto *fmf = static_cast<amrex::MultiFab *>(fine_mf);
   auto *cmf = static_cast<amrex::MultiFab *>(crse_mf);
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
   int ncomp = cmf->nComp();
 
   // Average into temp, then copy to crse with periodicity
@@ -743,10 +822,10 @@ void amrmfab_average_down_face(void *fine_mf, void *crse_mf, void *crse_geom,
 // If crse_geom is provided, uses ParallelCopy with periodicity to propagate
 // averaged valid cells to periodic partners, then FillBoundary for ghost cells.
 void amrmfab_average_down_edge(void *fine_mf, void *crse_mf, void *crse_geom,
-                               int ref_ratio, int ngcrse) {
+                               int *ref_ratio, int ngcrse) {
   auto *fmf = static_cast<amrex::MultiFab *>(fine_mf);
   auto *cmf = static_cast<amrex::MultiFab *>(crse_mf);
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
   int ncomp = cmf->nComp();
 
   // Average into temp, then copy to crse with periodicity
@@ -768,10 +847,10 @@ void amrmfab_average_down_edge(void *fine_mf, void *crse_mf, void *crse_geom,
 // If crse_geom is provided, uses ParallelCopy with periodicity to propagate
 // averaged valid cells to periodic partners, then FillBoundary for ghost cells.
 void amrmfab_average_down_node(void *fine_mf, void *crse_mf, void *crse_geom,
-                               int ref_ratio, int ngcrse) {
+                               int *ref_ratio, int ngcrse) {
   auto *fmf = static_cast<amrex::MultiFab *>(fine_mf);
   auto *cmf = static_cast<amrex::MultiFab *>(crse_mf);
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
   int ncomp = cmf->nComp();
 
   // Average into temp, then copy to crse with periodicity
@@ -820,7 +899,7 @@ void amrmfab_fillcoarsepatch_faces(
     void *cmf_w, void *geom_c_ptr, void *geom_f_ptr, void *ctx_u, void *ctx_v,
     void *ctx_w, nga2::FillPatchBCDispatcher bc_u,
     nga2::FillPatchBCDispatcher bc_v, nga2::FillPatchBCDispatcher bc_w,
-    int scomp, int dcomp, int ncomp, int ref_ratio, int interp_type, int *lo_bc,
+    int scomp, int dcomp, int ncomp, int *ref_ratio, int interp_type, int *lo_bc,
     int *hi_bc) {
   auto *u = static_cast<amrex::MultiFab *>(mf_u);
   auto *v = static_cast<amrex::MultiFab *>(mf_v);
@@ -857,7 +936,7 @@ void amrmfab_fillcoarsepatch_faces(
   amrex::Array<nga2::NGA2BCFunctor, AMREX_SPACEDIM> fbc = {
       bc_functor_f_u, bc_functor_f_v, bc_functor_f_w};
 
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
 
   // Call with appropriate interpolator based on type
   // Convert from 1-indexed (Fortran) to 0-indexed (C++)
@@ -890,7 +969,7 @@ void amrmfab_fillpatch_two_faces(
     // BC callbacks and contexts
     void *ctx_u, void *ctx_v, void *ctx_w, nga2::FillPatchBCDispatcher bc_u,
     nga2::FillPatchBCDispatcher bc_v, nga2::FillPatchBCDispatcher bc_w,
-    int scomp, int dcomp, int ncomp, int ref_ratio, int interp_type, int *lo_bc,
+    int scomp, int dcomp, int ncomp, int *ref_ratio, int interp_type, int *lo_bc,
     int *hi_bc) {
   auto *u = static_cast<amrex::MultiFab *>(mf_u);
   auto *v = static_cast<amrex::MultiFab *>(mf_v);
@@ -944,7 +1023,7 @@ void amrmfab_fillpatch_two_faces(
   amrex::Array<nga2::NGA2BCFunctor, AMREX_SPACEDIM> fbc = {
       bc_functor_f_u, bc_functor_f_v, bc_functor_f_w};
 
-  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio, ref_ratio, ref_ratio));
+  amrex::IntVect ratio(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
 
   // Call with appropriate interpolator based on type
   // Convert from 1-indexed (Fortran) to 0-indexed (C++)
@@ -959,6 +1038,58 @@ void amrmfab_fillpatch_two_faces(
   } else {
     amrex::Abort("amrmfab_fillpatch_two_faces: unsupported interp_type");
   }
+}
+
+// =====================================================================
+// Per-direction wrappers for AMReX APIs whose Fortran interfaces
+// only accept scalar ref_ratio. These call the C++ APIs directly
+// with IntVect for full per-direction support.
+// =====================================================================
+
+// FluxRegister: build with per-direction ref_ratio
+void amrfluxreg_build(void **fr_ptr, void *ba_ptr, void *dm_ptr,
+                      int *ref_ratio, int fine_lev, int ncomp) {
+  auto *ba = static_cast<amrex::BoxArray *>(ba_ptr);
+  auto *dm = static_cast<amrex::DistributionMapping *>(dm_ptr);
+  amrex::IntVect rr(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
+  auto *fr = new amrex::FluxRegister(*ba, *dm, rr, fine_lev, ncomp);
+  *fr_ptr = static_cast<void *>(fr);
+}
+
+// FluxRegister: destroy
+void amrfluxreg_destroy(void *fr_ptr) {
+  auto *fr = static_cast<amrex::FluxRegister *>(fr_ptr);
+  delete fr;
+}
+
+// average_down_faces with per-direction ref_ratio
+// Takes 3 fine + 3 coarse MultiFab pointers (x,y,z) + geometry + ratio
+void amrmfab_average_down_faces(void *fine_x, void *fine_y, void *fine_z,
+                                void *crse_x, void *crse_y, void *crse_z,
+                                void *geom_ptr, int scomp, int ncomp,
+                                int *ref_ratio) {
+  auto *fx = static_cast<amrex::MultiFab *>(fine_x);
+  auto *fy = static_cast<amrex::MultiFab *>(fine_y);
+  auto *fz = static_cast<amrex::MultiFab *>(fine_z);
+  auto *cx = static_cast<amrex::MultiFab *>(crse_x);
+  auto *cy = static_cast<amrex::MultiFab *>(crse_y);
+  auto *cz = static_cast<amrex::MultiFab *>(crse_z);
+  auto *geom = static_cast<amrex::Geometry *>(geom_ptr);
+  amrex::IntVect rr(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
+  amrex::Array<amrex::MultiFab const *, AMREX_SPACEDIM> fine{
+      AMREX_D_DECL(fx, fy, fz)};
+  amrex::Array<amrex::MultiFab *, AMREX_SPACEDIM> crse{
+      AMREX_D_DECL(cx, cy, cz)};
+  amrex::average_down_faces(fine, crse, rr, *geom);
+}
+
+// linop set_coarse_fine_bc with per-direction ref_ratio
+void amrlinop_set_coarse_fine_bc(void *linop_ptr, void *crse_mf_ptr,
+                                 int *ref_ratio) {
+  auto *linop = static_cast<amrex::MLLinOp *>(linop_ptr);
+  auto *crse = static_cast<amrex::MultiFab const *>(crse_mf_ptr);
+  amrex::IntVect rr(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
+  linop->setCoarseFineBC(crse, rr);
 }
 
 } // extern "C"

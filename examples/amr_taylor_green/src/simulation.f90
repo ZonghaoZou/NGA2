@@ -188,9 +188,9 @@ contains
             ! Divergence (only compression, i.e., negative divergence)
             div_neg=min(dudx+dvdy+dwdz,0.0_WP)
             ! Local cell Reynolds for turbulence
-            Rec=rho*vort_mag*min(dx,dy,dz)**2/mu
+            Rec=rho*vort_mag*solver%amr%min_meshsize(lvl)**2/mu
             ! Local cell Reynolds for shocks
-            Res=rho*abs(div_neg)*min(dx,dy,dz)**2/mu
+            Res=rho*abs(div_neg)*solver%amr%min_meshsize(lvl)**2/mu
             ! Tag based on either criterion
             if (Rec.gt.Rec_tag.or.Res.gt.Res_tag) tagarr(i,j,k,1)=SETtag
          end do; end do; end do
@@ -273,8 +273,7 @@ contains
          ! Compute viscosities
          call get_viscosities()
          ! Add artificial bulk viscosity
-         call fs%get_viscartif(dt=time%dt,beta=fs%beta)
-         call fs%beta%multiply(src=fs%Q,srccomp=1)
+         call fs%add_viscartif(dt=time%dt)
       end block init_regridding
       
       ! Initialize visualization
@@ -414,8 +413,7 @@ contains
          call get_viscosities()
 
          ! Add artificial bulk viscosity
-         call fs%get_viscartif(dt=time%dt,beta=fs%beta)
-         call fs%beta%multiply(src=fs%Q,srccomp=1)
+         call fs%add_viscartif(dt=time%dt)
          
          ! Visualization output
          if (viz_evt%occurs()) call viz%write(time%t)

@@ -62,6 +62,8 @@ module amrmg_class
       type(amrex_poisson), private :: poisson
       type(amrex_abeclaplacian), private :: abeclap
       type(amrex_multigrid), private :: multigrid
+      ! Internal solution storage for incremental solves
+      type(amrdata) :: sol  
    contains
       procedure :: initialize
       procedure :: setup
@@ -80,6 +82,8 @@ contains
    !> Initialize solver with grid and type
    subroutine initialize(this, amr, type)
       use messager, only: die, log
+      use amrdata_class, only: amrex_interp_none
+      implicit none
       class(amrmg), intent(inout) :: this
       class(amrgrid), target, intent(in) :: amr
       integer, intent(in) :: type  !< amrmg_cstcoef or amrmg_varcoef (required)
@@ -118,6 +122,10 @@ contains
          this%hi_bc(3) = amrmg_bc_neumann
       end if
 
+      ! Initialize internal solution storage
+      call this%sol%initialize(amr,name='sol',ncomp=1,ng=1,interp=amrex_interp_none); call this%sol%register()
+
+      ! Log setup info
       if (type .eq. amrmg_cstcoef) then
          call log('[amrmg] Initialized constant-coefficient solver')
       else
@@ -129,6 +137,7 @@ contains
    !> For varcoef type, bcoef fields must be provided
    subroutine setup(this, acoef, bcoef_x, bcoef_y, bcoef_z)
       use messager, only: die
+      implicit none
       class(amrmg), intent(inout) :: this
       type(amrdata), intent(in), optional :: acoef
       type(amrdata), intent(in), optional :: bcoef_x, bcoef_y, bcoef_z
@@ -205,18 +214,21 @@ contains
    end subroutine setup
 
    !> Solve - uses stored operator and multigrid
-   !> @param phi Solution field (in: initial guess with BC in ghosts, out: solution)
    !> @param rhs Right-hand side field
-   subroutine solve(this, phi, rhs)
+   !> @param phi Optional solution field (in: initial guess with BC in ghosts, out: solution)
+   subroutine solve(this, rhs, phi)
       use messager, only: die
       class(amrmg), intent(inout) :: this
-      type(amrdata), intent(inout) :: phi
       type(amrdata), intent(in) :: rhs
+      type(amrdata), intent(inout), optional :: phi
 
       type(amrex_multifab), dimension(:), allocatable :: sol, rhsmf
 
       if (this%type .eq. -1) call die('[amrmg solve] Solver not initialized')
       if (.not. this%setup_done) call die('[amrmg solve] Solver not setup')
+
+      ! Zero internal storage if not using user's phi
+      if (.not.present(phi)) call this%sol%setval(val=0.0_WP)
 
       ! Build solution/rhs arrays
       build_arrays: block
@@ -224,7 +236,11 @@ contains
          allocate(sol(0:this%amr%clvl()))
          allocate(rhsmf(0:this%amr%clvl()))
          do lev = 0, this%amr%clvl()
-            sol(lev) = phi%mf(lev)
+            if (present(phi)) then
+               sol(lev) = phi%mf(lev)
+            else
+               sol(lev) = this%sol%mf(lev)
+            end if
             rhsmf(lev) = rhs%mf(lev)
          end do
       end block build_arrays
@@ -263,6 +279,7 @@ contains
    subroutine solve_level(this, lev, phi_mf, rhs_mf, phi_crse_mf, acoef_mf, bcoef_x_mf, bcoef_y_mf, bcoef_z_mf)
       use messager, only: die, log
       use string, only: str_long
+      use amrex_interface, only: amrlinop_set_coarse_fine_bc,amrmlmg_get_niters
       class(amrmg), intent(inout) :: this
       integer, intent(in) :: lev
       type(amrex_multifab), intent(inout) :: phi_mf
@@ -276,7 +293,7 @@ contains
       type(amrex_boxarray) :: ba(0:0)
       type(amrex_distromap) :: dm(0:0)
       type(amrex_multifab) :: sol(0:0), rhsmf(0:0)
-      integer :: rref
+      integer, dimension(3) :: rref
 
       ! Validate inputs
       if (this%type .eq. -1) call die('[amrmg solve_level] Solver not initialized')
@@ -289,7 +306,7 @@ contains
          dm(0) = this%amr%get_distromap(lev)
          sol(0) = phi_mf
          rhsmf(0) = rhs_mf
-         if (lev .gt. 0) rref = this%amr%rref(lev-1)
+         if (lev .gt. 0) rref = [this%amr%rrefx(lev-1),this%amr%rrefy(lev-1),this%amr%rrefz(lev-1)]
       end block setup_arrays
 
       ! Solve based on operator type
@@ -305,7 +322,7 @@ contains
                max_coarsening_level=30)
             call linop%set_domain_bc(this%lo_bc, this%hi_bc)
             ! Set C/F BC if on refined level
-            if (lev .gt. 0) call linop%set_coarse_fine_bc(phi_crse_mf, rref)
+            if (lev .gt. 0) call amrlinop_set_coarse_fine_bc(linop%p, phi_crse_mf%p, rref)
             call linop%set_level_bc(0, sol(0))
             ! Solve
             call amrex_multigrid_build(mlmg, linop)
@@ -314,10 +331,7 @@ contains
             call mlmg%set_bottom_solver(this%bottom_solver)
             this%res = mlmg%solve(sol, rhsmf, this%tol_rel, this%tol_abs)
             ! Get iteration count before cleanup
-            get_niters_p: block
-               use amrex_interface, only: amrmlmg_get_niters
-               this%niter = amrmlmg_get_niters(mlmg%p)
-            end block get_niters_p
+            this%niter = amrmlmg_get_niters(mlmg%p)
             call amrex_multigrid_destroy(mlmg)
             call amrex_poisson_destroy(linop)
          end block poisson_solve
@@ -343,7 +357,7 @@ contains
                call linop%set_bcoeffs(0, bcoef)
             end if
             ! Set C/F BC if on refined level
-            if (lev .gt. 0) call linop%set_coarse_fine_bc(phi_crse_mf, rref)
+            if (lev .gt. 0) call amrlinop_set_coarse_fine_bc(linop%p, phi_crse_mf%p, rref)
             call linop%set_level_bc(0, sol(0))
             ! Solve
             call amrex_multigrid_build(mlmg, linop)
@@ -352,10 +366,7 @@ contains
             call mlmg%set_bottom_solver(this%bottom_solver)
             this%res = mlmg%solve(sol, rhsmf, this%tol_rel, this%tol_abs)
             ! Get iteration count before cleanup
-            get_niters_a: block
-               use amrex_interface, only: amrmlmg_get_niters
-               this%niter = amrmlmg_get_niters(mlmg%p)
-            end block get_niters_a
+            this%niter = amrmlmg_get_niters(mlmg%p)
             call amrex_multigrid_destroy(mlmg)
             call amrex_abeclaplacian_destroy(linop)
          end block abeclap_solve
@@ -381,13 +392,13 @@ contains
    !> @param flux_x X-face-centered flux output
    !> @param flux_y Y-face-centered flux output
    !> @param flux_z Z-face-centered flux output
-   subroutine get_fluxes(this, phi, flux_x, flux_y, flux_z)
+   subroutine get_fluxes(this, flux_x, flux_y, flux_z, phi)
       use iso_c_binding, only: c_ptr
       use messager, only: die
       use amrex_interface, only: amrmlmg_get_fluxes
       class(amrmg), intent(in) :: this
-      type(amrdata), intent(in) :: phi
       type(amrdata), intent(inout) :: flux_x, flux_y, flux_z
+      type(amrdata), intent(in), optional :: phi
 
       type(c_ptr), dimension(:), allocatable :: sol_ptrs, fx_ptrs, fy_ptrs, fz_ptrs
       integer :: lev, nlevs
@@ -403,7 +414,11 @@ contains
       allocate(fz_ptrs(0:this%amr%clvl()))
 
       do lev = 0, this%amr%clvl()
-         sol_ptrs(lev) = phi%mf(lev)%p
+         if (present(phi)) then
+            sol_ptrs(lev) = phi%mf(lev)%p
+         else
+            sol_ptrs(lev) = this%sol%mf(lev)%p
+         end if
          fx_ptrs(lev) = flux_x%mf(lev)%p
          fy_ptrs(lev) = flux_y%mf(lev)%p
          fz_ptrs(lev) = flux_z%mf(lev)%p
@@ -488,6 +503,7 @@ contains
    subroutine finalize(this)
       class(amrmg), intent(inout) :: this
       if (this%setup_done) call this%destroy()
+      call this%sol%finalize()
       nullify(this%amr)
       this%type = -1
    end subroutine finalize

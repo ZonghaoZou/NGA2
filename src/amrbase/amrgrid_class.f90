@@ -68,6 +68,22 @@ module amrgrid_class
       end subroutine clear_callback
    end interface
 
+   !> Abstract interface for cost callback (load balancing)
+   !> Called during MakeDistributionMap; fills per-box costs
+   !> ba is the new BoxArray being distributed
+   abstract interface
+      subroutine cost_callback(ctx,lvl,nboxes,costs,ba)
+         use iso_c_binding, only: c_ptr
+         use amrex_amr_module, only: amrex_boxarray
+         use precision, only: WP
+         implicit none
+         type(c_ptr), intent(in) :: ctx
+         integer, intent(in) :: lvl,nboxes
+         real(WP), intent(inout) :: costs(nboxes)
+         type(amrex_boxarray), intent(in) :: ba
+      end subroutine cost_callback
+   end interface
+
    ! Wrappers for callback lists
    type :: tagger_wrapper
       procedure(tagging_callback), pointer, nopass :: f=>null()
@@ -85,6 +101,10 @@ module amrgrid_class
       procedure(clear_callback), pointer, nopass :: f=>null()
       type(c_ptr) :: ctx=c_null_ptr
    end type clear_cb_wrapper
+   type :: get_cost_wrapper
+      procedure(cost_callback), pointer, nopass :: f=>null()
+      type(c_ptr) :: ctx=c_null_ptr
+   end type get_cost_wrapper
 
    !> Amrgrid object definition based on AMReX's amrcore
    type :: amrgrid
@@ -107,15 +127,18 @@ module amrgrid_class
       integer :: nmax=32
       ! Blocking factor
       integer :: nbloc=8
-      ! Refinement ratio
-      integer, dimension(:), allocatable :: rref
+      ! Per direction refinement ratios
+      integer, dimension(:), allocatable :: rrefx
+      integer, dimension(:), allocatable :: rrefy
+      integer, dimension(:), allocatable :: rrefz
       ! Geometry object at each level
       type(amrex_geometry), dimension(:), allocatable :: geom
       ! Shortcut for domain volume
       real(WP) :: vol
-      ! Shortcut to cell size per level
+      ! Shortcut to cell sizes per level
       real(WP), dimension(:), allocatable :: dx,dy,dz
-      real(WP) :: min_meshsize
+      real(WP), dimension(:), allocatable :: min_meshsize
+      real(WP), dimension(:), allocatable :: cell_vol
       ! Parallel info
       type(MPI_Comm) :: comm            !< Communicator for our group
       integer        :: nproc           !< Number of processors
@@ -139,10 +162,14 @@ module amrgrid_class
       type(postregrid_wrapper), dimension(:), allocatable :: postregrid_funcs
       ! Default tiling for mfiter_build
       logical :: default_tiling = .true.
+      ! Cost callback (single, not list) and load balancing strategy
+      type(get_cost_wrapper) :: get_cost_func
+      integer :: lb_strat = 0           ! 0=SFC (default), 1=KnapSack
    contains
       procedure :: initialize                !< Initialization of amrgrid object
       procedure :: finalize                  !< Finalization of amrgrid object
       procedure :: init_from_scratch         !< Initialize data on armgrid according to registered function
+      procedure :: init_from_checkpoint      !< Initialize grid from checkpoint
       procedure :: regrid                    !< Perform regriding operation on level baselvl
       procedure :: get_info                  !< Calculate various information on our amrgrid object
       procedure :: print                     !< Print out grid info
@@ -157,6 +184,7 @@ module amrgrid_class
       procedure :: add_postregrid            !< Add a post-regrid callback
       procedure :: clear_tagging             !< Clear all tagging callbacks
       procedure :: clear_postregrid          !< Clear all post-regrid callbacks
+      procedure :: set_get_cost              !< Set cost callback for load balancing
       ! Various tools and accessors
       procedure :: get_boxarray              !< Obtain box array at a given level
       procedure :: get_distromap             !< Obtain distromap at a given level
@@ -204,14 +232,29 @@ contains
          use amrex_amr_module, only: amrex_parmparse,amrex_parmparse_build,amrex_parmparse,amrex_parmparse_destroy
          type(amrex_parmparse) :: pp
          integer, dimension(3) :: per
+         integer, dimension(3*this%maxlvl) :: rr_vect
+         integer :: i
          call amrex_parmparse_build(pp,'amr')
          call pp%addarr('n_cell'         ,[this%nx,this%ny,this%nz])
          if (this%maxlvl.lt.0) call die('[amrgrid initialize] maxlvl must be >= 0')
          call pp%add   ('max_level'      ,this%maxlvl)
          call pp%add   ('blocking_factor',this%nbloc)
+         if (this%nx.eq.1) call pp%add('blocking_factor_x',1)
+         if (this%ny.eq.1) call pp%add('blocking_factor_y',1)
+         if (this%nz.eq.1) call pp%add('blocking_factor_z',1)
          call pp%add   ('max_grid_size'  ,this%nmax)
-         if (.not.allocated(this%rref)) this%rref=[2]
-         call pp%addarr('ref_ratio'      ,this%rref)
+         if (.not.allocated(this%rrefx)) this%rrefx=[2]
+         if (.not.allocated(this%rrefy)) this%rrefy=[2]
+         if (.not.allocated(this%rrefz)) this%rrefz=[2]
+         if (this%nx.eq.1) this%rrefx=[1]
+         if (this%ny.eq.1) this%rrefy=[1]
+         if (this%nz.eq.1) this%rrefz=[1]
+         do i=1,this%maxlvl
+            rr_vect(3*i-2)=this%rrefx(min(i,size(this%rrefx)))
+            rr_vect(3*i-1)=this%rrefy(min(i,size(this%rrefy)))
+            rr_vect(3*i-0)=this%rrefz(min(i,size(this%rrefz)))
+         end do
+         call pp%addarr('ref_ratio_vect',rr_vect)
          call amrex_parmparse_destroy(pp)
          call amrex_parmparse_build(pp,'geometry')
          call pp%add   ('coord_sys'      ,this%coordsys)
@@ -220,8 +263,8 @@ contains
          if (this%yper) per(2)=1
          if (this%zper) per(3)=1
          call pp%addarr('is_periodic',per)
-         call pp%addarr('prob_lo'    ,[this%xlo,this%ylo,this%zlo])
-         call pp%addarr('prob_hi'    ,[this%xhi,this%yhi,this%zhi])
+         call pp%addarr('prob_lo',[this%xlo,this%ylo,this%zlo])
+         call pp%addarr('prob_hi',[this%xhi,this%yhi,this%zhi])
          call amrex_parmparse_destroy(pp)
       end block set_params
       ! Create an amrcore object using our C++ interface
@@ -229,7 +272,8 @@ contains
          use amrex_interface, only: amrcore_create,amrcore_set_owner, &
          &   amrcore_set_on_init_dispatch,amrcore_set_on_coarse_dispatch, &
          &   amrcore_set_on_remake_dispatch,amrcore_set_on_clear_dispatch, &
-         &   amrcore_set_on_tag_dispatch,amrcore_set_on_postregrid_dispatch
+         &   amrcore_set_on_tag_dispatch,amrcore_set_on_postregrid_dispatch, &
+         &   amrcore_set_on_cost_dispatch,amrcore_set_cost_strategy
          this%amrcore=amrcore_create()
          ! Set owner pointer - use select type to get c_loc of concrete type
          select type (this)
@@ -242,6 +286,8 @@ contains
          call amrcore_set_on_clear_dispatch(this%amrcore,c_funloc(dispatch_clr_lvl))
          call amrcore_set_on_tag_dispatch(this%amrcore,c_funloc(dispatch_err_est))
          call amrcore_set_on_postregrid_dispatch(this%amrcore,c_funloc(dispatch_postregrid))
+         call amrcore_set_on_cost_dispatch(this%amrcore,c_funloc(dispatch_get_cost))
+         call amrcore_set_cost_strategy(this%amrcore,this%lb_strat)
          if (present(name)) this%name=trim(adjustl(name))
       end block create_amrcore_obj
       ! Get back geometry objects
@@ -257,9 +303,11 @@ contains
       end block store_geometries
       ! Store effective refinement ratio
       store_ref_ratio: block
-         use amrex_interface, only: amrcore_get_ref_ratio
-         if (allocated(this%rref)) deallocate(this%rref); allocate(this%rref(0:this%maxlvl-1))
-         call amrcore_get_ref_ratio(this%rref,this%amrcore)
+         use amrex_interface, only: amrcore_get_ref_ratio_xyz
+         if (allocated(this%rrefx)) deallocate(this%rrefx); allocate(this%rrefx(0:this%maxlvl-1))
+         if (allocated(this%rrefy)) deallocate(this%rrefy); allocate(this%rrefy(0:this%maxlvl-1))
+         if (allocated(this%rrefz)) deallocate(this%rrefz); allocate(this%rrefz(0:this%maxlvl-1))
+         call amrcore_get_ref_ratio_xyz(this%rrefx,this%rrefy,this%rrefz,this%amrcore)
       end block store_ref_ratio
       ! Store parallel info
       store_parallel_info: block
@@ -281,8 +329,20 @@ contains
          end do
          ! Total domain volume
          this%vol=(this%xhi-this%xlo)*(this%yhi-this%ylo)*(this%zhi-this%zlo)
-         ! Smallest mesh size
-         this%min_meshsize=min(this%dx(this%maxlvl),this%dy(this%maxlvl),this%dz(this%maxlvl))
+         ! Cell volume at each level
+         allocate(this%cell_vol(0:this%maxlvl))
+         do lvl=0,this%maxlvl
+            this%cell_vol(lvl)=this%dx(lvl)*this%dy(lvl)*this%dz(lvl)
+         end do
+         ! Smallest mesh size per level (excludes single-cell directions)
+         allocate(this%min_meshsize(0:this%maxlvl))
+         do lvl=0,this%maxlvl
+            this%min_meshsize(lvl)=huge(1.0_WP)
+            if (this%nx.gt.1) this%min_meshsize(lvl)=min(this%min_meshsize(lvl),this%dx(lvl))
+            if (this%ny.gt.1) this%min_meshsize(lvl)=min(this%min_meshsize(lvl),this%dy(lvl))
+            if (this%nz.gt.1) this%min_meshsize(lvl)=min(this%min_meshsize(lvl),this%dz(lvl))
+            if (this%min_meshsize(lvl).ge.huge(1.0_WP)) this%min_meshsize(lvl)=this%dx(lvl)
+         end do
       end block compute_shortcuts
       ! Print info
       if (verbose.gt.1) call this%print()
@@ -302,11 +362,15 @@ contains
          this%amrcore=c_null_ptr
       end if
       ! Deallocate allocatable arrays
-      if (allocated(this%rref)) deallocate(this%rref)
+      if (allocated(this%rrefx)) deallocate(this%rrefx)
+      if (allocated(this%rrefy)) deallocate(this%rrefy)
+      if (allocated(this%rrefz)) deallocate(this%rrefz)
       if (allocated(this%geom)) deallocate(this%geom)
       if (allocated(this%dx))   deallocate(this%dx)
       if (allocated(this%dy))   deallocate(this%dy)
       if (allocated(this%dz))   deallocate(this%dz)
+      if (allocated(this%min_meshsize)) deallocate(this%min_meshsize)
+      if (allocated(this%cell_vol))     deallocate(this%cell_vol)
       ! Deallocate callback lists
       if (allocated(this%on_init))   deallocate(this%on_init)
       if (allocated(this%on_coarse)) deallocate(this%on_coarse)
@@ -314,6 +378,7 @@ contains
       if (allocated(this%on_clear))  deallocate(this%on_clear)
       if (allocated(this%taggers)) deallocate(this%taggers)
       if (allocated(this%postregrid_funcs)) deallocate(this%postregrid_funcs)
+      this%get_cost_func%f=>null(); this%get_cost_func%ctx=c_null_ptr
       ! Do not free comm as it was passed to us
       this%comm=MPI_COMM_NULL
       ! Handle automated AMReX finalization
@@ -352,13 +417,76 @@ contains
    end subroutine init_from_scratch
 
 
+   !> Initialize grid from checkpoint by reading stored BoxArrays from Header
+   !> All ranks read boxes, build BA/DM, then call MakeNewLevelFromScratch
+   subroutine init_from_checkpoint(this, dirname, time)
+      use string, only: str_long
+      use amrex_interface, only: amrcore_build_level, amrcore_set_finest_level
+      use amrex_amr_module, only: amrex_boxarray, amrex_boxarray_build, &
+      &                           amrex_distromap, amrex_distromap_build
+      use mpi_f08, only: MPI_BCAST, MPI_INTEGER
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      character(len=*), intent(in) :: dirname   !< Checkpoint directory
+      real(WP), intent(in) :: time
+      integer :: finest_level, levels_to_build
+      integer :: lev, nb, m, ierr, iunit
+      integer, dimension(:,:,:), allocatable :: bxs
+      type(amrex_boxarray) :: ba
+      type(amrex_distromap) :: dm
+      character(len=str_long) :: line
+      ! Root reads Header: grab finest_level from line 2, then skip to BOXARRAYS
+      if (this%amRoot) then
+         open(newunit=iunit, file=trim(dirname)//'/Header', status='old', action='read')
+         read(iunit,'(A)') line  ! Version string
+         read(iunit,*) finest_level
+         ! Skip remaining header lines until BOXARRAYS marker
+         do
+            read(iunit,'(A)') line
+            if (trim(line).eq.'BOXARRAYS') exit
+         end do
+      end if
+      call MPI_BCAST(finest_level, 1, MPI_INTEGER, 0, this%comm, ierr)
+      ! Cap at current maxlvl (allows restarting with fewer levels)
+      levels_to_build = min(finest_level, this%maxlvl)
+      ! Build each level from box data
+      do lev = 0, finest_level
+         ! Root reads nboxes
+         if (this%amRoot) read(iunit,*) nb
+         call MPI_BCAST(nb, 1, MPI_INTEGER, 0, this%comm, ierr)
+         ! Read box coordinates: bxs(lo:hi, dim, nboxes)
+         allocate(bxs(2, 3, nb))
+         if (this%amRoot) then
+            do m = 1, nb
+               read(iunit,*) bxs(1,1,m),bxs(1,2,m),bxs(1,3,m),bxs(2,1,m),bxs(2,2,m),bxs(2,3,m)
+            end do
+         end if
+         ! Only build levels up to maxlvl (skip finer levels from checkpoint)
+         if (lev .le. levels_to_build) then
+            call MPI_BCAST(bxs, 6*nb, MPI_INTEGER, 0, this%comm, ierr)
+            call amrex_boxarray_build(ba, bxs)
+            call amrex_distromap_build(dm, ba)
+            call amrcore_build_level(this%amrcore, lev, time, ba%p, dm%p)
+         end if
+         deallocate(bxs)
+      end do
+      if (this%amRoot) close(iunit)
+      ! Set finest level on AmrCore
+      call amrcore_set_finest_level(this%amrcore, levels_to_build)
+      ! Generate info about grid
+      call this%get_info()
+   end subroutine init_from_checkpoint
+
+
    !> Perform regriding operation on baselvl
    subroutine regrid(this,baselvl,time)
-      use amrex_interface, only: amrcore_regrid
+      use amrex_interface, only: amrcore_regrid,amrcore_set_cost_strategy
       implicit none
       class(amrgrid), target, intent(inout) :: this
       integer,  intent(in) :: baselvl
       real(WP), intent(in) :: time
+      ! Sync load balancing strategy to C++ before regrid
+      call amrcore_set_cost_strategy(this%amrcore,this%lb_strat)
       ! Regenerate grid and resize/transfer data
       call amrcore_regrid(this%amrcore,baselvl,time)
       ! Generate info about grid
@@ -424,7 +552,9 @@ contains
          write(output_unit,'("AMR Cartesian grid [",a,"]")') trim(this%name)
          write(output_unit,'(" > amr level = ",i2)') this%clvl()
          write(output_unit,'(" > max level = ",i2)') this%maxlvl
-         if (allocated(this%rref)) write(output_unit,'(" > ref ratio = ",100(" ",i0))') this%rref
+         if (allocated(this%rrefx)) write(output_unit,'(" > ref ratio x = ",100(" ",i0))') this%rrefx
+         if (allocated(this%rrefy)) write(output_unit,'(" > ref ratio y = ",100(" ",i0))') this%rrefy
+         if (allocated(this%rrefz)) write(output_unit,'(" > ref ratio z = ",100(" ",i0))') this%rrefz
          write(output_unit,'(" >    extent = [",es12.5,",",es12.5,"]x[",es12.5,",",es12.5,"]x[",es12.5,",",es12.5,"]")') this%xlo,this%xhi,this%ylo,this%yhi,this%zlo,this%zhi
          write(output_unit,'(" >  periodic = ",l1,"x",l1,"x",l1)') this%xper,this%yper,this%zper
          ! Loop over levels
@@ -557,6 +687,26 @@ contains
          end do
       end if
    end subroutine dispatch_postregrid
+
+   subroutine dispatch_get_cost(owner,lvl,nboxes,costs,ba_ptr) bind(c)
+      use iso_c_binding, only: c_ptr,c_int,c_double,c_f_pointer
+      use amrex_amr_module, only: amrex_boxarray
+      implicit none
+      type(c_ptr), value, intent(in) :: owner
+      integer(c_int), value, intent(in) :: lvl
+      integer(c_int), value, intent(in) :: nboxes
+      real(c_double), intent(inout) :: costs(nboxes)
+      type(c_ptr), value, intent(in) :: ba_ptr
+      type(amrgrid), pointer :: this_grid
+      type(amrex_boxarray) :: ba
+      call c_f_pointer(owner,this_grid)
+      ! Call registered cost callback if present
+      if (associated(this_grid%get_cost_func%f)) then
+         ba=ba_ptr  ! non-owning install from c_ptr
+         call this_grid%get_cost_func%f(this_grid%get_cost_func%ctx,int(lvl),int(nboxes),costs,ba)
+      end if
+      ! If no callback, costs remain at 1.0 (uniform) from C++ side
+   end subroutine dispatch_get_cost
 
    !> Add a level init callback (called for MakeNewLevelFromScratch)
    subroutine add_on_init(this,callback,ctx)
@@ -719,6 +869,18 @@ contains
       class(amrgrid), intent(inout) :: this
       if (allocated(this%postregrid_funcs)) deallocate(this%postregrid_funcs)
    end subroutine clear_postregrid
+
+
+   !> Set cost callback for load balancing (single, not list)
+   subroutine set_get_cost(this,callback,ctx)
+      use iso_c_binding, only: c_ptr
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      procedure(cost_callback) :: callback
+      type(c_ptr), intent(in) :: ctx
+      this%get_cost_func%f=>callback
+      this%get_cost_func%ctx=ctx
+   end subroutine set_get_cost
 
 
    !> Obtain box array at a level

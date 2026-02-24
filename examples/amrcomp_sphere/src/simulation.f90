@@ -272,10 +272,10 @@ contains
             ! Get dilatation
             div_neg=min(dudx+dvdy+dwdz,0.0_WP)
             ! Tag based on cell Reynolds numbers
-            Rec=rho*vort_mag*min(dx,dy,dz)**2/mu
+            Rec=rho*vort_mag*solver%amr%min_meshsize(lvl)**2/mu
             if (Rec.gt.Rec_tag) tagarr(i,j,k,1)=SETtag
             ! Also tag based on cell shock Reynolds number
-            Res=rho*abs(div_neg)*min(dx,dy,dz)**2/mu
+            Res=rho*abs(div_neg)*solver%amr%min_meshsize(lvl)**2/mu
             if (Res.gt.Res_tag) tagarr(i,j,k,1)=SETtag
             ! Tag near sphere surface
             dist=sphere_levelset([solver%amr%xlo+(real(i,WP)+0.5_WP)*dx,solver%amr%ylo+(real(j,WP)+0.5_WP)*dy,solver%amr%zlo+(real(k,WP)+0.5_WP)*dz],time)
@@ -384,7 +384,7 @@ contains
          amr%ylo=-10.0_WP; amr%yhi=+10.0_WP
          amr%zlo=-10.0_WP; amr%zhi=+10.0_WP
          amr%xper=.false.; amr%yper=.true.; amr%zper=.true.
-         call param_read('Max levels',amr%maxlvl)
+         call param_read('Max level',amr%maxlvl)
          call amr%initialize()
       end block create_amrgrid
       
@@ -448,8 +448,7 @@ contains
          ! Compute viscosities
          call get_viscosities()
          ! Add artificial bulk viscosity
-         call fs%get_viscartif(dt=time%dt,beta=fs%beta)
-         call fs%beta%multiply(src=fs%Q,srccomp=1)
+         call fs%add_viscartif(dt=time%dt)
          ! Compute Umag and Mach number
          call Umag%get_magnitude(fs%U,fs%V,fs%W)
          call Mach%copy(src=Umag); call Mach%divide(src=fs%C)
@@ -488,6 +487,8 @@ contains
          call mfile%add_column(time%dt,'Timestep size')
          call mfile%add_column(time%cfl,'Maximum CFL')
          call mfile%add_column(fs%Umax,'Umax')
+         call mfile%add_column(fs%Vmax,'Vmax')
+         call mfile%add_column(fs%Wmax,'Wmax')
          call mfile%add_column(fs%Pmin,'Pmin')
          call mfile%add_column(fs%Pmax,'Pmax')
          call mfile%add_column(fs%Qmin(1),'RHOmin')
@@ -600,8 +601,7 @@ contains
          call get_viscosities()
 
          ! Add artificial bulk viscosity
-         call fs%get_viscartif(dt=time%dt,beta=fs%beta)
-         call fs%beta%multiply(src=fs%Q,srccomp=1)
+         call fs%add_viscartif(dt=time%dt)
 
          ! Compute Umag and Mach number
          call Umag%get_magnitude(fs%U,fs%V,fs%W)

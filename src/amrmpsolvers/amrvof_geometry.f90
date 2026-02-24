@@ -13,6 +13,8 @@ module amrvof_geometry
    public :: flux_polyhedron_vol, cut_hex_vol
    public :: correct_flux_poly
    public :: cut_hex_polygon, hex_poly_nvert, get_hex_poly_nvert
+   public :: convex_poly, tet_to_poly, clip_poly_by_plane
+   public :: poly_vol_centroid, poly_vol
 
    ! Cutting tables from mpcomp_class_noirl
    ! tet_map: maps a hex cell (8 vertices + center) to 8 tetrahedra
@@ -228,6 +230,22 @@ module amrvof_geometry
        3, 6, 5, 4, 0,-1,  1, 3, 6, 5,-1,-1, -1,-1,-1,-1,-1,-1,  2, 3, 6,-1,-1,-1, &
        2, 5, 4, 0,-1,-1,  1, 2, 5,-1,-1,-1,  1, 4, 0,-1,-1,-1, -1,-1,-1,-1,-1,-1], &
       shape=[6,256])
+
+   ! =========================================================================
+   ! Convex polyhedron type for polyhedron clipping approach
+   ! =========================================================================
+   integer, parameter, public :: POLY_MAXV  = 40  ! max vertex indices
+   integer, parameter, public :: POLY_MAXF  = 24  ! max faces
+   integer, parameter, public :: POLY_MAXFV = 8   ! max vertices per face
+   
+   type, public :: convex_poly
+      integer  :: nv  = 0                         ! number of active vertices
+      integer  :: nf  = 0                         ! number of faces
+      integer  :: ntp = 0                         ! last vertex index (can exceed nv)
+      real(WP) :: v(3,POLY_MAXV)                  ! vertex coordinates
+      integer  :: fnv(POLY_MAXF)                  ! vertices per face
+      integer  :: fv(POLY_MAXFV, POLY_MAXF)       ! face->vertex indices
+   end type convex_poly
 
 contains
 
@@ -488,20 +506,6 @@ contains
       dir=cross_sum/max(mag,tiny(1.0_WP))
       ! Move vertex 9
       poly(:,9)=poly(:,9)+adjustment*dir
-      ! DEBUG: Verify corrected volume matches target
-      block
-         real(WP) :: final_vol
-         integer :: ntet
-         final_vol = 0.0_WP
-         do ntet = 1,8
-            final_vol = final_vol + tet_vol([poly(:,tet_map(1,ntet)), poly(:,tet_map(2,ntet)), &
-            &                                poly(:,tet_map(3,ntet)), poly(:,tet_map(4,ntet))])
-         end do
-         if (abs(final_vol - target_volume) > 1.0e-10_WP) then
-            print*, 'correct_flux_poly FAILED: target=', target_volume, 'got=', final_vol, 'diff=', final_vol-target_volume
-         end if
-      end block
-
    end subroutine correct_flux_poly
 
    !> Cut a hex cell by a plane and compute liquid/gas volumes and barycenters
@@ -680,5 +684,357 @@ contains
       if (nvert.lt.0) nvert = 0
       
    end function get_hex_poly_nvert
+
+
+   ! =========================================================================
+   ! Convert a tetrahedron to a convex_poly
+   ! Face winding is CCW when viewed from outside for positive-volume tets
+   ! =========================================================================
+   pure subroutine tet_to_poly(tet, poly)
+      implicit none
+      real(WP), dimension(3,4), intent(in)  :: tet
+      type(convex_poly),        intent(out) :: poly
+      poly%nv  = 4
+      poly%nf  = 4
+      poly%ntp = 4
+      poly%v(:,1:4) = tet(:,1:4)
+      poly%fnv(1:4) = 3
+      poly%fv(1:3,1) = [1,3,2]  ! opposite vertex 4
+      poly%fv(1:3,2) = [1,2,4]  ! opposite vertex 3
+      poly%fv(1:3,3) = [2,3,4]  ! opposite vertex 1
+      poly%fv(1:3,4) = [1,4,3]  ! opposite vertex 2
+   end subroutine tet_to_poly
+
+   ! =========================================================================
+   ! Clip convex polyhedron by plane: n·x = dist (keep n·x < dist side)
+   ! Following VOFTools INTE3D + NEWPOL3D (Lopez & Hernandez)
+   !
+   ! Convention: plane is n·x = dist. Vertices with n·x < dist are KEPT.
+   ! This directly matches PLIC: call with normal and dist to get liquid.
+   !
+   ! The polyhedron is modified IN-PLACE to contain only the kept side.
+   ! Returns icontp (kept vertices) and icontn (removed vertices) counts.
+   ! =========================================================================
+   pure subroutine clip_poly_by_plane(poly, normal, dist, icontp, icontn, ierr)
+      implicit none
+      type(convex_poly),      intent(inout) :: poly
+      real(WP), dimension(3), intent(in)    :: normal
+      real(WP),               intent(in)    :: dist
+      integer,                intent(out)   :: icontp, icontn
+      integer,                intent(out)   :: ierr  ! 0=ok, 1=MAXV, 2=MAXFV, 3=MAXF
+      ! Shared work arrays (needed across multiple blocks)
+      integer  :: ia(POLY_MAXV)              ! vertex classification: 1=keep, 0=cut
+      real(WP) :: phiv(POLY_MAXV)            ! signed distance to plane
+      integer  :: iscut(POLY_MAXF)           ! face is cut flag
+      integer  :: nedge(POLY_MAXF)           ! number of cut edges per face
+      integer  :: ipia0(POLY_MAXV)           ! parent vertex 0 of new vertex (IA=0 side)
+      integer  :: ipia1(POLY_MAXV)           ! parent vertex 1 of new vertex (IA=1 side)
+      integer  :: ipv1(POLY_MAXFV,POLY_MAXF) ! work face vertex lists
+      integer  :: nipv1(POLY_MAXF)           ! work face vertex counts
+      integer  :: nts0, nts00                ! original face count
+      integer  :: nipnew                     ! last vertex index after clipping
+      
+      ierr = 0
+      
+      ! ---------------------------------------------------------------
+      ! Block 1: Classify vertices by signed distance to plane
+      ! ---------------------------------------------------------------
+      classify_vertices: block
+         integer :: is, iv, ip
+         ia = -1
+         icontp = 0; icontn = 0
+         do is = 1, poly%nf
+            do iv = 1, poly%fnv(is)
+               ip = poly%fv(iv, is)
+               if (ia(ip).eq.(-1)) then
+                  phiv(ip) = dist - (normal(1)*poly%v(1,ip) + normal(2)*poly%v(2,ip) + normal(3)*poly%v(3,ip))
+                  if (phiv(ip).gt.0.0_WP) then
+                     ia(ip) = 1
+                     icontp = icontp + 1
+                  else
+                     ia(ip) = 0
+                     icontn = icontn + 1
+                  end if
+               end if
+            end do
+         end do
+      end block classify_vertices
+      
+      ! Trivial cases: all vertices on one side
+      if (icontp.eq.0 .or. icontn.eq.0) return
+      
+      nts0  = poly%nf
+      nts00 = nts0
+      
+      ! ---------------------------------------------------------------
+      ! Block 2: Identify which faces are cut by the plane
+      ! ---------------------------------------------------------------
+      identify_cut_faces: block
+         integer :: is, iv, iv1, ip, ip1
+         do is = 1, nts0
+            nedge(is) = 0
+            if (poly%fnv(is).gt.0) then
+               iscut(is) = 0
+               do iv = 1, poly%fnv(is)
+                  ip = poly%fv(iv, is)
+                  iv1 = iv + 1; if (iv.eq.poly%fnv(is)) iv1 = 1
+                  ip1 = poly%fv(iv1, is)
+                  if (ia(ip).ne.ia(ip1)) then
+                     iscut(is) = 1
+                     nedge(is) = nedge(is) + 1
+                  end if
+               end do
+               ! Mark uncut faces entirely on the removed side
+               if (iscut(is).eq.0 .and. ia(poly%fv(1,is)).eq.0) &
+                  poly%fnv(is) = -poly%fnv(is)
+            end if
+         end do
+      end block identify_cut_faces
+      
+      ! ---------------------------------------------------------------
+      ! Block 3: Clip cut faces and create intersection vertices
+      ! ---------------------------------------------------------------
+      clip_faces: block
+         integer :: ise(POLY_MAXF,POLY_MAXFV)    ! intersection vertex per cut edge
+         integer :: ivise(POLY_MAXF,POLY_MAXV)   ! position of intersection vertex in face
+         integer :: ipise(POLY_MAXV,2)            ! face adjacency of intersection vertex
+         integer :: is, iv, iv1, ip, ip1, ip0i, ip1i, itype
+         integer :: niv, nint, is1, ie, ipnew, ip0n, ip1n
+         logical :: found
+         
+         nipnew = poly%ntp
+         do is = 1, nts0
+            if (iscut(is).eq.1) then
+               niv = 0; nint = 0
+               do iv = 1, poly%fnv(is)
+                  ip = poly%fv(iv, is)
+                  iv1 = iv + 1; if (iv1.gt.poly%fnv(is)) iv1 = 1
+                  ip1 = poly%fv(iv1, is)
+                  ! Keep vertices on the kept side
+                  if (ia(ip).eq.1) then
+                     niv = niv + 1
+                     if (niv.gt.POLY_MAXFV) then; ierr = 2; return; end if
+                     ipv1(niv, is) = poly%fv(iv, is)
+                  end if
+                  ! Edge crosses plane — find or create intersection vertex
+                  if (ia(ip).ne.ia(ip1)) then
+                     nint = nint + 1
+                     niv = niv + 1
+                     if (niv.gt.POLY_MAXFV) then; ierr = 2; return; end if
+                     if (ia(ip).eq.1) then
+                        ip1i = ip; ip0i = ip1; itype = 2
+                     else
+                        ip1i = ip1; ip0i = ip; itype = 1
+                     end if
+                     ! Search previous faces for existing intersection on same edge
+                     found = .false.
+                     edge_search: do is1 = 1, is-1
+                        do ie = 1, nedge(is1)
+                           ipnew = ise(is1, ie)
+                           ip0n = ipia0(ipnew); ip1n = ipia1(ipnew)
+                           if (ip0n.eq.ip0i .and. ip1n.eq.ip1i) then
+                              ise(is, nint) = ipnew
+                              ipv1(niv, is) = ipnew
+                              ivise(is, ipnew) = niv
+                              ipise(ipnew, itype) = is
+                              found = .true.
+                              exit edge_search
+                           end if
+                        end do
+                     end do edge_search
+                     ! Create new intersection vertex
+                     if (.not.found) then
+                        nipnew = nipnew + 1
+                        if (nipnew.gt.POLY_MAXV) then; ierr = 1; return; end if
+                        ipia0(nipnew) = ip0i
+                        ipia1(nipnew) = ip1i
+                        ipv1(niv, is) = nipnew
+                        ise(is, nint) = nipnew
+                        ivise(is, nipnew) = niv
+                        ipise(nipnew, itype) = is
+                     end if
+                  end if
+               end do
+               nipv1(is) = niv
+            end if
+         end do
+         
+         ! ---------------------------------------------------------------
+         ! Block 4: Construct cap faces by chasing face adjacency
+         ! ---------------------------------------------------------------
+         build_cap_faces: block
+            integer :: ipmark(POLY_MAXV)
+            integer :: nivnew, isnew, ivnew, ivnewt, ipini
+            
+            nivnew = nipnew - poly%ntp
+            isnew = nts0
+            do ip = poly%ntp+1, nipnew
+               ipmark(ip) = 0
+            end do
+            ivnewt = 0
+            ipnew = poly%ntp + 1
+            
+            cap_loop: do while (ivnewt.lt.nivnew)
+               ivnew = 1; ivnewt = ivnewt + 1
+               isnew = isnew + 1
+               if (isnew.gt.POLY_MAXF) then; ierr = 3; return; end if
+               ipini = ipnew
+               poly%fv(ivnew, isnew) = ipnew
+               ipmark(ipnew) = 1
+               chase: do while (ivnewt.lt.nivnew)
+                  is = ipise(ipnew, 1)
+                  iv = ivise(is, ipnew)
+                  iv1 = iv - 1; if (iv1.eq.0) iv1 = nipv1(is)
+                  ipnew = ipv1(iv1, is)
+                  if (ipnew.eq.ipini) exit chase
+                  ivnew = ivnew + 1; ivnewt = ivnewt + 1
+                  poly%fv(ivnew, isnew) = ipnew
+                  ipmark(ipnew) = 1
+               end do chase
+               poly%fnv(isnew) = ivnew
+               do ipnew = poly%ntp+2, nipnew
+                  if (ipmark(ipnew).eq.0) cycle cap_loop
+               end do
+               exit cap_loop
+            end do cap_loop
+            poly%fnv(isnew) = ivnew
+            
+            nts0 = isnew  ! update for finalize block
+         end block build_cap_faces
+         
+      end block clip_faces
+      
+      ! ---------------------------------------------------------------
+      ! Block 5: Finalize — update face lists, compute new vertex
+      !           positions, set cap normals, update counts
+      ! ---------------------------------------------------------------
+      finalize: block
+         integer :: is, iv, ip, niv, ip0i, ip1i
+         real(WP) :: mu
+         
+         ! Copy clipped face vertex lists back to poly
+         niv = nts0 - nts00  ! start with number of new (intersection) vertices
+         do is = 1, nts00
+            if (poly%fnv(is).gt.0) then
+               if (iscut(is).eq.1) then
+                  poly%fnv(is) = nipv1(is)
+                  do iv = 1, nipv1(is)
+                     poly%fv(iv, is) = ipv1(iv, is)
+                     if (ia(ipv1(iv, is)).eq.1) then
+                        niv = niv + 1
+                        ia(ipv1(iv, is)) = -1
+                     end if
+                  end do
+               else
+                  if (iscut(is).eq.0 .and. poly%fnv(is).lt.0) poly%fnv(is) = 0
+                  do iv = 1, poly%fnv(is)
+                     if (ia(poly%fv(iv, is)).eq.1) then
+                        niv = niv + 1
+                        ia(poly%fv(iv, is)) = -1
+                     end if
+                  end do
+               end if
+            end if
+         end do
+         
+         ! Reset IA flags
+         do ip = 1, poly%ntp
+            if (ia(ip).eq.(-1)) ia(ip) = 1
+         end do
+         
+         ! Suppress degenerate cap faces
+         do is = nts00+1, nts0
+            if (poly%fnv(is).lt.3) poly%fnv(is) = 0
+         end do
+         
+         ! Compute new vertex positions via linear interpolation
+         do is = nts00+1, nts0
+            do iv = 1, poly%fnv(is)
+               ip = poly%fv(iv, is)
+               ip0i = ipia0(ip); ip1i = ipia1(ip)
+               mu = -phiv(ip0i) / (phiv(ip1i) - phiv(ip0i))
+               poly%v(:,ip) = poly%v(:,ip0i) + mu * (poly%v(:,ip1i) - poly%v(:,ip0i))
+            end do
+         end do
+         
+         ! Update counts
+         poly%nv  = niv
+         poly%ntp = nipnew
+         poly%nf  = nts0
+      end block finalize
+      
+   end subroutine clip_poly_by_plane
+   
+   ! =========================================================================
+   ! Compute volume and centroid of a convex polyhedron
+   ! Uses divergence theorem via fan decomposition: each face is triangulated
+   ! from its first vertex, each triangle + a reference point forms a signed
+   ! tet whose volume and centroid are accumulated.
+   ! =========================================================================
+   pure subroutine poly_vol_centroid(poly, vol, centroid)
+      implicit none
+      type(convex_poly),      intent(in)  :: poly
+      real(WP),               intent(out) :: vol
+      real(WP), dimension(3), intent(out) :: centroid
+      ! Local
+      real(WP), dimension(3) :: ref, a, b, c, tc
+      real(WP) :: tvol
+      integer  :: f, e, v1i, v2i, v3i
+      
+      ref = poly%v(:,poly%fv(1,1))  ! any vertex as reference
+      vol = 0.0_WP
+      centroid = 0.0_WP
+      
+      do f = 1, poly%nf
+         if (poly%fnv(f).le.0) cycle
+         v1i = poly%fv(1, f)
+         do e = 2, poly%fnv(f) - 1
+            v2i = poly%fv(e, f)
+            v3i = poly%fv(e+1, f)
+            a = poly%v(:,v1i) - ref
+            b = poly%v(:,v2i) - ref
+            c = poly%v(:,v3i) - ref
+            tvol = (a(1)*(b(2)*c(3)-c(2)*b(3)) &
+            &      -a(2)*(b(1)*c(3)-c(1)*b(3)) &
+            &      +a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
+            tc = 0.25_WP * (ref + poly%v(:,v1i) + poly%v(:,v2i) + poly%v(:,v3i))
+            vol = vol + tvol
+            centroid = centroid + tvol * tc
+         end do
+      end do
+      
+      ! Normalize centroid
+      if (abs(vol).gt.tiny(1.0_WP)) then
+         centroid = centroid / vol
+      end if
+      
+   end subroutine poly_vol_centroid
+
+   ! =========================================================================
+   ! Compute volume of a convex polyhedron (volume only, no centroid)
+   ! =========================================================================
+   pure function poly_vol(poly) result(vol)
+      implicit none
+      type(convex_poly), intent(in) :: poly
+      real(WP) :: vol
+      real(WP), dimension(3) :: ref, a, b, c
+      integer :: f, e, v1i, v2i, v3i
+      ref = poly%v(:,poly%fv(1,1))
+      vol = 0.0_WP
+      do f = 1, poly%nf
+         if (poly%fnv(f).le.0) cycle
+         v1i = poly%fv(1, f)
+         do e = 2, poly%fnv(f) - 1
+            v2i = poly%fv(e, f)
+            v3i = poly%fv(e+1, f)
+            a = poly%v(:,v1i) - ref
+            b = poly%v(:,v2i) - ref
+            c = poly%v(:,v3i) - ref
+            vol = vol + (a(1)*(b(2)*c(3)-c(2)*b(3)) &
+            &           -a(2)*(b(1)*c(3)-c(1)*b(3)) &
+            &           +a(3)*(b(1)*c(2)-c(1)*b(2))) / 6.0_WP
+         end do
+      end do
+   end function poly_vol
 
 end module amrvof_geometry

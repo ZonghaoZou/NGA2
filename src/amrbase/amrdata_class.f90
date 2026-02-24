@@ -62,6 +62,7 @@ module amrdata_class
       procedure :: setval           !< Y = val
       procedure :: plus             !< Y = Y + val
       procedure :: mult             !< Y = Y * val
+      procedure :: clip             !< Y = clip(Y, minval, maxval)
       ! Binary operations (Y = op(Y, X))
       procedure :: add              !< Y = Y + X
       procedure :: subtract         !< Y = Y - X
@@ -464,7 +465,7 @@ contains
       ! Call C++ wrapper
       call amrmfab_fillcoarsepatch(this%mf(lvl), time, this%mf(lvl-1), &
       &   this%amr%geom(lvl-1), this%amr%geom(lvl), data_ctx, bc_dispatch_ptr, &
-      &   1, 1, this%ncomp, this%amr%rref(lvl-1), this%interp, this%lo_bc, this%hi_bc, this%ncomp)
+      &   1, 1, this%ncomp, [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)], this%interp, this%lo_bc, this%hi_bc, this%ncomp)
    end subroutine fill_from_coarse
 
    !> Fill ghost cells and coarse-fine boundary data at a single level
@@ -498,7 +499,7 @@ contains
          &   t_new, this%mf(lvl-1), this%amr%geom(lvl-1), &
          &   t_old, this%mf(lvl), t_new, this%mf(lvl), this%amr%geom(lvl), &
          &   data_ctx, bc_dispatch_ptr, time, 1, 1, this%ncomp, &
-         &   this%amr%rref(lvl-1), this%interp, this%lo_bc, this%hi_bc, this%ncomp)
+         &   [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)], this%interp, this%lo_bc, this%hi_bc, this%ncomp)
       end if
       ! For nodal/face data: reconcile shared valid faces
       if (any(this%nodal)) call this%mf(lvl)%override_sync(this%amr%geom(lvl))
@@ -546,7 +547,7 @@ contains
          &   t_new, this%mf(lvl-1), this%amr%geom(lvl-1), &
          &   t_old, this%mf(lvl), t_new, this%mf(lvl), this%amr%geom(lvl), &
          &   data_ctx, bc_dispatch_ptr, time, 1, 1, this%ncomp, &
-         &   this%amr%rref(lvl-1), this%interp, this%lo_bc, this%hi_bc, this%ncomp)
+         &   [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)], this%interp, this%lo_bc, this%hi_bc, this%ncomp)
       end if
       ! For nodal/face data: reconcile shared valid faces
       if (any(this%nodal)) call dest%override_sync(this%amr%geom(lvl))
@@ -605,13 +606,13 @@ contains
       ! Pass geometry for periodic fix-up
       select case (nodal_count)
        case (0) ! Cell-centered
-         call amrmfab_average_down_cell(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=this%amr%rref(lvl), cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_cell(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
        case (1) ! Face-centered
-         call amrmfab_average_down_face(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=this%amr%rref(lvl), cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_face(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
        case (2) ! Edge-centered
-         call amrmfab_average_down_edge(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=this%amr%rref(lvl), cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_edge(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
        case (3) ! Node-centered
-         call amrmfab_average_down_node(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=this%amr%rref(lvl), cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_node(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
       end select
    end subroutine average_downto
 
@@ -763,6 +764,40 @@ contains
          call this%mf(l)%copy(src%mf(l), sc, dc, nc, ng)
       end do
    end subroutine copy
+
+   !> Clip values: Y = max(cliplo, min(cliphi, Y))
+   subroutine clip(this, cliplo, cliphi, lvl, lbase, comp, ncomp, nghost)
+      use amrex_amr_module, only: amrex_mfiter, amrex_mfiter_build, amrex_mfiter_destroy, amrex_box
+      implicit none
+      class(amrdata), intent(inout) :: this
+      real(WP), intent(in), optional :: cliplo, cliphi
+      integer, intent(in), optional :: lvl, lbase, comp, ncomp, nghost
+      type(amrex_mfiter) :: mfi
+      type(amrex_box) :: bx
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: p
+      real(WP) :: lo, hi
+      integer :: i, j, k, n, l, l0, l1, ic, nc, ng
+      if (.not.associated(this%amr)) return
+      lo = -huge(1.0_WP); if (present(cliplo)) lo = cliplo
+      hi = +huge(1.0_WP); if (present(cliphi)) hi = cliphi
+      call get_level_range(this, lvl, lbase, l0, l1)
+      ic = 1; if (present(comp)) ic = comp
+      nc = this%ncomp; if (present(ncomp)) nc = ncomp
+      ng = this%ng; if (present(nghost)) ng = nghost
+      do l = l0, l1
+         call amrex_mfiter_build(mfi, this%mf(l), tiling=.true.)
+         do while (mfi%next())
+            p => this%mf(l)%dataptr(mfi)
+            bx = mfi%growntilebox(ng)
+            do n = ic, ic+nc-1
+               do k = bx%lo(3), bx%hi(3); do j = bx%lo(2), bx%hi(2); do i = bx%lo(1), bx%hi(1)
+                  p(i,j,k,n) = max(lo, min(hi, p(i,j,k,n)))
+               end do; end do; end do
+            end do
+         end do
+         call amrex_mfiter_destroy(mfi)
+      end do
+   end subroutine clip
 
    ! ============================================================================
    ! BLAS-LIKE OPERATIONS

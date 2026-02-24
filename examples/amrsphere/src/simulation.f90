@@ -13,13 +13,18 @@ module simulation
    implicit none
    private
 
-   public :: simulation_init, simulation_run, simulation_final
+   public :: simulation_init,simulation_run,simulation_final
 
    ! Grid
    type(amrgrid), target :: amr
 
-   ! Solver data
+   ! Time integration
    type(timetracker) :: time
+   integer :: tscheme          ! 1-iterative midpoint/CN, 2-SSPRK3
+   real(WP), dimension(3), parameter :: rk3a=[0.0_WP,0.75_WP,1.0_WP/3.0_WP]
+   real(WP), dimension(3), parameter :: rk3b=[1.0_WP,0.25_WP,2.0_WP/3.0_WP]
+   
+   ! Solver data
    type(amrincomp), target :: fs
    type(amrdata) :: resU,resV,resW
 
@@ -36,6 +41,9 @@ module simulation
 
    ! Monitoring
    type(monitor) :: mfile,cflfile,gridfile
+
+   ! Physical parameters
+   real(WP) :: visc_mol
 
 contains
 
@@ -61,10 +69,14 @@ contains
       type(amrex_box) :: bx
       character(kind=c_char), dimension(:,:,:,:), contiguous, pointer :: tagarr
       real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW
-      real(WP) :: dx,dy,dz,dist,dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz,gradU_mag,Re_cell
+      real(WP) :: dx,dy,dz,dxi,dyi,dzi,dist,gradU_mag,Re_cell
+      real(WP), dimension(3,3) :: gradU
       integer :: i,j,k
-      dx=solver%amr%dx(lvl); dy=solver%amr%dy(lvl); dz=solver%amr%dz(lvl)
       tags=tags_ptr
+      ! Get mesh spacing
+      dx=solver%amr%dx(lvl); dxi=1.0_WP/dx
+      dy=solver%amr%dy(lvl); dyi=1.0_WP/dy
+      dz=solver%amr%dz(lvl); dzi=1.0_WP/dz
       call solver%amr%mfiter_build(lvl,mfi)
       do while (mfi%next())
          bx=mfi%tilebox()
@@ -73,23 +85,22 @@ contains
          pV=>solver%V%mf(lvl)%dataptr(mfi)
          pW=>solver%W%mf(lvl)%dataptr(mfi)
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-            ! Skip if close to outflow (within 5 units)
+            ! No refinement 5D from the outflow
             if (solver%amr%xlo+(real(i,WP)+0.5_WP)*dx.gt.solver%amr%xhi-5.0_WP) cycle
-            ! Diagonal gradients
-            dudx=(pU(i+1,j,k,1)-pU(i,j,k,1))/dx
-            dvdy=(pV(i,j+1,k,1)-pV(i,j,k,1))/dy
-            dwdz=(pW(i,j,k+1,1)-pW(i,j,k,1))/dz
-            ! Off-diagonal gradients
-            dudy=0.25_WP*(pU(i,j+1,k,1)+pU(i+1,j+1,k,1)-pU(i,j-1,k,1)-pU(i+1,j-1,k,1))/(2.0_WP*dy)
-            dudz=0.25_WP*(pU(i,j,k+1,1)+pU(i+1,j,k+1,1)-pU(i,j,k-1,1)-pU(i+1,j,k-1,1))/(2.0_WP*dz)
-            dvdx=0.25_WP*(pV(i+1,j,k,1)+pV(i+1,j+1,k,1)-pV(i-1,j,k,1)-pV(i-1,j+1,k,1))/(2.0_WP*dx)
-            dvdz=0.25_WP*(pV(i,j,k+1,1)+pV(i,j+1,k+1,1)-pV(i,j,k-1,1)-pV(i,j+1,k-1,1))/(2.0_WP*dz)
-            dwdx=0.25_WP*(pW(i+1,j,k,1)+pW(i+1,j,k+1,1)-pW(i-1,j,k,1)-pW(i-1,j,k+1,1))/(2.0_WP*dx)
-            dwdy=0.25_WP*(pW(i,j+1,k,1)+pW(i,j+1,k+1,1)-pW(i,j-1,k,1)-pW(i,j-1,k+1,1))/(2.0_WP*dy)
+            ! Velocity gradient tensor
+            gradU(1,1)=        dxi*   (pU(i+1,j,k,1)      -pU(i,j,k,1)        )
+            gradU(2,1)=0.25_WP*dyi*sum(pU(i:i+1,j:j+1,k,1)-pU(i:i+1,j-1:j,k,1))
+            gradU(3,1)=0.25_WP*dzi*sum(pU(i:i+1,j,k:k+1,1)-pU(i:i+1,j,k-1:k,1))
+            gradU(1,2)=0.25_WP*dxi*sum(pV(i:i+1,j:j+1,k,1)-pV(i-1:i,j:j+1,k,1))
+            gradU(2,2)=        dyi*   (pV(i,j+1,k,1)      -pV(i,j,k,1)        )
+            gradU(3,2)=0.25_WP*dzi*sum(pV(i,j:j+1,k:k+1,1)-pV(i,j:j+1,k-1:k,1))
+            gradU(1,3)=0.25_WP*dxi*sum(pW(i:i+1,j,k:k+1,1)-pW(i-1:i,j,k:k+1,1))
+            gradU(2,3)=0.25_WP*dyi*sum(pW(i,j:j+1,k:k+1,1)-pW(i,j-1:j,k:k+1,1))
+            gradU(3,3)=        dzi*   (pW(i,j,k+1,1)      -pW(i,j,k,1)        )
             ! |∇u| = sqrt(sum of all gradients squared)
-            gradU_mag=sqrt(dudx**2+dudy**2+dudz**2+dvdx**2+dvdy**2+dvdz**2+dwdx**2+dwdy**2+dwdz**2)
+            gradU_mag=sqrt(sum(gradU**2))
             ! Normalize into a local Reynolds number
-            Re_cell=solver%rho*gradU_mag*min(dx,dy,dz)**2/solver%visc
+            Re_cell=solver%rho*gradU_mag*solver%amr%min_meshsize(lvl)**2/visc_mol
             ! Tagged based on cell Re value
             if (Re_cell.gt.Re_tag) tagarr(i,j,k,1)=SETtag
             ! Also tag based on closeness to sphere surface
@@ -101,23 +112,27 @@ contains
    end subroutine my_tagger
 
    !> Dirichlet BC: uniform inflow Uin at xlo/xhi for U
-   subroutine dirichlet_velocity(solver,bx,p,comp,face,time,geom)
-      use amrex_amr_module, only: amrex_box,amrex_geometry
+   subroutine dirichlet_velocity(solver,p,bx,comp,face,time)
+      use amrex_amr_module, only: amrex_box
       class(amrincomp), intent(in) :: solver
-      type(amrex_box), intent(in) :: bx
       real(WP), dimension(:,:,:,:), pointer, intent(inout) :: p
+      type(amrex_box), intent(in) :: bx
       character(len=1), intent(in) :: comp
       integer, intent(in) :: face
       real(WP), intent(in) :: time
-      type(amrex_geometry), intent(in) :: geom
       integer :: i,j,k
-      ! face: 1=xlo, 2=xhi, 3=ylo, 4=yhi, 5=zlo, 6=zhi
-      select case (comp)
-       case ('U')
-         select case (face)
-          case (1)  ! xlo - Inflow Dirichlet condition
+      select case (face)
+       case (1)  ! Inflow in X-
+         select case (comp)
+          ! U=1
+          case ('U')
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                p(i,j,k,1)=1.0_WP
+            end do; end do; end do
+          ! V=0, W=0
+          case ('V','W')
+            do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+               p(i,j,k,1)=0.0_WP
             end do; end do; end do
          end select
       end select
@@ -147,7 +162,7 @@ contains
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
             call initialize_volume_moments(lo=[data%amr%xlo+real(i  ,WP)*dx,data%amr%ylo+real(j  ,WP)*dy,data%amr%zlo+real(k  ,WP)*dz], &
             &                              hi=[data%amr%xlo+real(i+1,WP)*dx,data%amr%ylo+real(j+1,WP)*dy,data%amr%zlo+real(k+1,WP)*dz], &
-            &                              levelset=sphere_levelset,time=time,level=4,VFlo=VFlo,VF=pVF(i,j,k,1),BL=BL,BG=BG)
+            &                              levelset=sphere_levelset,time=time,level=3,VFlo=VFlo,VF=pVF(i,j,k,1),BL=BL,BG=BG)
             pVF(i,j,k,1)=max(pVF(i,j,k,1),VFlo)
          end do; end do; end do
       end do
@@ -165,7 +180,7 @@ contains
          call param_read('Base nx',amr%nx)
          call param_read('Base ny',amr%ny)
          call param_read('Base nz',amr%nz)
-         amr%xlo=-5.0_WP; amr%xhi=+15.0_WP
+         amr%xlo=-05.0_WP; amr%xhi=+15.0_WP
          amr%ylo=-10.0_WP; amr%yhi=+10.0_WP
          amr%zlo=-10.0_WP; amr%zhi=+10.0_WP
          amr%xper=.false.; amr%yper=.true.; amr%zper=.true.
@@ -173,35 +188,50 @@ contains
          call amr%initialize()
       end block create_amrgrid
 
-      ! Initialize time tracker
-      initialize_timetracker: block
+      ! Initialize time integration
+      initialize_time: block
+         use string, only: lowercase,str_medium
+         use messager, only: die
+         character(len=str_medium) :: scheme
+         ! Create time tracker and initialize
          time=timetracker(amRoot=amr%amRoot)
          call param_read('Max time',time%tmax)
          call param_read('Max dt',time%dtmax)
          call param_read('Max CFL',time%cflmax)
          time%dt=time%dtmax
-         time%itmax=2
-      end block initialize_timetracker
+         ! Select time integration scheme
+         call param_read('Time scheme',scheme)
+         select case (lowercase(trim(scheme)))
+            case ('cn','rk2','midpoint','iterative')
+               tscheme=1
+               call param_read('Subiterations',time%itmax,default=2)
+            case ('rk3','ssprk3','tvdrk3','ssp-rk3','tvd-rk3')
+               tscheme=2
+               time%itmax=3
+            case default
+               call die('[simulation init] Unknown time integration scheme')
+         end select
+      end block initialize_time
       
       ! Create flow solver
       create_flow_solver: block
          use amrex_amr_module, only: amrex_bc_ext_dir,amrex_bc_foextrap
          ! Create flow solver
          call fs%initialize(amr)
-         ! Set viscosity
-         call param_read('Reynolds number',fs%visc)
-         fs%visc=1.0_WP/fs%visc
+         ! Set molecular viscosity
+         call param_read('Reynolds number',visc_mol)
+         visc_mol=1.0_WP/visc_mol
          ! Set pressure convergence
          fs%psolver%max_iter=20
          fs%psolver%tol_rel=1.0e-5_WP
          ! Set boundary conditions
          fs%U%lo_bc(1,1)=amrex_bc_ext_dir
-         fs%V%lo_bc(1,1)=amrex_bc_foextrap
-         fs%W%lo_bc(1,1)=amrex_bc_foextrap
+         fs%V%lo_bc(1,1)=amrex_bc_ext_dir
+         fs%W%lo_bc(1,1)=amrex_bc_ext_dir
          fs%U%hi_bc(1,1)=amrex_bc_foextrap
          fs%V%hi_bc(1,1)=amrex_bc_foextrap
          fs%W%hi_bc(1,1)=amrex_bc_foextrap
-         fs%user_dirichlet=>dirichlet_velocity
+         fs%user_bc=>dirichlet_velocity
       end block create_flow_solver
 
       ! Create workspace arrays
@@ -230,6 +260,9 @@ contains
          call param_read('Tagging Reynolds',Re_tag)
          ! Create initial grid
          call amr%init_from_scratch(time=time%t)
+         ! Set viscosity: molecular + SGS
+         call fs%visc%setval(val=visc_mol)
+         call fs%add_vreman(dt=time%dt)
       end block init_regridding
 
       ! Initialize visualization
@@ -239,8 +272,8 @@ contains
          call viz%add_scalar(fs%U,1,'U')
          call viz%add_scalar(fs%V,1,'V')
          call viz%add_scalar(fs%W,1,'W')
+         call viz%add_scalar(fs%visc,1,'visc')
          call viz%add_scalar(fs%P,1,'pressure')
-         call viz%add_scalar(fs%div,1,'divergence')
          call viz%add_scalar(VF,1,'VF')
          ! Create visualization output event
          viz_evt=event(time=time,name='Visualization output')
@@ -314,77 +347,92 @@ contains
          ! Sub-iterations
          do while (time%it.le.time%itmax)
 
-            ! Build mid-time velocity: U^{mid} = 0.5*(U + Uold)
-            call fs%U%lincomb(a=0.5_WP,src1=fs%U,b=0.5_WP,src2=fs%Uold)
-            call fs%V%lincomb(a=0.5_WP,src1=fs%V,b=0.5_WP,src2=fs%Vold)
-            call fs%W%lincomb(a=0.5_WP,src1=fs%W,b=0.5_WP,src2=fs%Wold)
+            select case (tscheme)
+             case (1)  ! ---- Iterative midpoint (2nd order, incremental pressure) ----
 
-            ! Compute advective momentum RHS
-            call fs%get_dmomdt(U=fs%U,V=fs%V,W=fs%W,drhoUdt=resU,drhoVdt=resV,drhoWdt=resW,time=time%t)
+               ! Build mid-time velocity: U^{mid} = 0.5*(U + Uold)
+               call fs%U%lincomb(a=0.5_WP,src1=fs%U,b=0.5_WP,src2=fs%Uold)
+               call fs%V%lincomb(a=0.5_WP,src1=fs%V,b=0.5_WP,src2=fs%Vold)
+               call fs%W%lincomb(a=0.5_WP,src1=fs%W,b=0.5_WP,src2=fs%Wold)
 
-            ! Increment velocity
-            call fs%U%lincomb(a=1.0_WP,src1=fs%Uold,b=time%dt/fs%rho,src2=resU)
-            call fs%V%lincomb(a=1.0_WP,src1=fs%Vold,b=time%dt/fs%rho,src2=resV)
-            call fs%W%lincomb(a=1.0_WP,src1=fs%Wold,b=time%dt/fs%rho,src2=resW)
+               ! Increment velocity with advection+viscous terms
+               call fs%get_dmomdt(U=fs%U,V=fs%V,W=fs%W,drhoUdt=resU,drhoVdt=resV,drhoWdt=resW)
+               call fs%U%lincomb(a=1.0_WP,src1=fs%Uold,b=time%dt/fs%rho,src2=resU)
+               call fs%V%lincomb(a=1.0_WP,src1=fs%Vold,b=time%dt/fs%rho,src2=resV)
+               call fs%W%lincomb(a=1.0_WP,src1=fs%Wold,b=time%dt/fs%rho,src2=resW)
 
-            ! Apply IB direct forcing
-            ibforcing: block
-               use amrex_amr_module, only: amrex_mfiter,amrex_box
-               type(amrex_mfiter) :: mfi
-               type(amrex_box) :: bx
-               real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW,pVF
-               integer :: i,j,k,lvl
-               do lvl=0,amr%clvl()
-                  call amr%mfiter_build(lvl,mfi)
-                  do while (mfi%next())
-                     ! Get data pointers
-                     pU=>fs%U%mf(lvl)%dataptr(mfi)
-                     pV=>fs%V%mf(lvl)%dataptr(mfi)
-                     pW=>fs%W%mf(lvl)%dataptr(mfi)
-                     pVF=>VF%mf(lvl)%dataptr(mfi)
-                     ! U at x-faces
-                     bx=mfi%nodaltilebox(1)
-                     do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                        pU(i,j,k,1)=0.5_WP*sum(pVF(i-1:i,j,k,1))*pU(i,j,k,1)
-                     end do; end do; end do
-                     ! V at y-faces
-                     bx=mfi%nodaltilebox(2)
-                     do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                        pV(i,j,k,1)=0.5_WP*sum(pVF(i,j-1:j,k,1))*pV(i,j,k,1)
-                     end do; end do; end do
-                     ! W at z-faces
-                     bx=mfi%nodaltilebox(3)
-                     do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                        pW(i,j,k,1)=0.5_WP*sum(pVF(i,j,k-1:k,1))*pW(i,j,k,1)
-                     end do; end do; end do
-                  end do
-                  call amr%mfiter_destroy(mfi)
-               end do
-            end block ibforcing
+               ! Increment velocity with pressure term
+               call fs%get_pgrad(dPdx=resU,dPdy=resV,dPdz=resW)
+               call fs%U%saxpy(a=-time%dt/fs%rho,src=resU)
+               call fs%V%saxpy(a=-time%dt/fs%rho,src=resV)
+               call fs%W%saxpy(a=-time%dt/fs%rho,src=resW)
 
-            ! Average down and fill ghosts
-            call fs%average_down_velocity()
-            call fs%fill_velocity(time%t)
+               ! Apply IB direct forcing
+               call apply_ib_forcing()
 
-            ! Correct outflow for mass conservation
-            call fs%correct_outflow()
+               ! Average down and fill ghosts
+               call fs%average_down_velocity()
+               call fs%fill_velocity(time%t)
 
-            ! Compute divergence
-            call fs%get_div()
+               ! Correct outflow for mass conservation
+               call fs%correct_outflow(VF=VF)
 
-            ! Solve pressure Poisson
-            call fs%div%mult(val=fs%rho/time%dt)
-            call fs%psolver%solve(rhs=fs%div,phi=fs%P)
+               ! Compute divergence
+               call fs%get_div()
 
-            ! Get gradients and correct velocity
-            call fs%psolver%get_fluxes(phi=fs%P,flux_x=resU,flux_y=resV,flux_z=resW)
-            call fs%U%saxpy(a=time%dt/fs%rho,src=resU)
-            call fs%V%saxpy(a=time%dt/fs%rho,src=resV)
-            call fs%W%saxpy(a=time%dt/fs%rho,src=resW)
+               ! Solve pressure Poisson and increment pressure
+               call fs%div%mult(val=fs%rho/time%dt)
+               call fs%psolver%solve(rhs=fs%div)
+               call fs%P%add(src=fs%psolver%sol)
 
-            ! Average down and fill ghosts
-            call fs%average_down_velocity()
-            call fs%fill_velocity(time%t)
+               ! Get gradients and correct velocity
+               call fs%psolver%get_fluxes(flux_x=resU,flux_y=resV,flux_z=resW)
+               call fs%U%saxpy(a=time%dt/fs%rho,src=resU)
+               call fs%V%saxpy(a=time%dt/fs%rho,src=resV)
+               call fs%W%saxpy(a=time%dt/fs%rho,src=resW)
+
+               ! Average down and fill ghosts
+               call fs%average_down_velocity()
+               call fs%fill_velocity(time%t)
+
+             case (2)  ! ---- TVD-RK3 Shu-Osher (3rd order, non-incremental) ----
+
+               ! Evaluate RHS at current state
+               call fs%get_dmomdt(U=fs%U,V=fs%V,W=fs%W,drhoUdt=resU,drhoVdt=resV,drhoWdt=resW)
+
+               ! Shu-Osher combination
+               call fs%U%lincomb(a=rk3a(time%it),src1=fs%Uold,b=1.0_WP-rk3a(time%it),src2=fs%U)
+               call fs%V%lincomb(a=rk3a(time%it),src1=fs%Vold,b=1.0_WP-rk3a(time%it),src2=fs%V)
+               call fs%W%lincomb(a=rk3a(time%it),src1=fs%Wold,b=1.0_WP-rk3a(time%it),src2=fs%W)
+               call fs%U%saxpy(a=rk3b(time%it)*time%dt/fs%rho,src=resU)
+               call fs%V%saxpy(a=rk3b(time%it)*time%dt/fs%rho,src=resV)
+               call fs%W%saxpy(a=rk3b(time%it)*time%dt/fs%rho,src=resW)
+
+               ! Apply IB direct forcing
+               call apply_ib_forcing()
+
+               ! Average down, fill, correct outflow
+               call fs%average_down_velocity()
+               call fs%fill_velocity(time%t)
+               call fs%correct_outflow(VF=VF)
+
+               ! Perform non-incremental pressure projection
+               call fs%get_div()
+               call fs%div%mult(val=fs%rho/(rk3b(time%it)*time%dt))
+               call fs%psolver%solve(rhs=fs%div)
+               call fs%psolver%get_fluxes(flux_x=resU,flux_y=resV,flux_z=resW)
+               call fs%U%saxpy(a=rk3b(time%it)*time%dt/fs%rho,src=resU)
+               call fs%V%saxpy(a=rk3b(time%it)*time%dt/fs%rho,src=resV)
+               call fs%W%saxpy(a=rk3b(time%it)*time%dt/fs%rho,src=resW)
+
+               ! Store pressure from last stage for monitoring
+               if (time%it.eq.time%itmax) call fs%P%copy(src=fs%psolver%sol)
+
+               ! Average down, fill
+               call fs%average_down_velocity()
+               call fs%fill_velocity(time%t)
+
+            end select
 
             ! Increment sub-iteration counter
             time%it=time%it+1
@@ -397,6 +445,10 @@ contains
             call gridfile%write()
          end if
 
+         ! Update viscosity
+         call fs%visc%setval(val=visc_mol)
+         call fs%add_vreman(dt=time%dt)
+
          ! Monitor output
          call fs%get_info()
          call mfile%write()
@@ -406,6 +458,40 @@ contains
          if (viz_evt%occurs()) call viz%write(time=time%t)
          
       end do
+
+   contains
+
+      !> Apply IB direct forcing: multiply velocity by face-averaged VF
+      subroutine apply_ib_forcing()
+         use amrex_amr_module, only: amrex_mfiter,amrex_box
+         implicit none
+         type(amrex_mfiter) :: mfi
+         type(amrex_box) :: bx
+         real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW,pVF
+         integer :: i,j,k,lvl
+         do lvl=0,amr%clvl()
+            call amr%mfiter_build(lvl,mfi)
+            do while (mfi%next())
+               pU=>fs%U%mf(lvl)%dataptr(mfi)
+               pV=>fs%V%mf(lvl)%dataptr(mfi)
+               pW=>fs%W%mf(lvl)%dataptr(mfi)
+               pVF=>VF%mf(lvl)%dataptr(mfi)
+               bx=mfi%nodaltilebox(1)
+               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+                  pU(i,j,k,1)=0.5_WP*sum(pVF(i-1:i,j,k,1))*pU(i,j,k,1)
+               end do; end do; end do
+               bx=mfi%nodaltilebox(2)
+               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+                  pV(i,j,k,1)=0.5_WP*sum(pVF(i,j-1:j,k,1))*pV(i,j,k,1)
+               end do; end do; end do
+               bx=mfi%nodaltilebox(3)
+               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+                  pW(i,j,k,1)=0.5_WP*sum(pVF(i,j,k-1:k,1))*pW(i,j,k,1)
+               end do; end do; end do
+            end do
+            call amr%mfiter_destroy(mfi)
+         end do
+      end subroutine apply_ib_forcing
 
    end subroutine simulation_run
 
