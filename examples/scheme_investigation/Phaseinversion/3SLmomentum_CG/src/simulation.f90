@@ -78,12 +78,12 @@ contains
          ! Create a VOF solver
          call vf%initialize(cfg=cfg,reconstruction_method=plicnet,transport_method=flux,name='VOF')
          call param_read('H',H)
-         ! call vf%add_bcond(name='xm',type=neumann,locator=xm_locator_sc,dir='-x')
-         ! call vf%add_bcond(name='xp',type=neumann,locator=xp_locator   ,dir='+x')
-         ! call vf%add_bcond(name='ym',type=neumann,locator=ym_locator_sc,dir='-y')
-         ! call vf%add_bcond(name='yp',type=neumann,locator=yp_locator   ,dir='+y')
-         ! call vf%add_bcond(name='zm',type=neumann,locator=zm_locator_sc,dir='-z')
-         ! call vf%add_bcond(name='zp',type=neumann,locator=zp_locator   ,dir='+z')
+         call vf%add_bcond(name='xm',type=neumann,locator=xm_locator_sc,dir='-x')
+         call vf%add_bcond(name='xp',type=neumann,locator=xp_locator   ,dir='+x')
+         call vf%add_bcond(name='ym',type=neumann,locator=ym_locator_sc,dir='-y')
+         call vf%add_bcond(name='yp',type=neumann,locator=yp_locator   ,dir='+y')
+         call vf%add_bcond(name='zm',type=neumann,locator=zm_locator_sc,dir='-z')
+         call vf%add_bcond(name='zp',type=neumann,locator=zp_locator   ,dir='+z')
          do k=vf%cfg%kmino_,vf%cfg%kmaxo_
             do j=vf%cfg%jmino_,vf%cfg%jmaxo_
                do i=vf%cfg%imino_,vf%cfg%imaxo_
@@ -127,7 +127,7 @@ contains
          ! Reset moments to guarantee compatibility with interface reconstruction
          call vf%reset_volume_moments()
 
-         ! call vf%apply_bcond(time%dt)
+         call vf%apply_bcond(time%t,time%dt)
       end block create_and_initialize_vof
       
       ! Create a two-phase flow solver without bconds
@@ -165,10 +165,10 @@ contains
          call param_read('Pressure iteration',ps%maxit)
          call param_read('Pressure tolerance',ps%rcvg)
          ! Configure implicit velocity solver
-         ! vs=ddadi(cfg=cfg,name='Velocity',nst=7)
+         vs=ddadi(cfg=cfg,name='Velocity',nst=7)
          ! Setup the solver
-         call fs%setup(pressure_solver=ps)!,implicit_solver=vs)
-         ! call fs%setup(pressure_solver=ps,implicit_solver=vs) 
+         ! call fs%setup(pressure_solver=ps)!,implicit_solver=vs)
+         call fs%setup(pressure_solver=ps,implicit_solver=vs) 
          
          fs%U=0.0_WP;fs%V=0.0_WP;fs%W=0.0_WP
          fs%Uf=0.0_WP;fs%Vf=0.0_WP;fs%Wf=0.0_WP
@@ -387,6 +387,7 @@ contains
          fs%Wold=fs%W
          
          call vf%advance(dt=time%dt,U=fs%Uf,V=fs%Vf,W=fs%Wf,Uc=fs%U,Vc=fs%V,Wc=fs%W,rho_l=fs%rho_l,rho_g=fs%rho_g)
+         call vf%apply_bcond(time%t,time%dt)
          ! Update face density and momentum vector
          fs%rho=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_faceRHO(vf=vf,rho=fs%rho)
          fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
@@ -409,7 +410,7 @@ contains
             
             ! Add momentum source terms
             call fs%addsrc_gravity(resU,resV,resW)
-            
+
             ! Assemble explicit residual
             resU=-2.0_WP*fs%rho*fs%U+(fs%rho+fs%rhoold)*fs%Uold+time%dt*resU
             resV=-2.0_WP*fs%rho*fs%V+(fs%rho+fs%rhoold)*fs%Vold+time%dt*resV
@@ -418,20 +419,22 @@ contains
             ! Form implicit residuals
             call fs%solve_implicit(vf,time%dt,resU,resV,resW)
             ! Compute predictor U
-            fs%U=2.0_WP*fs%U-fs%Uold+resU
-            fs%V=2.0_WP*fs%V-fs%Vold+resV
-            fs%W=2.0_WP*fs%W-fs%Wold+resW
+            fs%U=2.0_WP*fs%U-fs%Uold+resU; call cfg%sync(fs%U)
+            fs%V=2.0_WP*fs%V-fs%Vold+resV; call cfg%sync(fs%V)
+            fs%W=2.0_WP*fs%W-fs%Wold+resW; call cfg%sync(fs%W)
 
-            ! Update viscosity explictly
-            call fs%viscosity_explict(vf,time%dt)            
+            ! ! Update viscosity explictly
+            ! call fs%viscosity_gravity_explict(vf,time%dt)           
             
             ! Solve Poisson equation
             call fs%update_laplacian()
-            ! Update velocities and apply bconds
             call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
+            call fs%update_pgrad_all(vf,time%dt)
+            ! call fs%update_faceU_correction(vf,time%dt)
+            ! Update velocities and apply bconds
             call fs%apply_bcond(time%dt,'face')
-
             call fs%correct_mfr()
+            
 
             ! Sync and apply boundary conditions
             call fs%get_div()
@@ -443,17 +446,15 @@ contains
             
             ! Corrector step
             call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
-            fs%P=fs%psolv%sol
-            ! fs%P=fs%P+fs%psolv%sol
+            fs%P=fs%P+fs%psolv%sol
             fs%Uf=fs%Uf-time%dt*resU/fs%RHOX
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
 
-            call fs%get_pgrad_cellcenter(vf,fs%psolv%sol,resU,resV,resW)
-            call fs%get_STjump_cellcenter(vf,resU,resV,resW,2)
-            fs%U=fs%U-time%dt*resU/fs%rho
-            fs%V=fs%V-time%dt*resV/fs%rho
-            fs%W=fs%W-time%dt*resW/fs%rho
+            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW,.true.)
+            fs%U=fs%U-time%dt*resU/fs%rho; call cfg%sync(fs%U)
+            fs%V=fs%V-time%dt*resV/fs%rho; call cfg%sync(fs%V)
+            fs%W=fs%W-time%dt*resW/fs%rho; call cfg%sync(fs%W)
 
             call fs%apply_bcond(time%dt,'cell')
             ! Increment sub-iteration counter =================================
@@ -463,13 +464,13 @@ contains
          ! Recompute interpolated velocity and divergence
          call fs%get_div()
          call get_KE()
-
+         call output_info()
          ! Output to ensight
          if (ens_evt%occurs()) then
             call vf%update_surfmesh(smesh)
             call ens_out%write_data(time%t)
          end if
-         
+         ! 
          ! Perform and output monitoring
          call fs%get_max()
          call vf%get_max()
@@ -664,6 +665,20 @@ contains
 
    end subroutine get_KE
 
+   subroutine output_info
+      implicit none
+      real(WP) :: vel_tmp
+      integer :: i,j,k
+      do k = cfg%kmin_, cfg%kmax_
+         do j = cfg%jmin_, cfg%jmax_
+            do i = cfg%imin_, cfg%imax_
+               if (abs(fs%U(i,j,k)).gt.0.27_WP) print *, i,j,k,fs%U(i,j,k),fs%V(i,j,k),fs%W(i,j,k),vf%VF(i,j,k)
+            end do 
+         end do 
+      end do
+
+
+   end subroutine output_info
    !> Finalize the NGA2 simulation
    subroutine simulation_final
       implicit none

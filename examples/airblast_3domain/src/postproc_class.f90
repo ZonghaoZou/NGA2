@@ -28,9 +28,9 @@ module postproc_class
       type(lpt)      :: lp       !< Tracking particles
       !> Data arrays
       real(WP), dimension(:,:,:), allocatable :: VF
-      real(WP), dimension(:), allocatable :: Lb
+      real(WP), dimension(:), allocatable :: Lb,by,bz
       real(WP), dimension(:,:), allocatable :: U
-      real(WP), dimension(:,:), allocatable :: by,bz
+      ! real(WP), dimension(:,:), allocatable :: by,bz
    contains
       procedure :: analyze
       procedure, private :: read_ensight_scalar
@@ -206,8 +206,9 @@ contains
       class(postproc), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: VFtmp
       integer, intent(in) :: nfile
-      real(WP), dimension(:), allocatable :: dvol,xmax,mybv,myby,mybz
+      real(WP), dimension(:), allocatable :: dvol,xmax!,mybv,myby,mybz
       real(WP) :: x,y,z
+      real(WP) :: mybv,myby,mybz
       integer:: i,j,k,n,m,ierr
       integer, dimension(1) :: idx
       ! Start by building a CCL
@@ -215,9 +216,9 @@ contains
       ! Allocate droplet stats arrays
       allocate(dvol(1:this%ccl%nstruct)); dvol=0.0_WP
       allocate(xmax(1:this%ccl%nstruct)); xmax=-HUGE(x)
-      allocate(mybv(this%cfg%imin:this%cfg%imax)); mybv=0.0_WP
-      allocate(myby(this%cfg%imin:this%cfg%imax)); myby=0.0_WP
-      allocate(mybz(this%cfg%imin:this%cfg%imax)); mybz=0.0_WP
+      ! allocate(mybv(this%cfg%imin:this%cfg%imax)); mybv=0.0_WP
+      ! allocate(myby(this%cfg%imin:this%cfg%imax)); myby=0.0_WP
+      ! allocate(mybz(this%cfg%imin:this%cfg%imax)); mybz=0.0_WP
       ! First pass to accumulate volume, position, and velocity
       do n=1,this%ccl%nstruct
          ! Loop over cells in structure
@@ -231,27 +232,41 @@ contains
       ! Get the structure with the largest liquid volume
       call MPI_ALLREDUCE(MPI_IN_PLACE,dvol,1*this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,xmax,1*this%ccl%nstruct,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
-      idx=maxloc(dvol); n=idx(1); this%Lb(nfile)=xmax(n) 
+      idx=maxloc(dvol); n=idx(1); this%Lb(nfile)=xmax(n); mybv=0.0_WP;myby=0.0_WP;mybz=0.0_WP
       ! Calculate x-dependent y and z bary centers
       do m=1,this%ccl%struct(n)%n_
          ! Get cell indices
          i=this%ccl%struct(n)%map(1,m); j=this%ccl%struct(n)%map(2,m); k=this%ccl%struct(n)%map(3,m)
-         ! Integrate barycenter
-         mybv(i)=mybv(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)
-         myby(i)=myby(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%ym(j)
-         mybz(i)=mybz(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%zm(k)
+         ! Integrate barycenter only for liquid core outside exit
+         if (this%cfg%xm(i).ge.0.0_WP) then
+            !mybv(i)=mybv(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)
+            !myby(i)=myby(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%ym(j)
+            !mybz(i)=mybz(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%zm(k)
+            mybv=mybv+VFtmp(i,j,k)*this%cfg%vol(i,j,k)
+            myby=myby+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%ym(j)
+            mybz=mybz+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%zm(k)
+         end if
       end do 
 
-      call MPI_ALLREDUCE(MPI_IN_PLACE,mybv,size(mybv),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-      call MPI_ALLREDUCE(MPI_IN_PLACE,myby,size(myby),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-      call MPI_ALLREDUCE(MPI_IN_PLACE,mybz,size(mybz),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+      ! call MPI_ALLREDUCE(MPI_IN_PLACE,mybv,size(mybv),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+      ! call MPI_ALLREDUCE(MPI_IN_PLACE,myby,size(myby),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+      ! call MPI_ALLREDUCE(MPI_IN_PLACE,mybz,size(mybz),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,mybv,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,myby,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,mybz,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
 
-      do i = this%cfg%imin,this%cfg%imax
-         if (mybv(i).gt.0.0_WP) then
-            this%by(i,nfile)=myby(i)/mybv(i)
-            this%bz(i,nfile)=mybz(i)/mybv(i)
-         end if
-      end do
+      if (mybv.gt.0.0_WP) then
+         this%by(nfile)=myby/mybv
+         this%bz(nfile)=mybz/mybv         
+      end if
+
+
+      ! do i = this%cfg%imin,this%cfg%imax
+      !    if (mybv(i).gt.0.0_WP) then
+      !       this%by(i,nfile)=myby(i)/mybv(i)
+      !       this%bz(i,nfile)=mybz(i)/mybv(i)
+      !    end if
+      ! end do
       contains
       
       !> Function that identifies cells that need a label
@@ -286,6 +301,14 @@ contains
          open(unit=10, file=filename, status="replace", action="write")
          do i=fstart,fend
             write(10, '(F24.16, ",", F24.16)') i*1.0_WP,this%Lb(i)
+         end do
+         close(unit=10)
+
+         filename="yzbary.csv"
+         ! Open file dynamically with append mode
+         open(unit=10, file=filename, status="replace", action="write")
+         do i=fstart,fend
+            write(10, '(F24.16, ",", F24.16,",", F24.16)') i*1.0_WP,this%by(i),this%bz(i)
          end do
          close(unit=10)
       end if
@@ -381,7 +404,7 @@ contains
          end select
    end subroutine analyze_EPL
 
-   !> Extract a pmesh skeleton of the liquid core from CCL data
+  !> Extract a pmesh skeleton of the liquid core from CCL data
    subroutine extract_InletVel(this,U,nfile)
       use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
       use parallel,  only: MPI_REAL_WP
@@ -389,20 +412,19 @@ contains
       class(postproc), intent(inout) :: this
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: U
       real(WP), dimension(:), allocatable :: Utmp
+      real(WP) :: velmesurement
       integer, intent(in) :: nfile
       integer:: i,j,k,ierr
-      real(WP) :: xloc
-      ! xloc = -0.05_W
-      ! xloc=0.001_WP!DL!-1.0_WP*0.06_WP/300.0_WP
-      xloc=0.0_WP
+      ! velmesurement=-0.0003_WP
+      velmesurement=0.0003_WP
       allocate(Utmp(this%cfg%jmin:this%cfg%jmax));Utmp=0.0_WP
       ! Loop through x domain and get x location
       do k=this%cfg%kmin_,this%cfg%kmax_
          do i=this%cfg%imin_,this%cfg%imax_
-            if (this%cfg%zm(k).ge.0.0_WP .and. this%cfg%zm(k-1).lt.0.0_WP) then
-               if (this%cfg%xm(i).ge.xloc .and. this%cfg%xm(i-1).lt.xloc) then
+            if (this%cfg%zm(k).ge.0.0_WP .and. this%cfg%zm(k-1).lt.0.0_WP ) then
+               if (this%cfg%xm(i).ge.velmesurement .and. this%cfg%xm(i-1).lt.velmesurement ) then
                   do j = this%cfg%jmin_,this%cfg%jmax_
-                     Utmp(j) = Utmp(j) + U(i,j,k)
+                     Utmp(j) = U(i,j,k)
                   end do
                end if
             end if
@@ -426,8 +448,8 @@ contains
       dg=0.01_WP
       dl=0.003_WP
       ! call this%input%read('Total flow rate (SLPM)',Qaxial)
-      ! Qaxial=150.0_WP*SLPM2SI
-      Qaxial=2.0_WP*85.7_WP*SLPM2SI
+      Qaxial=150.0_WP*SLPM2SI
+      ! Qaxial=2.0_WP*85.7_WP*SLPM2SI
       Aaxial=0.25_WP*Pi*(dg**2-dl**2)
       Uaxial=Qaxial/Aaxial 
       ! if (this%cfg%amRoot) print *, Uaxial
@@ -540,8 +562,10 @@ contains
       allocate_data: block
          allocate(this%VF(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,fstart:fend)); this%VF=0.0_WP
          allocate(this%Lb(fstart:fend));this%Lb=0.0_WP
-         allocate(this%by(this%cfg%imin:this%cfg%imax,fstart:fend)); this%by=0.0_WP
-         allocate(this%bz(this%cfg%imin:this%cfg%imax,fstart:fend)); this%bz=0.0_WP
+         ! allocate(this%by(this%cfg%imin:this%cfg%imax,fstart:fend)); this%by=0.0_WP
+         ! allocate(this%bz(this%cfg%imin:this%cfg%imax,fstart:fend)); this%bz=0.0_WP
+         allocate(this%by(fstart:fend)); this%by=0.0_WP
+         allocate(this%bz(fstart:fend)); this%bz=0.0_WP
          allocate(this%U (this%cfg%jmin:this%cfg%jmax,fstart:fend)); this%U =0.0_WP
          ! allocate(this%U (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%U=0.0_WP
          ! allocate(this%Lb(fstart:fend)); this%Lb=0.0_WP
@@ -583,17 +607,17 @@ contains
          filename='ensight/atom/VOF/VOF.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
          call log('Postprocessing file '//trim(filename)//'...')
          call this%read_ensight_scalar(filename,VFtmp)
-         call log('|----> VOF read successfully')
-         filename='ensight/atom/velocity/velocity.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
-         call this%read_ensight_vector(filename,U,V,W)
-         call log('|----> Vel read successfully')
-         call this%extract_EPL(VF=VFtmp,nfile=nfile)
-         call log('|----> EPL calculation done')
+         ! call log('|----> VOF read successfully')
+         ! filename='ensight/atom/velocity/velocity.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
+         ! call this%read_ensight_vector(filename,U,V,W)
+         ! call log('|----> Vel read successfully')
+         ! call this%extract_EPL(VF=VFtmp,nfile=nfile)
+         ! call log('|----> EPL calculation done')
          call this%extract_core(VFtmp=VFtmp,nfile=nfile)
          call log('|----> liquid core extracted')
-         call this%extract_InletVel(U=U,nfile=nfile)
-         call log('|----> Inlet Vel extracted')
-         call this%read_ensight_part(nfile=nfile)
+         ! call this%extract_InletVel(U=U,nfile=nfile)
+         ! call log('|----> Inlet Vel extracted')
+         ! call this%read_ensight_part(nfile=nfile)
       end do
       ! update_pmesh: block
       !    integer :: i
@@ -606,9 +630,9 @@ contains
       ! end block update_pmesh 
       ! call this%ens_out%write_data(this%time%t)
       
-      call this%analyze_EPL(dir=2,xconst=0.0_WP,yconst=0.0_WP)
+      ! call this%analyze_EPL(dir=2,xconst=0.0_WP,yconst=0.0_WP)
       call this%analyze_core(fstart,fend)
-      call this%analyze_InletVel()
+      ! call this%analyze_InletVel()
    end subroutine analyze
    
 

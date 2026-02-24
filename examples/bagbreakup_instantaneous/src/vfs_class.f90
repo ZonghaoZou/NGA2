@@ -3073,9 +3073,9 @@ contains
       integer :: ind,ii,jj,kk
       real(IRL_double), dimension(0:2) :: normal
       real(IRL_double), dimension(0:188) :: moments
-      integer :: direction
+      integer :: direction, direction2
       logical :: flip
-      real(IRL_double) :: m000,m100,m010,m001
+      real(IRL_double) :: m000,m100,m010,m001,tmp
       real(IRL_double), dimension(0:2) :: center
       real(IRL_double) :: initial_dist
       type(RectCub_type) :: cell
@@ -3140,11 +3140,24 @@ contains
                ! Calculate geometric center of neighborhood
                center=[m100,m010,m001]/m000
                ! Symmetry about Cartesian planes
-               call reflect_moments(moments,center,direction)
+               call reflect_moments(moments,center,direction,direction2)
                ! Get PLIC normal vector from neural network
                call get_normal(moments,normal)
                normal=normalize(normal)
                ! Rotate normal vector to original octant
+               if (direction2.eq.1) then
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               else if (direction2.eq.2) then
+                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
+               else if (direction2.eq.3) then
+                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
+               else if (direction2.eq.4) then
+                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               else if (direction2.eq.5) then
+                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               end if
                if (direction.eq.1) then
                   normal(0)=-normal(0)
                else if (direction.eq.2) then
@@ -3206,8 +3219,8 @@ contains
       real(WP), dimension(:), allocatable :: norm_pos_loc,norm_neg_loc
       integer :: n,nn,size_adj,size_loc
       
-      ! real(WP), dimension(:,:,:), allocatable :: norm_pos
-      ! real(WP), dimension(:,:,:), allocatable :: norm_neg
+      real(WP), dimension(:,:,:), allocatable :: norm_pos
+      real(WP), dimension(:,:,:), allocatable :: norm_neg
       
       real(IRL_double), dimension(3) :: initial_norm
       real(IRL_double) :: initial_dist
@@ -3215,9 +3228,9 @@ contains
 
       real(IRL_double), dimension(0:2) :: normal
       real(IRL_double), dimension(0:188) :: moments
-      integer :: direction
+      integer :: direction, direction2
       logical :: flip
-      real(IRL_double) :: m000,m100,m010,m001
+      real(IRL_double) :: m000,m100,m010,m001,tmp_norm
       real(IRL_double), dimension(0:2) :: center
       type(RectCub_type) :: cell
       
@@ -3232,13 +3245,9 @@ contains
          call new(separated_volume_moments(i))
       end do
       
-
-
       ! Zonghao's colinearity metric
-      ! allocate(norm_pos(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); norm_pos=0.0_WP
-      ! allocate(norm_neg(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); norm_neg=0.0_WP
-      this%norm_pos=0.0_WP
-      this%norm_neg=0.0_WP
+      allocate(norm_pos(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); norm_pos=0.0_WP
+      allocate(norm_neg(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); norm_neg=0.0_WP
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
@@ -3284,15 +3293,15 @@ contains
                      surf_dot_pos_sum=surf_dot_pos_sum+norm_pos_loc(n)*area_adj(n)
                      surf_dot_neg_sum=surf_dot_neg_sum+norm_neg_loc(n)*area_adj(n)
                   end do
-                  this%norm_pos(i,j,k)=surf_dot_pos_sum/surface_area
-                  this%norm_neg(i,j,k)=surf_dot_neg_sum/surface_area
+                  norm_pos(i,j,k)=surf_dot_pos_sum/surface_area
+                  norm_neg(i,j,k)=surf_dot_neg_sum/surface_area
                end if
                ! Deallocate
                deallocate(normals_adj,area_adj,norm_pos_loc,norm_neg_loc)
             end do
          end do
       end do
-      call this%cfg%sync(this%norm_pos);call this%cfg%sync(this%norm_neg)
+      call this%cfg%sync(norm_pos);call this%cfg%sync(norm_neg)
       ! Filter metric
       allocate(tmp (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); tmp =0.0_WP
       allocate(tmp1(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); tmp1=0.0_WP
@@ -3306,8 +3315,8 @@ contains
                surface_area=0.0_WP
                do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
                   surface_area=surface_area+this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)
-                  tmp(i,j,k)  =tmp(i,j,k)  +this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)*this%norm_pos(ii,jj,kk)
-                  tmp1(i,j,k) =tmp1(i,j,k) +this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)*this%norm_neg(ii,jj,kk)
+                  tmp(i,j,k)  =tmp(i,j,k)  +this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)*norm_pos(ii,jj,kk)
+                  tmp1(i,j,k) =tmp1(i,j,k) +this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)*norm_neg(ii,jj,kk)
                end do; end do; end do
                if (surface_area.gt.0.0_WP) then
                   tmp(i,j,k) =tmp(i,j,k) /surface_area
@@ -3316,7 +3325,7 @@ contains
             end do
          end do
       end do
-      call this%cfg%sync(tmp); call this%cfg%sync(tmp1); this%norm_pos=tmp; this%norm_neg=tmp1; deallocate(tmp,tmp1)
+      call this%cfg%sync(tmp); call this%cfg%sync(tmp1); norm_pos=tmp; norm_neg=tmp1; deallocate(tmp,tmp1)
       
       ! Traverse domain and reconstruct interface
       do k=this%cfg%kmin_,this%cfg%kmax_; do j=this%cfg%jmin_,this%cfg%jmax_; do i=this%cfg%imin_,this%cfg%imax_
@@ -3332,7 +3341,7 @@ contains
          end if
          
          ! If the neighborhood normals are sufficiently consistent, just use PLICNET
-         if ((this%norm_pos(i,j,k)-this%norm_neg(i,j,k)).ge.0.5_WP.or.(((this%norm_pos(i,j,k)-this%norm_neg(i,j,k)).lt.0.5_WP).and.(this%norm_pos(i,j,k)+this%norm_neg(i,j,k).lt.0.75_WP))) then
+         if ((norm_pos(i,j,k)-norm_neg(i,j,k)).ge.0.5_WP.or.(((norm_pos(i,j,k)-norm_neg(i,j,k)).lt.0.5_WP).and.(norm_pos(i,j,k)+norm_neg(i,j,k).lt.0.75_WP))) then
             ! PLICNET
             ! Liquid-gas symmetry
             flip=.false.; if (this%VF(i,j,k).ge.0.5_WP) flip=.true.
@@ -3372,10 +3381,23 @@ contains
             ! Calculate geometric center of neighborhood
             center=[m100,m010,m001]/m000
             ! Symmetry about Cartesian planes
-            call reflect_moments(moments,center,direction)
+            call reflect_moments(moments,center,direction,direction2)
             ! Get PLIC normal vector from neural network
             call get_normal(moments,normal); normal=normalize(normal)
             ! Rotate normal vector to original octant
+            if (direction2.eq.1) then
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            else if (direction2.eq.2) then
+               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
+            else if (direction2.eq.3) then
+               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
+            else if (direction2.eq.4) then
+               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            else if (direction2.eq.5) then
+               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            end if
             if (direction.eq.1) then
                normal(0)=-normal(0)
             else if (direction.eq.2) then
@@ -3456,10 +3478,9 @@ contains
       call this%sync_interface()
       
       ! Deallocate metric
-      ! deallocate(norm_pos,norm_neg)
+      deallocate(norm_pos,norm_neg)
       
    end subroutine build_r2pnet
-
    
    !> Set all domain boundaries to full liquid/gas based on VOF value
    subroutine set_full_bcond(this)

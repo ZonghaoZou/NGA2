@@ -83,12 +83,12 @@ contains
          ! Create a VOF solver
          call vf%initialize(cfg=cfg,reconstruction_method=plicnet,transport_method=flux,name='VOF')
          call param_read('H',H)
-         ! call vf%add_bcond(name='xm',type=neumann,locator=xm_locator_sc,dir='-x')
-         ! call vf%add_bcond(name='xp',type=neumann,locator=xp_locator   ,dir='+x')
-         ! call vf%add_bcond(name='ym',type=neumann,locator=ym_locator_sc,dir='-y')
-         ! call vf%add_bcond(name='yp',type=neumann,locator=yp_locator   ,dir='+y')
-         ! call vf%add_bcond(name='zm',type=neumann,locator=zm_locator_sc,dir='-z')
-         ! call vf%add_bcond(name='zp',type=neumann,locator=zp_locator   ,dir='+z')
+         call vf%add_bcond(name='xm',type=neumann,locator=xm_locator_sc,dir='-x')
+         call vf%add_bcond(name='xp',type=neumann,locator=xp_locator   ,dir='+x')
+         call vf%add_bcond(name='ym',type=neumann,locator=ym_locator_sc,dir='-y')
+         call vf%add_bcond(name='yp',type=neumann,locator=yp_locator   ,dir='+y')
+         call vf%add_bcond(name='zm',type=neumann,locator=zm_locator_sc,dir='-z')
+         call vf%add_bcond(name='zp',type=neumann,locator=zp_locator   ,dir='+z')
 
          do k=vf%cfg%kmino_,vf%cfg%kmaxo_
             do j=vf%cfg%jmino_,vf%cfg%jmaxo_
@@ -133,7 +133,7 @@ contains
          ! Reset moments to guarantee compatibility with interface reconstruction
          call vf%reset_volume_moments()
          ! Apply boundary conditions
-         ! call vf%apply_bcond(time%t,time%dt)
+         call vf%apply_bcond(time%t,time%dt)
       end block create_and_initialize_vof
       
       
@@ -421,7 +421,7 @@ contains
             else
                call vf%advance_tmp(dt=time%dt,U=fs%Umid,V=fs%Vmid,W=fs%Wmid)
             end if
-            ! call vf%apply_bcond(time%t,time%dt)
+            call vf%apply_bcond(time%t,time%dt)
             
             ! Update sqrt(face density) and momentum vector
             resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
@@ -551,9 +551,9 @@ contains
                end do
             end do
          end do
-         call fs%cfg%integrate_without_VF(Utmp,integral=rhoUInt)
-         call fs%cfg%integrate_without_VF(Vtmp,integral=rhoVInt)
-         call fs%cfg%integrate_without_VF(Wtmp,integral=rhoWInt)
+         call fs%cfg%integrate(Utmp,integral=rhoUInt)
+         call fs%cfg%integrate(Vtmp,integral=rhoVInt)
+         call fs%cfg%integrate(Wtmp,integral=rhoWInt)
       end block calculate_momentumconservation 
 
       ! Get staggered liquid face density

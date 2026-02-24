@@ -152,7 +152,6 @@ contains
          fs%U=0.0_WP;fs%V=0.0_WP;fs%W=0.0_WP
          fs%Uf=0.0_WP;fs%Vf=0.0_WP;fs%Wf=0.0_WP
          ! Calculate cell-centered velocities and divergence
-         call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
          fs%rho=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_faceRHO(vf=vf,rho=fs%rho)
       end block create_flow_solver
@@ -278,7 +277,7 @@ contains
          fs%rhoW=fs%rho_l*vf%UFl(3,:,:,:)+fs%rho_g*vf%UFg(3,:,:,:)
          
          ! Prepare new staggered viscosity (at n+1)
-         call fs%get_viscosity(vf=vf)
+         call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
          
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
@@ -293,7 +292,7 @@ contains
             
             ! Add momentum source terms
             call fs%addsrc_gravity(resU,resV,resW)
-            
+
             ! Assemble explicit residual
             resU=-2.0_WP*fs%rho*fs%U+(fs%rho+fs%rhoold)*fs%Uold+time%dt*resU
             resV=-2.0_WP*fs%rho*fs%V+(fs%rho+fs%rhoold)*fs%Vold+time%dt*resV
@@ -303,19 +302,20 @@ contains
             call fs%solve_implicit(vf,time%dt,resU,resV,resW)
 
             ! Compute predictor U
-            fs%U=2.0_WP*fs%U-fs%Uold+resU
-            fs%V=2.0_WP*fs%V-fs%Vold+resV
-            fs%W=2.0_WP*fs%W-fs%Wold+resW
+            fs%U=2.0_WP*fs%U-fs%Uold+resU;call cfg%sync(fs%U)
+            fs%V=2.0_WP*fs%V-fs%Vold+resV;call cfg%sync(fs%V)
+            fs%W=2.0_WP*fs%W-fs%Wold+resW;call cfg%sync(fs%W)
 
-            ! Update viscosity explictly
-            call fs%viscosity_explict(vf,time%dt)
+            ! ! Update viscosity explictly
+            ! call fs%viscosity_gravity_explict(vf,time%dt)
 
-            ! Sync and apply boundary conditions
-            call fs%apply_bcond(time%t,time%dt)
             ! Solve Poisson equation
             call fs%update_laplacian()
-            call fs%correct_mfr()
             call fs%update_faceU(vf,fs%U,fs%V,fs%W,fs%Uf,fs%Vf,fs%Wf)
+            call fs%update_pgrad_all(vf,time%dt)
+            
+            call fs%apply_bcond(time%dt,'face')
+            call fs%correct_mfr()
             call fs%get_div()
             call fs%add_surface_tension_jump(dt=time%dt,div=fs%div,vf=vf)
             fs%psolv%rhs=-fs%cfg%vol*fs%div/time%dt
@@ -324,24 +324,21 @@ contains
             call fs%shift_p(fs%psolv%sol)
             ! Corrector step
             call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
-            fs%P=fs%psolv%sol
-            ! fs%P=fs%P+fs%psolv%sol
+            fs%P=fs%P+fs%psolv%sol
             fs%Uf=fs%Uf-time%dt*resU/fs%RHOX
             fs%Vf=fs%Vf-time%dt*resV/fs%RHOY
             fs%Wf=fs%Wf-time%dt*resW/fs%RHOZ
 
-            call fs%get_pgrad_cellcenter(vf,fs%psolv%sol,resU,resV,resW)
-            call fs%get_STjump_cellcenter(vf,resU,resV,resW,2)
-            fs%U=fs%U-time%dt*resU/fs%rho
-            fs%V=fs%V-time%dt*resV/fs%rho
-            fs%W=fs%W-time%dt*resW/fs%rho
-
+            call fs%get_cell_pgrad(vf,fs%psolv%sol,resU,resV,resW,.true.)
+            fs%U=fs%U-time%dt*resU/fs%rho; call cfg%sync(fs%U)
+            fs%V=fs%V-time%dt*resV/fs%rho; call cfg%sync(fs%V)
+            fs%W=fs%W-time%dt*resW/fs%rho; call cfg%sync(fs%W)
+            call fs%apply_bcond(time%dt,'cell')
             ! Increment sub-iteration counter =================================
             time%it=time%it+1
          end do
          
          ! Recompute interpolated velocity and divergence
-         call fs%interp_vel(Ui,Vi,Wi)  
          call fs%get_div()
 
          if (time%done()) call get_Ca()         

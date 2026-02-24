@@ -710,6 +710,11 @@ subroutine transfer_films(this,lp_spray)
          dropcounter=0
          do while (.true.)
             if (.not.sampled) then
+               ! if (this%vf%thickness(i,j,k).le.this%fthld) then
+               !    call bag_droplet_gamma(this%fmin,2.0_WP/fcurv(n))
+               ! else
+               !    call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP/fcurv(n))
+               ! end if
                call bag_droplet_gamma(this%vf%thickness(i,j,k),2.0_WP/fcurv(n))
                Vd = pi/6.0_WP*(max(min(random_gamma(alpha)*beta*this%fd0,2.0_WP*this%frp),this%minfdrop))**3
                sampled = .true.
@@ -905,27 +910,41 @@ subroutine transfer_films(this,lp_spray)
          real(WP), intent(in) :: h,R
          real(WP) :: Utc,ac,b,dr,ds,Oh
          real(WP) :: mean, stdev
-         ! Force h to be hmin for thinner regions
-         if (h.le.this%fthld) h=this%fmin
-         ! Retraction speed
-         Utc=sqrt(2.0_WP*this%fs%sigma/this%fs%rho_l/h)
-         ! Centripetal acceleration
-         ac=Utc**2/R
-         ! Rim diameter
-         b=sqrt(this%fs%sigma/this%fs%rho_l/ac)
-         ! RP droplet diameter
-         this%frp=1.508_WP*b
-         ! Rim Ohnesorge number
-         Oh=this%fs%visc_l/sqrt(this%fs%rho_l*b*this%fs%sigma)
-         ! Satellite droplet diameter
-         ds=this%frp/sqrt(2.0_WP+3.0_WP*Oh/sqrt(2.0_WP))
-         ! Mean and standard deviation of diameter of all modes, normalized by drop diameter
-         mean=0.25_WP*(h+b+this%frp+ds)/this%fd0
-         stdev=sqrt(0.25_WP*sum(([h,b,this%frp,ds]/this%fd0-mean)**2))
-         ! Gamma distribution parameters
-         alpha=(mean/stdev)**2
-         beta=stdev**2/mean
-         
+         real(WP) :: mult_fact,h_use
+         if (h.le.this%fthld) then
+            mult_fact=2.0_WP
+            if (h.le.this%fmin) then
+               h_use=this%fmin
+            else
+               h_use=h
+            end if
+            mean=mult_fact*(this%fmin+h_use+this%fthld)/(3.0_WP*this%fd0)
+            stdev=sqrt(sum((mult_fact*[this%fmin,h_use,this%fthld]/this%fd0-mean)**2)/(3.0_WP))
+            ! Gamma distribution parameters
+            alpha=(mean/stdev)**2
+            beta=stdev**2/mean
+            ! Effectively remove upperbound
+            this%frp=100.0_WP*this%fmin
+         else
+            ! Retraction speed
+            Utc=sqrt(2.0_WP*this%fs%sigma/this%fs%rho_l/h)
+            ! Centripetal acceleration
+            ac=Utc**2/R
+            ! Rim diameter
+            b=sqrt(this%fs%sigma/this%fs%rho_l/ac)
+            ! RP droplet diameter
+            this%frp=1.508_WP*b
+            ! Rim Ohnesorge number
+            Oh=this%fs%visc_l/sqrt(this%fs%rho_l*b*this%fs%sigma*0.5_WP)
+            ! Satellite droplet diameter
+            ds=this%frp/sqrt(2.0_WP+3.0_WP*Oh/sqrt(2.0_WP))
+            ! Mean and standard deviation of diameter of all modes, normalized by drop diameter
+            mean=0.25_WP*(h+b+this%frp+ds)/this%fd0
+            stdev=sqrt(0.25_WP*sum(([h,b,this%frp,ds]/this%fd0-mean)**2))
+            ! Gamma distribution parameters
+            alpha=(mean/stdev)**2
+            beta=stdev**2/mean
+         end if
       end subroutine bag_droplet_gamma
    
       !> Function that identifies cells that need a label
@@ -971,12 +990,12 @@ subroutine transfer_ligs(this,lp_spray)
    real(WP), dimension(:)    , allocatable :: lSR
    real(WP), dimension(:)    , allocatable :: xmin,xmax,ymin,ymax,zmin,zmax
    integer :: n,m,ierr,i,j,k,l,ii,jj,kk,iunit,totalnewp,np_old,count,ip,rank
-   real(WP) :: x,y,z,x0,y0,z0,lmax,lmid,lmin,Oh
+   real(WP) :: x,y,z,x0,y0,z0,lmax,lmid,lmin
    character(len=str_medium) :: filename
    integer, dimension(:), allocatable ::  plist,dispels
    real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
    real(WP) :: Vt,Vl,Vd,minor_radius,diam,Vrim,Lrim
-   real(WP) :: Trp,Lrp,Tsr,SR_tmp
+   real(WP) :: Trp,Lrp,Tsr,SR_tmp,Oh,b
    real(WP), dimension(1:3) :: tangent
    real(WP), dimension(:,:,:,:), allocatable :: SR
    integer  :: nmain,nsat
@@ -1171,6 +1190,8 @@ subroutine transfer_ligs(this,lp_spray)
       if (this%vf%cfg%amRoot) print *, "This is the min_thickness", lthc(n), ",lig percentage:", lper(n),"max length:",llen(n),&
       & "how many cells",lnum(n), "vol:",lvol(n),"nmain", nmain, "Trp:", Trp, "Tsr:", Tsr, "Trp/Tsr", Trp/Tsr,"and id:", n,'End of domain:',lrem_active
       
+      Oh=this%fs%visc_l/sqrt(this%fs%rho_l*minor_radius*this%fs%sigma)
+      this%size_ratio=1.0_WP/sqrt(2.0_WP+3.0_WP*Oh/sqrt(2.0_WP))
       nsat=nmain+1
       diam=(6.0_WP*Vrim/pi/(real(nmain,WP)+this%size_ratio**3*real(nsat,WP)))**(1.0_WP/3.0_WP)
 
@@ -1667,7 +1688,7 @@ end subroutine transfer_ligs
          call this%fs%add_bcond(name='bc_zm',type=slip,face='z',dir=-1,canCorrect=.true.,locator=zm_locator)
          ! Configure pressure solver
          this%ps=hypre_str(cfg=this%cfg,name='Pressure',method=pcg_pfmg2,nst=7)
-         this%ps%maxlevel=16
+         this%ps%maxlevel=24
          call this%input%read('Pressure iteration',this%ps%maxit)
          call this%input%read('Pressure tolerance',this%ps%rcvg)
          ! Configure implicit velocity solver
@@ -1775,7 +1796,7 @@ end subroutine transfer_ligs
             this%fd0 =dl     ! Take the baseline diamter as the liquid core diameter 
             this%fbvol2dvol=0.25_WP ! The ratio of bag volume to the total volume
             this%fmin=2.3e-6 ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
-            this%fthld=12.5_WP*this%fmin ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
+            this%fthld=10.0_WP*this%fmin ! Emperical minimum bag thickness from Jackiw and Ashgriz 2022
             this%minfdrop=0.1e-6
             this%maxdpcell=50000
             this%fnumcell=20.0_WP

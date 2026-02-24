@@ -636,7 +636,8 @@ contains
            logical function make_label(i,j,k)
            implicit none
            integer, intent(in) :: i,j,k
-           if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).ge.0.925_WP)) then
+         !   if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.((this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)).lt.0.5_WP).and.((this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)).ge.0.925_WP)) then
+           if ((this%vf%VF(i,j,k).gt.VFlo).and.(this%vf%VF(i,j,k).lt.VFhi).and.this%vf%thin_sensor(i,j,k).eq.1.0_WP)then
                make_label=.true.
            else
                make_label=.false.
@@ -1058,7 +1059,7 @@ contains
             z(k)=real(k-1,WP)/real(nz,WP)*Lz-0.5_WP*Lz
          end do
          ! General serial grid object
-         grid=sgrid(coord=cartesian,no=3,x=x,y=y,z=z,xper=.false.,yper=.true.,zper=.true.,name='Ligament')
+         grid=sgrid(coord=cartesian,no=3,x=x,y=y,z=z,xper=.false.,yper=.false.,zper=.false.,name='Ligament')
          ! Read in partition
          call this%input%read('Partition',partition)
          ! Create partitioned grid without walls
@@ -1175,6 +1176,14 @@ contains
          call this%fs%add_bcond(name='inflow',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=xm_locator)
          ! Define outflow boundary condition on the right
          call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.true.,locator=xp_locator)
+         ! Define outflow boundary condition on the Top
+         call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='y',dir=+1,canCorrect=.true.,locator=yp_locator)
+         ! Define outflow boundary condition on the Bot
+         call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='y',dir=-1,canCorrect=.true.,locator=ym_locator)
+         ! Define outflow boundary condition on the Front
+         call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
+         ! Define outflow boundary condition on the Back 
+         call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='z',dir=-1,canCorrect=.true.,locator=zm_locator)
          ! Configure pressure solver
          this%ps=hypre_str(cfg=this%cfg,name='Pressure',method=pcg_pfmg2,nst=7)
          this%ps%maxlevel=16
@@ -1383,15 +1392,16 @@ contains
       create_smesh: block
          use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
          integer :: i,j,k,np,nplane
-         this%smesh=surfmesh(nvar=8,name='plic')
+         ! this%smesh=surfmesh(nvar=8,name='plic')
+         this%smesh=surfmesh(nvar=3,name='plic')
          this%smesh%varname(1)='nplane'
          this%smesh%varname(2)='thickness'
          this%smesh%varname(3)='ccl_film'
-         this%smesh%varname(4)='norm_abs'
-         this%smesh%varname(5)='norm_sig'
-         this%smesh%varname(6)='ccl_lig'
-         this%smesh%varname(7)='thickness_unfilt'
-         this%smesh%varname(8)='struct_type'
+         ! this%smesh%varname(4)='norm_abs'
+         ! this%smesh%varname(5)='norm_sig'
+         ! this%smesh%varname(6)='ccl_lig'
+         ! this%smesh%varname(7)='thickness_unfilt'
+         ! this%smesh%varname(8)='struct_type'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh(this%smesh)
          ! Calculate thickness
@@ -1408,11 +1418,11 @@ contains
                         np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
                         this%smesh%var(2,np)=this%vf%thickness(i,j,k)
                         this%smesh%var(3,np)=real(this%ccl_film%id(i,j,k),WP)
-                        this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
-                        this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
-                        this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
-                        this%smesh%var(7,np)=this%thickness(i,j,k)
-                        this%smesh%var(8,np)=this%struct_type(i,j,k)
+                        ! this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
+                        ! this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
+                        ! this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
+                        ! this%smesh%var(7,np)=this%thickness(i,j,k)
+                        ! this%smesh%var(8,np)=this%struct_type(i,j,k)
                      end if
                   end do
                end do
@@ -1575,6 +1585,52 @@ contains
          if (i.eq.pg%imax+1) isIn=.true.
       end function xp_locator
       
+       !> Function that localizes the top (y+) of the domain
+      function yp_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         implicit none
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (j.eq.pg%jmax+1) isIn=.true.
+      end function yp_locator
+      
+      
+      !> Function that localizes the bottom (y-) of the domain
+      function ym_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         implicit none
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (j.eq.pg%jmin) isIn=.true.
+      end function ym_locator
+      
+      
+      !> Function that localizes the top (z+) of the domain
+      function zp_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         implicit none
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (k.eq.pg%kmax+1) isIn=.true.
+      end function zp_locator
+      
+      
+      !> Function that localizes the bottom (z-) of the domain
+      function zm_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         implicit none
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (k.eq.pg%kmin) isIn=.true.
+      end function zm_locator
       
       !> Function that localizes region of VOF removal
       function vof_removal_layer_locator(pg,i,j,k) result(isIn)
@@ -1593,7 +1649,7 @@ contains
          real(WP), dimension(3),intent(in) :: xyz
          real(WP), intent(in) :: t
          real(WP) :: G
-         G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2+xyz(3)**2)
+         G=0.5_WP-sqrt((xyz(1)+1.0_WP)**2+xyz(2)**2+xyz(3)**2)
       end function levelset_droplet
       
       
@@ -1733,13 +1789,13 @@ contains
          this%lp%np_new=0
          this%lp%vp_new=0.0_WP
          call this%ttrans%start() ! Start transfer timer
-         if (this%use_drop_transfer) call this%transfer_drops()
+         ! if (this%use_drop_transfer) call this%transfer_drops()
          call this%ttrans%stop() ! Stop transfer timer
          call this%tftrans%start() ! Start burst timer
-         if (this%use_film_transfer) call this%transfer_films()
+         ! if (this%use_film_transfer) call this%transfer_films()
          call this%tftrans%stop() ! Stop burst timer
          call this%tltrans%start() ! Start burst timer
-         if (this%use_lig_transfer) call this%transfer_ligs()
+         ! if (this%use_lig_transfer) call this%transfer_ligs()
          call this%tltrans%stop() ! Stop burst timer
       end block attempt_transfer
       ! Remove VOF at edge of domain
@@ -1778,11 +1834,11 @@ contains
                            np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
                            this%smesh%var(2,np)=this%vf%thickness(i,j,k)
                            this%smesh%var(3,np)=real(this%ccl_film%id(i,j,k),WP)
-                           this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
-                           this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
-                           this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
-                           this%smesh%var(7,np)=this%thickness(i,j,k)
-                           this%smesh%var(8,np)=this%struct_type(i,j,k)
+                           ! this%smesh%var(5,np)=this%vf%norm_pos(i,j,k)-this%vf%norm_neg(i,j,k)
+                           ! this%smesh%var(4,np)=this%vf%norm_pos(i,j,k)+this%vf%norm_neg(i,j,k)
+                           ! this%smesh%var(6,np)=real(this%ccl_lig%id(i,j,k),WP)
+                           ! this%smesh%var(7,np)=this%thickness(i,j,k)
+                           ! this%smesh%var(8,np)=this%struct_type(i,j,k)
                         end if
                      end do
                   end do

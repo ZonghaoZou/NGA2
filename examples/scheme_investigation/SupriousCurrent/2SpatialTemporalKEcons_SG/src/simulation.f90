@@ -287,7 +287,7 @@ contains
          fs%rhoW=fs%rho_l*vf%UFl(3,:,:,:)+fs%rho_g*vf%UFg(3,:,:,:)
          
          ! Prepare new staggered viscosity (at n+1)
-         call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
+         ! call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
 
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)

@@ -765,14 +765,15 @@ contains
    
    
    !> Enforce boundary condition
-   subroutine apply_bcond(this,dt)
+   subroutine apply_bcond(this,t,dt)
       use messager, only: die
       use mpi_f08,  only: MPI_MAX
       use parallel, only: MPI_REAL_WP
       implicit none
       class(vfs), intent(inout) :: this
-      real(WP), intent(in) :: dt
-      integer :: i,j,k,n
+      real(WP), intent(in) :: t,dt
+      integer :: i,j,k,n,ii,jj,kk
+      real(WP) :: wall_pos
       type(bcond), pointer :: my_bc
       
       ! Traverse bcond list
@@ -790,12 +791,32 @@ contains
                ! This is done by the user directly
                ! Unclear whether we want to do this within the solver...
                
-            case (neumann)             ! Apply Neumann condition
+            case (neumann)             ! Apply Neumann condition with barycenter mirroring
                
                ! Implement based on bcond direction
                do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
-                  this%VF(i,j,k)=this%VF(i-shift(1,my_bc%dir),j-shift(2,my_bc%dir),k-shift(3,my_bc%dir))
+                  ! Interior cell indices
+                  ii=i-shift(1,my_bc%dir); jj=j-shift(2,my_bc%dir); kk=k-shift(3,my_bc%dir)
+                  ! Copy VF (zero-gradient Neumann)
+                  this%VF(i,j,k)=this%VF(ii,jj,kk)
+                  ! Copy barycenters from interior (tangential components stay, normal gets mirrored)
+                  this%Lbary(:,i,j,k)=this%Lbary(:,ii,jj,kk)
+                  this%Gbary(:,i,j,k)=this%Gbary(:,ii,jj,kk)
+                  ! Mirror the wall-normal component of barycenters
+                  if (shift(1,my_bc%dir).ne.0) then
+                     wall_pos=this%cfg%x(max(i,ii))
+                     this%Lbary(1,i,j,k)=2.0_WP*wall_pos-this%Lbary(1,ii,jj,kk)
+                     this%Gbary(1,i,j,k)=2.0_WP*wall_pos-this%Gbary(1,ii,jj,kk)
+                  else if (shift(2,my_bc%dir).ne.0) then
+                     wall_pos=this%cfg%y(max(j,jj))
+                     this%Lbary(2,i,j,k)=2.0_WP*wall_pos-this%Lbary(2,ii,jj,kk)
+                     this%Gbary(2,i,j,k)=2.0_WP*wall_pos-this%Gbary(2,ii,jj,kk)
+                  else if (shift(3,my_bc%dir).ne.0) then
+                     wall_pos=this%cfg%z(max(k,kk))
+                     this%Lbary(3,i,j,k)=2.0_WP*wall_pos-this%Lbary(3,ii,jj,kk)
+                     this%Gbary(3,i,j,k)=2.0_WP*wall_pos-this%Gbary(3,ii,jj,kk)
+                  end if
                end do
                
             case default
@@ -805,8 +826,10 @@ contains
          end if
          
          ! Sync full fields after each bcond - this should be optimized
-         
          call this%cfg%sync(this%VF)
+         call this%cfg%sync(this%Lbary)
+         call this%cfg%sync(this%Gbary)
+         
          ! Move on to the next bcond
          my_bc=>my_bc%next
          
@@ -3430,6 +3453,7 @@ contains
 
 
    !> Machine learning reconstruction of a planar interface in mixed cells
+   !> Machine learning reconstruction of a planar interface in mixed cells
    subroutine build_plicnet(this)
       use mathtools, only: normalize
       use plicnet,   only: get_normal,reflect_moments
@@ -3511,19 +3535,6 @@ contains
                call get_normal(moments,normal)
                normal=normalize(normal)
                ! Rotate normal vector to original octant
-               if (direction2.eq.1) then
-                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
-               else if (direction2.eq.2) then
-                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
-               else if (direction2.eq.3) then
-                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
-               else if (direction2.eq.4) then
-                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
-                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
-               else if (direction2.eq.5) then
-                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
-                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
-               end if
                if (direction.eq.1) then
                   normal(0)=-normal(0)
                else if (direction.eq.2) then
@@ -3543,6 +3554,20 @@ contains
                   normal(0)=-normal(0)
                   normal(1)=-normal(1)
                   normal(2)=-normal(2)
+               end if
+               ! Undo direction2 rotation (Cartesian plane swaps)
+               if (direction2.eq.1) then
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               else if (direction2.eq.2) then
+                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
+               else if (direction2.eq.3) then
+                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
+               else if (direction2.eq.4) then
+                  tmp=normal(1); normal(1)=normal(2); normal(2)=tmp
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
+               else if (direction2.eq.5) then
+                  tmp=normal(0); normal(0)=normal(2); normal(2)=tmp
+                  tmp=normal(0); normal(0)=normal(1); normal(1)=tmp
                end if
                if (.not.flip) then
                   normal(0)=-normal(0)
@@ -3751,19 +3776,6 @@ contains
             ! Get PLIC normal vector from neural network
             call get_normal(moments,normal); normal=normalize(normal)
             ! Rotate normal vector to original octant
-            if (direction2.eq.1) then
-               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
-            else if (direction2.eq.2) then
-               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
-            else if (direction2.eq.3) then
-               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
-            else if (direction2.eq.4) then
-               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
-               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
-            else if (direction2.eq.5) then
-               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
-               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
-            end if
             if (direction.eq.1) then
                normal(0)=-normal(0)
             else if (direction.eq.2) then
@@ -3783,6 +3795,20 @@ contains
                normal(0)=-normal(0)
                normal(1)=-normal(1)
                normal(2)=-normal(2)
+            end if
+            ! Undo direction2 rotation (Cartesian plane swaps)
+            if (direction2.eq.1) then
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            else if (direction2.eq.2) then
+               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
+            else if (direction2.eq.3) then
+               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
+            else if (direction2.eq.4) then
+               tmp_norm=normal(1); normal(1)=normal(2); normal(2)=tmp_norm
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
+            else if (direction2.eq.5) then
+               tmp_norm=normal(0); normal(0)=normal(2); normal(2)=tmp_norm
+               tmp_norm=normal(0); normal(0)=normal(1); normal(1)=tmp_norm
             end if
             if (.not.flip) then
                normal(0)=-normal(0)
@@ -3847,6 +3873,7 @@ contains
       deallocate(norm_pos,norm_neg)
       
    end subroutine build_r2pnet
+
 
    
    !> Set all domain boundaries to full liquid/gas based on VOF value

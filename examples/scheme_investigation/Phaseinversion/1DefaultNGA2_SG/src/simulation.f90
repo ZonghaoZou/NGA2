@@ -81,12 +81,12 @@ contains
          ! Create a VOF solver
          call vf%initialize(cfg=cfg,reconstruction_method=plicnet,transport_method=flux,name='VOF')
          call param_read('H',H)
-         ! call vf%add_bcond(name='xm',type=neumann,locator=xm_locator_sc,dir='-x')
-         ! call vf%add_bcond(name='xp',type=neumann,locator=xp_locator   ,dir='+x')
-         ! call vf%add_bcond(name='ym',type=neumann,locator=ym_locator_sc,dir='-y')
-         ! call vf%add_bcond(name='yp',type=neumann,locator=yp_locator   ,dir='+y')
-         ! call vf%add_bcond(name='zm',type=neumann,locator=zm_locator_sc,dir='-z')
-         ! call vf%add_bcond(name='zp',type=neumann,locator=zp_locator   ,dir='+z')
+         call vf%add_bcond(name='xm',type=neumann,locator=xm_locator_sc,dir='-x')
+         call vf%add_bcond(name='xp',type=neumann,locator=xp_locator   ,dir='+x')
+         call vf%add_bcond(name='ym',type=neumann,locator=ym_locator_sc,dir='-y')
+         call vf%add_bcond(name='yp',type=neumann,locator=yp_locator   ,dir='+y')
+         call vf%add_bcond(name='zm',type=neumann,locator=zm_locator_sc,dir='-z')
+         call vf%add_bcond(name='zp',type=neumann,locator=zp_locator   ,dir='+z')
 
          do k=vf%cfg%kmino_,vf%cfg%kmaxo_
             do j=vf%cfg%jmino_,vf%cfg%jmaxo_
@@ -131,7 +131,7 @@ contains
          ! Reset moments to guarantee compatibility with interface reconstruction
          call vf%reset_volume_moments()
          ! Apply boundary conditions
-         ! call vf%apply_bcond(time%t,time%dt)
+         call vf%apply_bcond(time%t,time%dt)
       end block create_and_initialize_vof
       
       
@@ -401,7 +401,7 @@ contains
          ! VOF solver step
          call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)
       
-         ! call vf%apply_bcond(time%t,time%dt)
+         call vf%apply_bcond(time%t,time%dt)
          
          ! Prepare new staggered viscosity (at n+1)
          call fs%get_viscosity(vf=vf,strat=harmonic_visc)

@@ -244,7 +244,7 @@ module simulation
     
     !> Perform an NGA2 simulation - this mimicks NGA's old time integration for multiphase
     subroutine simulation_run
-       use tpns_class, only: static_contact,harmonic_visc
+       use tpns_class, only: static_contact,arithmetic_visc
        implicit none
        
        ! Perform time integration
@@ -275,7 +275,7 @@ module simulation
           fs%rho=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF)
           
           ! Prepare new staggered viscosity (at n+1)
-          call fs%get_viscosity(vf=vf,strat=harmonic_visc)
+          call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
           
           ! Perform sub-iterations
           do while (time%it.le.time%itmax)
