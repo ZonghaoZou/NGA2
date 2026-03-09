@@ -2,14 +2,11 @@
 !> Registration-based: solvers/users register fields, write all at once
 !> Read piecemeal: read header first, then individual fields
 module amrio_class
-   use precision,      only: WP
-   use string,         only: str_medium
-   use iso_c_binding,  only: c_ptr,c_char,c_int,c_null_char
-   use amrgrid_class,  only: amrgrid
-   use amrdata_class,  only: amrdata
-   use amrex_interface, only: amrmfab_vismf_write,amrmfab_vismf_read, &
-      amrcheckpoint_prebuild_dirs,amrcheckpoint_mfab_prefix
-   use amrex_amr_module, only: amrex_boxarray,amrex_box
+   use precision,        only: WP
+   use string,           only: str_medium
+   use amrgrid_class,    only: amrgrid
+   use amrdata_class,    only: amrdata
+   use amrex_amr_module, only: amrex_multifab
    implicit none
    private
 
@@ -21,6 +18,14 @@ module amrio_class
       character(len=str_medium) :: name           !< Name for this data
       type(data_node), pointer :: next => null()  !< Next in list
    end type data_node
+
+   !> Linked list node for registered raw multifab (single-level)
+   type :: mfab_node
+      type(amrex_multifab), pointer :: ptr => null()  !< Pointer to multifab
+      character(len=str_medium) :: name               !< Name for this data
+      integer :: level                                !< Level this multifab lives on
+      type(mfab_node), pointer :: next => null()      !< Next in list
+   end type mfab_node
 
    !> Linked list node for scalar metadata (pointer to live variable)
    type :: scalar_node
@@ -41,16 +46,20 @@ module amrio_class
       class(amrgrid), pointer :: amr => null()    !< Pointer to AMR grid
       type(data_node), pointer :: first => null() !< First registered data
       integer :: ndata = 0                        !< Number of registered data
+      type(mfab_node), pointer :: first_mfab => null()     !< First registered raw multifab
+      integer :: nmfab = 0                         !< Number of registered raw multifabs
       type(scalar_node), pointer :: first_scalar => null() !< First registered scalar (for writing)
       integer :: nscalar = 0                      !< Number of registered scalars
       type(read_scalar_node), pointer :: first_read_scalar => null() !< Scalars read from file
    contains
       procedure :: initialize                     !< Initialize with grid and I/O aggregation
-      procedure :: add_data                       !< Register a data field
+      procedure :: add_data                       !< Register an amrdata field (all levels)
+      procedure :: add_mfab                       !< Register a raw multifab (single level)
       procedure :: add_scalar                     !< Register a scalar (pointer to live variable)
       procedure :: write                          !< Write all registered to checkpoint
       procedure :: read_header                    !< Read checkpoint header (time, step, fields)
-      procedure :: read_data                      !< Read a specific field from checkpoint
+      procedure :: read_data                      !< Read an amrdata field from checkpoint
+      procedure :: read_mfab                      !< Read a raw multifab from checkpoint
       procedure :: get_scalar                     !< Get a scalar value from checkpoint
       procedure :: finalize                       !< Clean up registered data list
    end type amrio
@@ -58,8 +67,8 @@ module amrio_class
 contains
 
    !> Initialize I/O handler with AMR grid
-   subroutine initialize(this, amr, nfiles)
-      use amrex_interface, only: amrvismf_set_noutfiles
+   subroutine initialize(this,amr,nfiles)
+      use amrex_interface,only: amrvismf_set_noutfiles
       implicit none
       class(amrio), intent(inout) :: this
       class(amrgrid), target, intent(in) :: amr
@@ -99,6 +108,34 @@ contains
    end subroutine add_data
 
 
+   !> Register a raw multifab for checkpointing at a specific level
+   subroutine add_mfab(this, mfab, name, level)
+      implicit none
+      class(amrio), intent(inout) :: this
+      type(amrex_multifab), target, intent(in) :: mfab
+      character(len=*), intent(in) :: name
+      integer, intent(in) :: level
+      type(mfab_node), pointer :: new_node, current
+      ! Create new node
+      allocate(new_node)
+      new_node%ptr => mfab
+      new_node%name = trim(name)
+      new_node%level = level
+      nullify(new_node%next)
+      ! Add to end of list
+      if (.not.associated(this%first_mfab)) then
+         this%first_mfab => new_node
+      else
+         current => this%first_mfab
+         do while (associated(current%next))
+            current => current%next
+         end do
+         current%next => new_node
+      end if
+      this%nmfab = this%nmfab + 1
+   end subroutine add_mfab
+
+
    !> Register a scalar for checkpointing (pointer to live variable)
    subroutine add_scalar(this, name, value)
       implicit none
@@ -128,10 +165,14 @@ contains
 
 
    !> Write all registered data to checkpoint directory
-   subroutine write(this, dirname, time, step)
-      use messager, only: log
-      use parallel, only: MPI_REAL_WP
-      use mpi_f08,  only: MPI_BCAST,MPI_INTEGER
+   subroutine write(this,dirname,time,step)
+      use string,          only: str_long,itoa
+      use iso_c_binding,   only: c_null_char
+      use amrex_amr_module,only: amrex_boxarray,amrex_box
+      use amrex_interface, only: amrmfab_vismf_write,amrcheckpoint_prebuild_dirs,amrcheckpoint_mfab_prefix
+      use messager,        only: log
+      use parallel,        only: MPI_REAL_WP
+      use mpi_f08,         only: MPI_BCAST,MPI_INTEGER
       implicit none
       class(amrio), intent(inout) :: this
       character(len=*), intent(in) :: dirname      !< Checkpoint directory name
@@ -139,9 +180,10 @@ contains
       integer, intent(in) :: step                  !< Step number
 
       integer :: lev, ierr, iunit, m, nb
-      character(len=256) :: mfab_path
+      character(len=str_long) :: mfab_path
       character(len=str_medium) :: header_file
       type(data_node), pointer :: current
+      type(mfab_node), pointer :: mfcurrent
       type(scalar_node), pointer :: scurrent
       type(amrex_boxarray) :: ba
       type(amrex_box) :: bx
@@ -159,11 +201,16 @@ contains
          write(iunit,'(I0)') step
          write(iunit,'(ES23.16)') time
          ! Write number of registered fields and their names
-         write(iunit,'(I0)') this%ndata
+         write(iunit,'(I0)') this%ndata + this%nmfab
          current => this%first
          do while (associated(current))
             write(iunit,'(A)') trim(current%name)
             current => current%next
+         end do
+         mfcurrent => this%first_mfab
+         do while (associated(mfcurrent))
+            write(iunit,'(A)') trim(mfcurrent%name)
+            mfcurrent => mfcurrent%next
          end do
          ! Write number of registered scalars and their name/value pairs
          write(iunit,'(I0)') this%nscalar
@@ -192,7 +239,7 @@ contains
          call log('Wrote checkpoint Header: '//trim(header_file))
       end if
 
-      ! Write MultiFab data for each registered field
+      ! Write MultiFab data for each registered amrdata field (all levels)
       current => this%first
       do while (associated(current))
          do lev = 0, this%amr%nlevels - 1
@@ -204,20 +251,25 @@ contains
          current => current%next
       end do
 
+      ! Write raw multifab data (single level each)
+      mfcurrent => this%first_mfab
+      do while (associated(mfcurrent))
+         call amrcheckpoint_mfab_prefix(mfab_path, len(mfab_path), mfcurrent%level, &
+            trim(dirname)//c_null_char, 'Level_'//c_null_char, &
+            trim(mfcurrent%name)//c_null_char)
+         call amrmfab_vismf_write(mfcurrent%ptr%p, trim(mfab_path)//c_null_char)
+         mfcurrent => mfcurrent%next
+      end do
+
       if (this%amr%amRoot) call log('Wrote checkpoint: '//trim(dirname)//' ('// &
          trim(adjustl(itoa(this%ndata)))//' fields)')
-   contains
-      function itoa(i) result(str)
-         integer, intent(in) :: i
-         character(len=12) :: str
-         write(str,'(I0)') i
-      end function itoa
    end subroutine write
 
 
    !> Read checkpoint header to get time, step, and available field names
    !> Also reads scalar metadata into internal list for get_scalar access
-   subroutine read_header(this, dirname, time, step, nfields, fieldnames, finest_level)
+   subroutine read_header(this,dirname,time,step,nfields,fieldnames,finest_level)
+      use string,   only: str_long
       use messager, only: log,die
       use parallel, only: MPI_REAL_WP
       use mpi_f08,  only: MPI_BCAST,MPI_INTEGER,MPI_CHARACTER
@@ -231,7 +283,7 @@ contains
       integer, intent(out), optional :: finest_level           !< Finest AMR level
 
       integer :: ierr, iunit, fl, nf, ns, i
-      character(len=256) :: line
+      character(len=str_long) :: line
       character(len=str_medium) :: header_file, sname
       character(len=str_medium), allocatable :: names(:)
       real(WP) :: svalue
@@ -326,8 +378,11 @@ contains
 
 
    !> Read a specific field from checkpoint directory
-   subroutine read_data(this, dirname, data, dataname)
-      use messager, only: log
+   subroutine read_data(this,dirname,data,dataname)
+      use string,          only: str_long
+      use iso_c_binding,   only: c_null_char
+      use amrex_interface, only: amrmfab_vismf_read,amrcheckpoint_mfab_prefix
+      use messager,        only: log
       implicit none
       class(amrio), intent(inout) :: this
       character(len=*), intent(in) :: dirname      !< Checkpoint directory
@@ -335,7 +390,7 @@ contains
       character(len=*), intent(in) :: dataname     !< Name of field to read
 
       integer :: lev
-      character(len=256) :: mfab_path
+      character(len=str_long) :: mfab_path
 
       ! Read MultiFab data for each level
       ! NOTE: The amrdata must already be allocated with correct BoxArray/DistroMap
@@ -348,6 +403,28 @@ contains
 
       if (this%amr%amRoot) call log('Read checkpoint field: '//trim(dataname))
    end subroutine read_data
+
+
+   !> Read a raw multifab from checkpoint directory at a specific level
+   subroutine read_mfab(this,dirname,mfab,dataname,level)
+      use string,          only: str_long
+      use iso_c_binding,   only: c_null_char
+      use amrex_interface, only: amrmfab_vismf_read,amrcheckpoint_mfab_prefix
+      use messager,        only: log
+      implicit none
+      class(amrio), intent(inout) :: this
+      character(len=*), intent(in) :: dirname
+      type(amrex_multifab), intent(inout) :: mfab
+      character(len=*), intent(in) :: dataname
+      integer, intent(in) :: level
+      character(len=str_long) :: mfab_path
+      ! Read MultiFab data at specified level
+      call amrcheckpoint_mfab_prefix(mfab_path, len(mfab_path), level, &
+         trim(dirname)//c_null_char, 'Level_'//c_null_char, &
+         trim(dataname)//c_null_char)
+      call amrmfab_vismf_read(mfab%p, trim(mfab_path)//c_null_char)
+      if (this%amr%amRoot) call log('Read checkpoint mfab: '//trim(dataname))
+   end subroutine read_mfab
 
 
    !> Get a scalar value by name (searches read scalar list from read_header)
@@ -385,6 +462,7 @@ contains
       implicit none
       class(amrio), intent(inout) :: this
       type(data_node), pointer :: current, next
+      type(mfab_node), pointer :: mfcurrent, mfnext
       type(scalar_node), pointer :: scurrent, snext
       type(read_scalar_node), pointer :: rcurrent, rnext
 
@@ -397,6 +475,16 @@ contains
       end do
       nullify(this%first)
       this%ndata = 0
+
+      ! Clean up mfab list
+      mfcurrent => this%first_mfab
+      do while (associated(mfcurrent))
+         mfnext => mfcurrent%next
+         deallocate(mfcurrent)
+         mfcurrent => mfnext
+      end do
+      nullify(this%first_mfab)
+      this%nmfab = 0
 
       ! Clean up scalar list
       scurrent => this%first_scalar

@@ -12,6 +12,7 @@ module amrgrid_class
 
    ! Expose type/constructor/methods
    public :: amrgrid
+   public :: mfab_rebuild
 
    ! Tag constants for use in tagging callbacks (match AMReX TagBox::TagVal enum)
    character(kind=c_char), parameter, public :: CLRtag = char(0)  !< Clear tag
@@ -19,14 +20,14 @@ module amrgrid_class
 
    !> Abstract interface for user-provided tagging callback (with context)
    abstract interface
-      subroutine tagging_callback(ctx,lvl,tags,time)
+      subroutine tagging_callback(ctx,lvl,time,tags)
          use iso_c_binding, only: c_ptr
          use precision, only: WP
          implicit none
          type(c_ptr), intent(in) :: ctx   !< User context pointer
          integer, intent(in) :: lvl
-         type(c_ptr), intent(in) :: tags  !< amrex_tagboxarray C pointer
          real(WP), intent(in) :: time
+         type(c_ptr), intent(in) :: tags  !< amrex_tagboxarray C pointer
       end subroutine tagging_callback
    end interface
 
@@ -161,7 +162,7 @@ module amrgrid_class
       type(tagger_wrapper), dimension(:), allocatable :: taggers
       type(postregrid_wrapper), dimension(:), allocatable :: postregrid_funcs
       ! Default tiling for mfiter_build
-      logical :: default_tiling = .true.
+      logical :: default_tiling = .false.
       ! Cost callback (single, not list) and load balancing strategy
       type(get_cost_wrapper) :: get_cost_func
       integer :: lb_strat = 0           ! 0=SFC (default), 1=KnapSack
@@ -196,6 +197,7 @@ module amrgrid_class
       procedure :: mfab_build                !< Build multifab at a given level
       procedure :: mfab_destroy              !< Destroy multifab
       procedure :: mfab_foextrap             !< Apply fo_extrap BCs to multifab
+      procedure :: mfab_validextrap          !< Extrapolate ghost cells from nearest valid cell
    end type amrgrid
 
    ! Instance counter for automated AMReX lifecycle management
@@ -666,7 +668,7 @@ contains
       ! Call all registered tagging callbacks with their context
       if (allocated(this_grid%taggers)) then
          do i=1,size(this_grid%taggers)
-            call this_grid%taggers(i)%f(this_grid%taggers(i)%ctx, int(lvl), tags, real(time, WP))
+            call this_grid%taggers(i)%f(this_grid%taggers(i)%ctx, int(lvl), real(time, WP), tags)
          end do
       end if
    end subroutine dispatch_err_est
@@ -1020,12 +1022,64 @@ contains
    end subroutine mfab_foextrap
 
 
+   !> Extrapolate all ghost cells from nearest valid cell of the same FAB
+   subroutine mfab_validextrap(this,lvl,mfab)
+      use amrex_amr_module, only: amrex_multifab,amrex_mfiter,amrex_mfiter_build,amrex_mfiter_destroy,amrex_box
+      implicit none
+      class(amrgrid), intent(inout) :: this
+      integer, intent(in) :: lvl
+      type(amrex_multifab), intent(inout) :: mfab
+      type(amrex_mfiter) :: mfi
+      type(amrex_box) :: vbx
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: p
+      integer :: i,j,k,n,nc,ic,jc,kc
+      integer :: ilo,ihi,jlo,jhi,klo,khi
+      ! Loop over FABs
+      nc=mfab%ncomp()
+      call amrex_mfiter_build(mfi,mfab,tiling=.false.)
+      do while(mfi%next())
+         p=>mfab%dataptr(mfi)
+         vbx=mfi%validbox()
+         ilo=lbound(p,1); ihi=ubound(p,1)
+         jlo=lbound(p,2); jhi=ubound(p,2)
+         klo=lbound(p,3); khi=ubound(p,3)
+         do n=1,nc
+            do k=klo,khi; do j=jlo,jhi; do i=ilo,ihi
+               ! Skip valid cells
+               if (i.ge.vbx%lo(1).and.i.le.vbx%hi(1).and. &
+               &   j.ge.vbx%lo(2).and.j.le.vbx%hi(2).and. &
+               &   k.ge.vbx%lo(3).and.k.le.vbx%hi(3)) cycle
+               ! Clamp to valid box and copy
+               ic=max(vbx%lo(1),min(vbx%hi(1),i))
+               jc=max(vbx%lo(2),min(vbx%hi(2),j))
+               kc=max(vbx%lo(3),min(vbx%hi(3),k))
+               p(i,j,k,n)=p(ic,jc,kc,n)
+            end do; end do; end do
+         end do
+      end do
+      call amrex_mfiter_destroy(mfi)
+   end subroutine mfab_validextrap
+
    !> Finalization of amrex
    subroutine finalize_amrex()
       use amrex_amr_module, only: amrex_finalize
       implicit none
       call amrex_finalize()
    end subroutine finalize_amrex
+
+   !> Rebuild a multifab and set to zero
+   subroutine mfab_rebuild(mf,ba,dm,nc,ng)
+      use amrex_amr_module, only: amrex_multifab,amrex_multifab_build,amrex_multifab_destroy, &
+      &                           amrex_boxarray,amrex_distromap
+      implicit none
+      type(amrex_multifab), intent(inout) :: mf
+      type(amrex_boxarray), intent(in) :: ba
+      type(amrex_distromap), intent(in) :: dm
+      integer, intent(in) :: nc,ng
+      call amrex_multifab_destroy(mf)
+      call amrex_multifab_build(mf=mf,ba=ba,dm=dm,nc=nc,ng=ng)
+      call mf%setval(0.0_WP)
+   end subroutine mfab_rebuild
 
 
 end module amrgrid_class

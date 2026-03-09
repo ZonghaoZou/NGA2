@@ -356,15 +356,15 @@ contains
    end subroutine test_varcoef
 
    !> Tagger: refine where RHS magnitude exceeds threshold
-   subroutine rhs_tagger(ctx, lvl, tags_ptr, time)
+   subroutine rhs_tagger(ctx, lvl, time, tags_ptr)
       use iso_c_binding, only: c_ptr, c_f_pointer, c_char, c_associated
       use amrex_amr_module, only: amrex_tagboxarray, amrex_mfiter, amrex_box
       use amrgrid_class, only: SETtag
       implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags_ptr
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags_ptr
       type(amrdata), pointer :: rhs
       type(amrex_tagboxarray) :: tags
       type(amrex_mfiter) :: mfi

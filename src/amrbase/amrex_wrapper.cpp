@@ -11,6 +11,8 @@
 #include <AMReX_FluxRegister.H>
 #include <AMReX_MLMG.H>
 #include <AMReX_MLLinOp.H>
+#include <AMReX_MLPoisson.H>
+#include <AMReX_MLABecLaplacian.H>
 #include <AMReX_MultiFab.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_PhysBCFunct.H>
@@ -1090,6 +1092,71 @@ void amrlinop_set_coarse_fine_bc(void *linop_ptr, void *crse_mf_ptr,
   auto *crse = static_cast<amrex::MultiFab const *>(crse_mf_ptr);
   amrex::IntVect rr(AMREX_D_DECL(ref_ratio[0], ref_ratio[1], ref_ratio[2]));
   linop->setCoarseFineBC(crse, rr);
+}
+
+// =============================================================================
+// Linear Operator Builders
+// Mirror AMReX's amrex_fi_new_poisson/abeclaplacian with additional options:
+//   semicoarsen:      0=off, nonzero=on (anisotropic MG coarsening)
+//   hidden_direction: -1=none, 0/1/2=ignore that direction (quasi-2D)
+// =============================================================================
+
+// Build MLPoisson
+void amrpoisson_build_c(amrex::MLLinOp *&linop, int nlevels,
+                              const amrex::Geometry *geom[],
+                              const amrex::BoxArray *ba[],
+                              const amrex::DistributionMapping *dm[],
+                              int semicoarsen, int hidden_direction) {
+  amrex::LPInfo info;
+  info.setAgglomeration(true);
+  info.setConsolidation(true);
+  info.setMaxCoarseningLevel(30);
+  if (semicoarsen != 0) {
+    info.setSemicoarsening(true);
+    info.setMaxSemicoarseningLevel(100);
+  }
+  if (hidden_direction >= 0) {
+    info.setHiddenDirection(hidden_direction);
+  }
+  amrex::Vector<amrex::Geometry> g;
+  amrex::Vector<amrex::BoxArray> b;
+  amrex::Vector<amrex::DistributionMapping> d;
+  for (int i = 0; i < nlevels; ++i) {
+    g.push_back(*geom[i]);
+    b.push_back(*ba[i]);
+    d.push_back(*dm[i]);
+  }
+  auto *poisson = new amrex::MLPoisson(g, b, d, info);
+  linop = static_cast<amrex::MLLinOp *>(poisson);
+}
+
+// Build MLABecLaplacian
+void amrabeclap_build_c(amrex::MLLinOp *&linop, int nlevels,
+                              const amrex::Geometry *geom[],
+                              const amrex::BoxArray *ba[],
+                              const amrex::DistributionMapping *dm[],
+                              int semicoarsen, int hidden_direction) {
+  amrex::LPInfo info;
+  info.setAgglomeration(true);
+  info.setConsolidation(true);
+  info.setMaxCoarseningLevel(30);
+  if (semicoarsen != 0) {
+    info.setSemicoarsening(true);
+    info.setMaxSemicoarseningLevel(100);
+  }
+  if (hidden_direction >= 0) {
+    info.setHiddenDirection(hidden_direction);
+  }
+  amrex::Vector<amrex::Geometry> g;
+  amrex::Vector<amrex::BoxArray> b;
+  amrex::Vector<amrex::DistributionMapping> d;
+  for (int i = 0; i < nlevels; ++i) {
+    g.push_back(*geom[i]);
+    b.push_back(*ba[i]);
+    d.push_back(*dm[i]);
+  }
+  auto *abeclap = new amrex::MLABecLaplacian(g, b, d, info);
+  linop = static_cast<amrex::MLLinOp *>(abeclap);
 }
 
 } // extern "C"

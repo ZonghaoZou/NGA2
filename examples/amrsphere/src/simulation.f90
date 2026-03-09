@@ -53,17 +53,18 @@ contains
       real(WP), intent(in) :: t
       real(WP) :: G
       G=sqrt(xyz(1)**2+xyz(2)**2+xyz(3)**2)-0.5_WP
+      if (amr%nz.eq.1) G=sqrt(xyz(1)**2+xyz(2)**2)-0.5_WP ! Enable 2D case
    end function sphere_levelset
 
    !> Tagger for this case based on velocity gradient magnitude and distance to sphere surface
-   subroutine my_tagger(solver,lvl,tags_ptr,time)
+   subroutine my_tagger(solver,lvl,time,tags_ptr)
       use iso_c_binding,    only: c_ptr,c_char
       use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_tagboxarray
       use amrgrid_class,    only: SETtag
       class(amrincomp), intent(inout) :: solver
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags_ptr
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags_ptr
       type(amrex_tagboxarray) :: tags
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
@@ -112,14 +113,15 @@ contains
    end subroutine my_tagger
 
    !> Dirichlet BC: uniform inflow Uin at xlo/xhi for U
-   subroutine dirichlet_velocity(solver,p,bx,comp,face,time)
+   subroutine dirichlet_velocity(solver,lvl,time,face,bx,comp,p)
       use amrex_amr_module, only: amrex_box
       class(amrincomp), intent(in) :: solver
-      real(WP), dimension(:,:,:,:), pointer, intent(inout) :: p
+      integer, intent(in) :: lvl
+      real(WP), intent(in) :: time
+      integer, intent(in) :: face
       type(amrex_box), intent(in) :: bx
       character(len=1), intent(in) :: comp
-      integer, intent(in) :: face
-      real(WP), intent(in) :: time
+      real(WP), dimension(:,:,:,:), pointer, intent(inout) :: p
       integer :: i,j,k
       select case (face)
        case (1)  ! Inflow in X-
@@ -154,6 +156,7 @@ contains
       real(WP) :: dx,dy,dz
       integer :: i,j,k
       real(WP), parameter :: VFlo=1.0e-12_WP
+      integer, parameter :: nref=3
       dx=data%amr%dx(lvl); dy=data%amr%dy(lvl); dz=data%amr%dz(lvl)
       call amrex_mfiter_build(mfi,ba,dm,tiling=.false.)
       do while (mfi%next())
@@ -162,7 +165,7 @@ contains
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
             call initialize_volume_moments(lo=[data%amr%xlo+real(i  ,WP)*dx,data%amr%ylo+real(j  ,WP)*dy,data%amr%zlo+real(k  ,WP)*dz], &
             &                              hi=[data%amr%xlo+real(i+1,WP)*dx,data%amr%ylo+real(j+1,WP)*dy,data%amr%zlo+real(k+1,WP)*dz], &
-            &                              levelset=sphere_levelset,time=time,level=3,VFlo=VFlo,VF=pVF(i,j,k,1),BL=BL,BG=BG)
+            &                              levelset=sphere_levelset,time=time,level=nref,VFlo=VFlo,VF=pVF(i,j,k,1),BL=BL,BG=BG)
             pVF(i,j,k,1)=max(pVF(i,j,k,1),VFlo)
          end do; end do; end do
       end do
@@ -183,6 +186,11 @@ contains
          amr%xlo=-05.0_WP; amr%xhi=+15.0_WP
          amr%ylo=-10.0_WP; amr%yhi=+10.0_WP
          amr%zlo=-10.0_WP; amr%zhi=+10.0_WP
+         ! Handle 2D case
+         if (amr%nz.eq.1) then
+            amr%zlo=-0.5_WP*(amr%yhi-amr%ylo)/real(amr%ny*2**amr%maxlvl,WP)
+            amr%zhi=+0.5_WP*(amr%yhi-amr%ylo)/real(amr%ny*2**amr%maxlvl,WP)
+         end if
          amr%xper=.false.; amr%yper=.true.; amr%zper=.true.
          call param_read('Max level',amr%maxlvl)
          call amr%initialize()
@@ -216,8 +224,11 @@ contains
       ! Create flow solver
       create_flow_solver: block
          use amrex_amr_module, only: amrex_bc_ext_dir,amrex_bc_foextrap
+         use amrdata_class, only: amrex_interp_face_linear
          ! Create flow solver
          call fs%initialize(amr)
+         ! Use face-linear interp if 2D (divfree requires ratio=2 in all dirs)
+         if (amr%nz.eq.1) fs%interp_vel=amrex_interp_face_linear
          ! Set molecular viscosity
          call param_read('Reynolds number',visc_mol)
          visc_mol=1.0_WP/visc_mol
@@ -268,12 +279,13 @@ contains
       ! Initialize visualization
       create_visualization: block
          ! Create visualization object
-         call viz%initialize(amr,'amrsphere')
+         call viz%initialize(amr,'amrsphere',use_hdf5=.false.)
          call viz%add_scalar(fs%U,1,'U')
          call viz%add_scalar(fs%V,1,'V')
          call viz%add_scalar(fs%W,1,'W')
          call viz%add_scalar(fs%visc,1,'visc')
          call viz%add_scalar(fs%P,1,'pressure')
+         call viz%add_scalar(fs%div,1,'div')
          call viz%add_scalar(VF,1,'VF')
          ! Create visualization output event
          viz_evt=event(time=time,name='Visualization output')
@@ -297,6 +309,8 @@ contains
          call mfile%add_column(fs%Vmax,'Vmax')
          call mfile%add_column(fs%Wmax,'Wmax')
          call mfile%add_column(fs%Pmax,'Pmax')
+         call mfile%add_column(fs%psolver%res,'Pressure residual')
+         call mfile%add_column(fs%psolver%niter,'Pressure iterations')
          call mfile%add_column(fs%divmax,'Divergence')
          call mfile%write()
          ! Create CFL monitor

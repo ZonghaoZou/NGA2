@@ -83,14 +83,14 @@ contains
    end subroutine velocity_init
 
    !> Geometric tagger: refine center box
-   subroutine geometric_tagger(solver, lvl, tags_ptr, time)
+   subroutine geometric_tagger(solver, lvl, time, tags_ptr)
       use iso_c_binding,    only: c_ptr, c_char
       use amrex_amr_module, only: amrex_mfiter, amrex_box, amrex_boxarray, amrex_tagboxarray
       use amrgrid_class,    only: SETtag
       class(amrincomp), intent(inout) :: solver
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags_ptr
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags_ptr
       type(amrex_tagboxarray) :: tags
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
@@ -123,14 +123,14 @@ contains
    end subroutine geometric_tagger
 
    !> Vorticity-based tagger: refine where vorticity magnitude exceeds threshold
-   subroutine vorticity_tagger(solver, lvl, tags_ptr, time)
+   subroutine vorticity_tagger(solver, lvl, time, tags_ptr)
       use iso_c_binding,    only: c_ptr, c_char
       use amrex_amr_module, only: amrex_mfiter, amrex_box, amrex_tagboxarray
       use amrgrid_class,    only: SETtag
       class(amrincomp), intent(inout) :: solver
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags_ptr
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags_ptr
       type(amrex_tagboxarray) :: tags
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
@@ -183,14 +183,14 @@ contains
 
    !> Velocity gradient magnitude tagger: refine where |∇u| > threshold
    !> |∇u| = sqrt(sum of all (dui/dxj)²) - captures all gradients equally
-   subroutine gradU_tagger(solver, lvl, tags_ptr, time)
+   subroutine gradU_tagger(solver, lvl, time, tags_ptr)
       use iso_c_binding,    only: c_ptr, c_char
       use amrex_amr_module, only: amrex_mfiter, amrex_box, amrex_tagboxarray
       use amrgrid_class,    only: SETtag
       class(amrincomp), intent(inout) :: solver
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags_ptr
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags_ptr
       type(amrex_tagboxarray) :: tags
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx

@@ -8,8 +8,7 @@ module amrincomp_class
    use amrdata_class,    only: amrdata
    use amrsolver_class,  only: amrsolver
    use amrmg_class,      only: amrmg,amrmg_cstcoef
-   use amrex_amr_module, only: amrex_multifab,amrex_mfiter,amrex_box,amrex_boxarray,&
-   &                           amrex_distromap,amrex_geometry,amrex_interp_face_divfree
+   use amrex_amr_module, only: amrex_box,amrex_boxarray,amrex_distromap,amrex_interp_face_divfree
    implicit none
    private
 
@@ -19,9 +18,9 @@ module amrincomp_class
    !> AMR Incompressible solver type
    type, extends(amrsolver) :: amrincomp
       ! User-configurable callbacks
-      procedure(incomp_init_iface), pointer, nopass :: user_init=>null()
-      procedure(incomp_tagging_iface), pointer, nopass :: user_tagging=>null()
-      procedure(incomp_bc_iface), pointer, nopass :: user_bc=>null()
+      procedure(incomp_init_iface),    pointer, pass :: user_init   =>null()
+      procedure(incomp_tagging_iface), pointer, pass :: user_tagging=>null()
+      procedure(incomp_bc_iface),      pointer, pass :: user_bc     =>null()
 
       ! Flow data
       type(amrdata) :: U,V,W            !< Current face velocities
@@ -50,20 +49,23 @@ module amrincomp_class
       real(WP) :: CFLv_x=0.0_WP, CFLv_y=0.0_WP, CFLv_z=0.0_WP  !< Viscous CFL
       real(WP) :: CFL=0.0_WP            !< Maximum CFL
 
+      ! Overlap size
+      integer :: nover=1
+
       ! Velocity interpolation method (for C/F interface fills)
       integer :: interp_vel=amrex_interp_face_divfree
 
    contains
+      ! Type-bound constructor/destructor
       procedure :: initialize
       procedure :: finalize
-      procedure :: get_div      !< Compute divergence (assumes velocity ghosts filled)
-      procedure :: get_pgrad    !< Compute pressure gradient (assumes pressure ghosts filled)
-      ! Override internal type-bound callbacks from amrsolver
+      ! Lifecycle callbacks
       procedure :: on_init
       procedure :: on_coarse
       procedure :: on_remake
       procedure :: on_clear
       procedure :: post_regrid
+      ! Staggered velocity fills
       procedure :: fill_velocity_lvl         !< Fill velocity ghosts at single level
       procedure :: fill_velocity             !< Fill velocity ghosts on all levels
       procedure :: fill_velocity_from_coarse !< Fill velocity from coarse
@@ -72,18 +74,20 @@ module amrincomp_class
       procedure :: fill_velocity_mfab        !< Fill dest MultiFabs for regridding
       procedure :: average_down_velocity     !< Average down MAC velocity for C/F consistency
       procedure :: average_down_velocity_to  !< Average down MAC velocity for single level
-      procedure :: average_down_pressure     !< Average down pressure for C/F consistency
-      procedure :: average_down_pressure_to  !< Average down pressure for single level
-      ! Deferred from amrsolver base class
+      ! Utilities
+      procedure :: get_div                   !< Compute divergence (assumes velocity ghosts filled)
+      procedure :: get_pgrad                 !< Compute pressure gradient (assumes pressure ghosts filled)
+      ! Physics procedures
+      procedure :: get_dmomdt                !< Compute momentum advection RHS
+      procedure :: add_vreman                !< Add Vreman SGS eddy viscosity
+      procedure :: get_cfl                   !< Compute CFL numbers
+      procedure :: correct_outflow           !< Correct outflow for global mass conservation
+      ! Print solver info
       procedure :: get_info
+      procedure :: print => amrincomp_print
+      ! Checkpoint I/O
       procedure :: register_checkpoint
       procedure :: restore_checkpoint
-      ! Physics procedures
-      procedure :: get_dmomdt                 !< Compute momentum advection RHS
-      procedure :: get_cfl                    !< Compute CFL numbers
-      procedure :: correct_outflow            !< Correct outflow for global mass conservation
-      procedure :: add_vreman                 !< Add Vreman SGS eddy viscosity
-      procedure :: print => amrincomp_print   !< Print solver info
    end type amrincomp
 
    !> Abstract interface for user-overridable on_init callback
@@ -100,26 +104,27 @@ module amrincomp_class
 
    !> Abstract interface for user-overridable tagging callback
    abstract interface
-      subroutine incomp_tagging_iface(solver,lvl,tags,time)
+      subroutine incomp_tagging_iface(solver,lvl,time,tags)
          import :: amrincomp,c_ptr,WP
          class(amrincomp), intent(inout) :: solver
          integer, intent(in) :: lvl
-         type(c_ptr), intent(in) :: tags
          real(WP), intent(in) :: time
+         type(c_ptr), intent(in) :: tags
       end subroutine incomp_tagging_iface
    end interface
 
    !> Abstract interface for user-provided velocity BC callback
    !> Called for ext_dir faces; user fills the boundary box with their own values
    abstract interface
-      subroutine incomp_bc_iface(solver,p,bc_bx,comp,face,time)
+      subroutine incomp_bc_iface(solver,lvl,time,face,bx,comp,p)
          import :: amrincomp,amrex_box,WP
          class(amrincomp), intent(in) :: solver
-         real(WP), dimension(:,:,:,:), pointer, intent(inout) :: p
-         type(amrex_box), intent(in) :: bc_bx              !< Boundary box to fill
-         character(len=1), intent(in) :: comp              !< 'U', 'V', or 'W'
-         integer, intent(in) :: face                       !< 1=xlo,2=xhi,3=ylo,4=yhi,5=zlo,6=zhi
+         integer, intent(in) :: lvl
          real(WP), intent(in) :: time
+         integer, intent(in) :: face                       !< 1=xlo,2=xhi,3=ylo,4=yhi,5=zlo,6=zhi
+         type(amrex_box), intent(in) :: bx                 !< Boundary box to fill
+         character(len=1), intent(in) :: comp              !< 'U', 'V', or 'W'
+         real(WP), dimension(:,:,:,:), pointer, intent(inout) :: p
       end subroutine incomp_bc_iface
    end interface
 
@@ -140,7 +145,7 @@ contains
       type(amrincomp), pointer :: this
       call c_f_pointer(ctx,this)
       call this%on_init(lvl,time,ba,dm)
-      if (associated(this%user_init)) call this%user_init(this,lvl,time,ba,dm)
+      if (associated(this%user_init)) call this%user_init(lvl,time,ba,dm)
    end subroutine amrincomp_on_init
 
    !> Dispatch on_coarse: calls type-bound method
@@ -180,15 +185,15 @@ contains
    end subroutine amrincomp_on_clear
 
    !> Dispatch tagging: calls user callback if set
-   subroutine amrincomp_tagging(ctx,lvl,tags,time)
+   subroutine amrincomp_tagging(ctx,lvl,time,tags)
       implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags
       type(amrincomp), pointer :: this
       call c_f_pointer(ctx,this)
-      if (associated(this%user_tagging)) call this%user_tagging(this,lvl,tags,time)
+      if (associated(this%user_tagging)) call this%user_tagging(lvl,time,tags)
    end subroutine amrincomp_tagging
 
    !> Dispatch post_regrid: calls type-bound method
@@ -225,12 +230,12 @@ contains
       this%amr=>amr
 
       ! Initialize staggered velocity
-      call this%U%initialize(amr,name='U',ncomp=1,ng=1,nodal=[.true. ,.false.,.false.]); this%U%parent=>this
-      call this%V%initialize(amr,name='V',ncomp=1,ng=1,nodal=[.false.,.true. ,.false.]); this%V%parent=>this
-      call this%W%initialize(amr,name='W',ncomp=1,ng=1,nodal=[.false.,.false.,.true. ]); this%W%parent=>this
-      call this%Uold%initialize(amr,name='Uold',ncomp=1,ng=1,nodal=[.true. ,.false.,.false.]); this%Uold%parent=>this
-      call this%Vold%initialize(amr,name='Vold',ncomp=1,ng=1,nodal=[.false.,.true. ,.false.]); this%Vold%parent=>this
-      call this%Wold%initialize(amr,name='Wold',ncomp=1,ng=1,nodal=[.false.,.false.,.true. ]); this%Wold%parent=>this
+      call this%U%initialize(amr,name='U',ncomp=1,ng=this%nover,nodal=[.true. ,.false.,.false.]); this%U%parent=>this
+      call this%V%initialize(amr,name='V',ncomp=1,ng=this%nover,nodal=[.false.,.true. ,.false.]); this%V%parent=>this
+      call this%W%initialize(amr,name='W',ncomp=1,ng=this%nover,nodal=[.false.,.false.,.true. ]); this%W%parent=>this
+      call this%Uold%initialize(amr,name='Uold',ncomp=1,ng=this%nover,nodal=[.true. ,.false.,.false.]); this%Uold%parent=>this
+      call this%Vold%initialize(amr,name='Vold',ncomp=1,ng=this%nover,nodal=[.false.,.true. ,.false.]); this%Vold%parent=>this
+      call this%Wold%initialize(amr,name='Wold',ncomp=1,ng=this%nover,nodal=[.false.,.false.,.true. ]); this%Wold%parent=>this
 
       ! Set velocity fillbc callbacks to shared handler
       this%U%fillbc=>velocity_fillbc
@@ -238,7 +243,7 @@ contains
       this%W%fillbc=>velocity_fillbc
 
       ! Initialize pressure with Neumann BCs
-      call this%P%initialize(amr,name='P',ncomp=1,ng=1); this%P%parent=>this
+      call this%P%initialize(amr,name='P',ncomp=1,ng=this%nover); this%P%parent=>this
       if (.not.amr%xper) then; this%P%lo_bc(1,1)=amrex_bc_foextrap; this%P%hi_bc(1,1)=amrex_bc_foextrap; end if
       if (.not.amr%yper) then; this%P%lo_bc(2,1)=amrex_bc_foextrap; this%P%hi_bc(2,1)=amrex_bc_foextrap; end if
       if (.not.amr%zper) then; this%P%lo_bc(3,1)=amrex_bc_foextrap; this%P%hi_bc(3,1)=amrex_bc_foextrap; end if
@@ -247,7 +252,7 @@ contains
       call this%div%initialize(amr,name='div',ncomp=1,ng=0); this%div%parent=>this
 
       ! Initialize viscosity with Neumann BCs
-      call this%visc%initialize(amr,name='visc',ncomp=1,ng=1); this%visc%parent=>this
+      call this%visc%initialize(amr,name='visc',ncomp=1,ng=this%nover); this%visc%parent=>this
       if (.not.amr%xper) then; this%visc%lo_bc(1,1)=amrex_bc_foextrap; this%visc%hi_bc(1,1)=amrex_bc_foextrap; end if
       if (.not.amr%yper) then; this%visc%lo_bc(2,1)=amrex_bc_foextrap; this%visc%hi_bc(2,1)=amrex_bc_foextrap; end if
       if (.not.amr%zper) then; this%visc%lo_bc(3,1)=amrex_bc_foextrap; this%visc%hi_bc(3,1)=amrex_bc_foextrap; end if
@@ -292,11 +297,11 @@ contains
    end subroutine finalize
 
    ! ============================================================================
-   ! INTERNAL CALLBACK OVERRIDES
+   ! LIFECYCLE CALLBACKS
    ! ============================================================================
 
    !> Override on_init: reset levels and set to zero
-   subroutine on_init(this, lvl, time, ba, dm)
+   subroutine on_init(this,lvl,time,ba,dm)
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
@@ -304,29 +309,29 @@ contains
       type(amrex_boxarray), intent(in) :: ba
       type(amrex_distromap), intent(in) :: dm
       ! Reset level layouts
-      call this%U%reset_level(lvl, ba, dm)
-      call this%V%reset_level(lvl, ba, dm)
-      call this%W%reset_level(lvl, ba, dm)
-      call this%Uold%reset_level(lvl, ba, dm)
-      call this%Vold%reset_level(lvl, ba, dm)
-      call this%Wold%reset_level(lvl, ba, dm)
-      call this%P%reset_level(lvl, ba, dm)
-      call this%div%reset_level(lvl, ba, dm)
-      call this%visc%reset_level(lvl, ba, dm)
+      call this%U%reset_level(lvl,ba,dm)
+      call this%V%reset_level(lvl,ba,dm)
+      call this%W%reset_level(lvl,ba,dm)
+      call this%Uold%reset_level(lvl,ba,dm)
+      call this%Vold%reset_level(lvl,ba,dm)
+      call this%Wold%reset_level(lvl,ba,dm)
+      call this%P%reset_level(lvl,ba,dm)
+      call this%div%reset_level(lvl,ba,dm)
+      call this%visc%reset_level(lvl,ba,dm)
       ! Set to zero
-      call this%U%setval(val=0.0_WP, lvl=lvl)
-      call this%V%setval(val=0.0_WP, lvl=lvl)
-      call this%W%setval(val=0.0_WP, lvl=lvl)
-      call this%Uold%setval(val=0.0_WP, lvl=lvl)
-      call this%Vold%setval(val=0.0_WP, lvl=lvl)
-      call this%Wold%setval(val=0.0_WP, lvl=lvl)
-      call this%P%setval(val=0.0_WP, lvl=lvl)
-      call this%div%setval(val=0.0_WP, lvl=lvl)
-      call this%visc%setval(val=0.0_WP, lvl=lvl)
+      call this%U%setval(val=0.0_WP,lvl=lvl)
+      call this%V%setval(val=0.0_WP,lvl=lvl)
+      call this%W%setval(val=0.0_WP,lvl=lvl)
+      call this%Uold%setval(val=0.0_WP,lvl=lvl)
+      call this%Vold%setval(val=0.0_WP,lvl=lvl)
+      call this%Wold%setval(val=0.0_WP,lvl=lvl)
+      call this%P%setval(val=0.0_WP,lvl=lvl)
+      call this%div%setval(val=0.0_WP,lvl=lvl)
+      call this%visc%setval(val=0.0_WP,lvl=lvl)
    end subroutine on_init
 
    !> Override on_coarse: create new fine level from coarse using divergence-free interpolation
-   subroutine on_coarse(this, lvl, time, ba, dm)
+   subroutine on_coarse(this,lvl,time,ba,dm)
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
@@ -334,61 +339,61 @@ contains
       type(amrex_boxarray), intent(in) :: ba
       type(amrex_distromap), intent(in) :: dm
       ! Velocity: allocate then fill with divergence-free interpolation
-      call this%U%reset_level(lvl, ba, dm)
-      call this%V%reset_level(lvl, ba, dm)
-      call this%W%reset_level(lvl, ba, dm)
-      call this%fill_velocity_from_coarse(lvl, time)
+      call this%U%reset_level(lvl,ba,dm)
+      call this%V%reset_level(lvl,ba,dm)
+      call this%W%reset_level(lvl,ba,dm)
+      call this%fill_velocity_from_coarse(lvl,time)
       ! Old velocity just needs geometry
-      call this%Uold%reset_level(lvl, ba, dm)
-      call this%Vold%reset_level(lvl, ba, dm)
-      call this%Wold%reset_level(lvl, ba, dm)
+      call this%Uold%reset_level(lvl,ba,dm)
+      call this%Vold%reset_level(lvl,ba,dm)
+      call this%Wold%reset_level(lvl,ba,dm)
       ! Pressure on coarse
-      call this%P%on_coarse(this%P, lvl, time, ba, dm)
+      call this%P%on_coarse(lvl,time,ba,dm)
       ! Divergence and viscosity just need geometry
-      call this%div%reset_level(lvl, ba, dm)
-      call this%visc%reset_level(lvl, ba, dm)
+      call this%div%reset_level(lvl,ba,dm)
+      call this%visc%reset_level(lvl,ba,dm)
    end subroutine on_coarse
 
    !> Override on_remake: migrate data on regrid using divergence-free interpolation
-   subroutine on_remake(this, lvl, time, ba, dm)
-      use amrex_amr_module, only: amrex_multifab_build, amrex_multifab_destroy
+   subroutine on_remake(this,lvl,time,ba,dm)
+      use amrex_amr_module, only: amrex_multifab_build,amrex_multifab_destroy,amrex_multifab
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
       type(amrex_boxarray), intent(in) :: ba
       type(amrex_distromap), intent(in) :: dm
-      type(amrex_multifab) :: Utmp, Vtmp, Wtmp
+      type(amrex_multifab) :: Utmp,Vtmp,Wtmp
       ! Build temp MultiFabs with new layout (0 ghost cells for FillPatch)
-      call amrex_multifab_build(Utmp, ba, dm, 1, 0, this%U%nodal)
-      call amrex_multifab_build(Vtmp, ba, dm, 1, 0, this%V%nodal)
-      call amrex_multifab_build(Wtmp, ba, dm, 1, 0, this%W%nodal)
+      call amrex_multifab_build(Utmp,ba,dm,1,0,this%U%nodal)
+      call amrex_multifab_build(Vtmp,ba,dm,1,0,this%V%nodal)
+      call amrex_multifab_build(Wtmp,ba,dm,1,0,this%W%nodal)
       ! Fill temps from old data via coupled FillPatch
-      call this%fill_velocity_mfab(Utmp, Vtmp, Wtmp, lvl, time)
+      call this%fill_velocity_mfab(Utmp,Vtmp,Wtmp,lvl,time)
       ! Reset levels and copy from temps
-      call this%U%reset_level(lvl, ba, dm)
-      call this%V%reset_level(lvl, ba, dm)
-      call this%W%reset_level(lvl, ba, dm)
-      call this%U%mf(lvl)%copy(Utmp, 1, 1, 1, 0)
-      call this%V%mf(lvl)%copy(Vtmp, 1, 1, 1, 0)
-      call this%W%mf(lvl)%copy(Wtmp, 1, 1, 1, 0)
+      call this%U%reset_level(lvl,ba,dm)
+      call this%V%reset_level(lvl,ba,dm)
+      call this%W%reset_level(lvl,ba,dm)
+      call this%U%mf(lvl)%copy(Utmp,1,1,1,0)
+      call this%V%mf(lvl)%copy(Vtmp,1,1,1,0)
+      call this%W%mf(lvl)%copy(Wtmp,1,1,1,0)
       ! Destroy temps
       call amrex_multifab_destroy(Utmp)
       call amrex_multifab_destroy(Vtmp)
       call amrex_multifab_destroy(Wtmp)
       ! Old velocity just needs geometry
-      call this%Uold%reset_level(lvl, ba, dm)
-      call this%Vold%reset_level(lvl, ba, dm)
-      call this%Wold%reset_level(lvl, ba, dm)
+      call this%Uold%reset_level(lvl,ba,dm)
+      call this%Vold%reset_level(lvl,ba,dm)
+      call this%Wold%reset_level(lvl,ba,dm)
       ! Pressure remake
-      call this%P%on_remake(this%P, lvl, time, ba, dm)
+      call this%P%on_remake(lvl,time,ba,dm)
       ! Divergence and viscosity just need geometry
-      call this%div%reset_level(lvl, ba, dm)
-      call this%visc%reset_level(lvl, ba, dm)
+      call this%div%reset_level(lvl,ba,dm)
+      call this%visc%reset_level(lvl,ba,dm)
    end subroutine on_remake
 
    !> Override on_clear: delete level
-   subroutine on_clear(this, lvl)
+   subroutine on_clear(this,lvl)
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
@@ -404,7 +409,7 @@ contains
    end subroutine on_clear
 
    !> Override post_regrid: average down for C/F consistency
-   subroutine post_regrid(this, lbase, time)
+   subroutine post_regrid(this,lbase,time)
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lbase
@@ -412,7 +417,7 @@ contains
       integer :: lvl
       ! Average down and fill ghosts
       call this%average_down_velocity(lbase)
-      call this%average_down_pressure(lbase)
+      call this%P%average_down(lbase)
       do lvl=lbase,this%amr%clvl()
          call this%fill_velocity_lvl(lvl,time)
          call this%P%fill_lvl(lvl,time)
@@ -421,9 +426,13 @@ contains
       call this%psolver%setup()
    end subroutine post_regrid
 
+   ! ============================================================================
+   ! Staggered velocity fills
+   ! ============================================================================
+
    !> Average down MAC velocity for a single level (lvl+1 -> lvl)
    !> Uses amrdata infrastructure which handles face-centered averaging correctly
-   subroutine average_down_velocity_to(this, lvl)
+   subroutine average_down_velocity_to(this,lvl)
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
@@ -435,65 +444,62 @@ contains
    !> Average down MAC velocity from finest to lbase
    !> Simply calls average_down_velocity_to in a loop
    !> @param lbase Optional: lowest level to average down to (default 0)
-   subroutine average_down_velocity(this, lbase)
+   subroutine average_down_velocity(this,lbase)
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in), optional :: lbase
-      integer :: lvl, lb
-      lb = 0; if (present(lbase)) lb = lbase
-      do lvl = this%amr%clvl()-1, lb, -1
+      integer :: lvl,lb
+      lb=0; if (present(lbase)) lb=lbase
+      do lvl=this%amr%clvl()-1,lb,-1
          call this%average_down_velocity_to(lvl)
       end do
    end subroutine average_down_velocity
 
    !> Fill velocity ghost cells at a single level using divergence-free interpolation
-   subroutine fill_velocity_lvl(this, lvl, time)
-      use iso_c_binding, only: c_loc, c_funloc, c_funptr, c_ptr
-      use amrex_interface, only: amrmfab_fillpatch_single, amrmfab_fillpatch_two_faces
+   subroutine fill_velocity_lvl(this,lvl,time)
+      use iso_c_binding, only: c_loc,c_funloc,c_funptr,c_ptr
+      use amrex_interface, only: amrmfab_fillpatch_single,amrmfab_fillpatch_two_faces
       use amrdata_class, only: amrdata_fillbc
       implicit none
       class(amrincomp), target, intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
-      type(c_ptr) :: ctx_u, ctx_v, ctx_w
+      type(c_ptr) :: ctx_u,ctx_v,ctx_w
       type(c_funptr) :: bc_dispatch
-      integer :: rr(3), lo_bc(9), hi_bc(9)
-      real(WP) :: t_old, t_new
+      integer :: rr(3),lo_bc(9),hi_bc(9)
+      real(WP) :: t_old,t_new
 
       ! Get contexts for each velocity component
-      ctx_u = c_loc(this%U); ctx_v = c_loc(this%V); ctx_w = c_loc(this%W)
-      bc_dispatch = c_funloc(amrdata_fillbc)
-      t_old = time - 1.0e200_WP
-      t_new = time
+      ctx_u=c_loc(this%U);ctx_v=c_loc(this%V);ctx_w=c_loc(this%W)
+      bc_dispatch=c_funloc(amrdata_fillbc)
+      t_old=time-1.0e200_WP
+      t_new=time
 
-      if (lvl .eq. 0) then
+      if (lvl.eq.0) then
          ! Level 0: single-level fill (just physical BCs)
-         call amrmfab_fillpatch_single(this%U%mf(0), time, this%U%mf(0), &
-         &   time, this%U%mf(0), this%amr%geom(0), ctx_u, bc_dispatch, time, 1, 1, 1)
-         call amrmfab_fillpatch_single(this%V%mf(0), time, this%V%mf(0), &
-         &   time, this%V%mf(0), this%amr%geom(0), ctx_v, bc_dispatch, time, 1, 1, 1)
-         call amrmfab_fillpatch_single(this%W%mf(0), time, this%W%mf(0), &
-         &   time, this%W%mf(0), this%amr%geom(0), ctx_w, bc_dispatch, time, 1, 1, 1)
+         call amrmfab_fillpatch_single(this%U%mf(0),time,this%U%mf(0),time,this%U%mf(0),this%amr%geom(0),ctx_u,bc_dispatch,time,1,1,1)
+         call amrmfab_fillpatch_single(this%V%mf(0),time,this%V%mf(0),time,this%V%mf(0),this%amr%geom(0),ctx_v,bc_dispatch,time,1,1,1)
+         call amrmfab_fillpatch_single(this%W%mf(0),time,this%W%mf(0),time,this%W%mf(0),this%amr%geom(0),ctx_w,bc_dispatch,time,1,1,1)
       else
          ! Build combined BC array: [U_x,U_y,U_z, V_x,V_y,V_z, W_x,W_y,W_z]
-         lo_bc(1:3) = this%U%lo_bc(:,1)
-         lo_bc(4:6) = this%V%lo_bc(:,1)
-         lo_bc(7:9) = this%W%lo_bc(:,1)
-         hi_bc(1:3) = this%U%hi_bc(:,1)
-         hi_bc(4:6) = this%V%hi_bc(:,1)
-         hi_bc(7:9) = this%W%hi_bc(:,1)
-         rr = [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)]
+         lo_bc(1:3)=this%U%lo_bc(:,1)
+         lo_bc(4:6)=this%V%lo_bc(:,1)
+         lo_bc(7:9)=this%W%lo_bc(:,1)
+         hi_bc(1:3)=this%U%hi_bc(:,1)
+         hi_bc(4:6)=this%V%hi_bc(:,1)
+         hi_bc(7:9)=this%W%hi_bc(:,1)
+         rr=[this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)]
          ! Call 3-component divfree FillPatch from two levels
          call amrmfab_fillpatch_two_faces( &
-         &   this%U%mf(lvl), this%V%mf(lvl), this%W%mf(lvl), time, &
-         &   t_old, this%U%mf(lvl-1), this%V%mf(lvl-1), this%W%mf(lvl-1), &
-         &   t_new, this%U%mf(lvl-1), this%V%mf(lvl-1), this%W%mf(lvl-1), &
+         &   this%U%mf(lvl),this%V%mf(lvl),this%W%mf(lvl),time, &
+         &   t_old,this%U%mf(lvl-1),this%V%mf(lvl-1),this%W%mf(lvl-1), &
+         &   t_new,this%U%mf(lvl-1),this%V%mf(lvl-1),this%W%mf(lvl-1), &
          &   this%amr%geom(lvl-1), &
-         &   t_old, this%U%mf(lvl), this%V%mf(lvl), this%W%mf(lvl), &
-         &   t_new, this%U%mf(lvl), this%V%mf(lvl), this%W%mf(lvl), &
+         &   t_old,this%U%mf(lvl),this%V%mf(lvl),this%W%mf(lvl), &
+         &   t_new,this%U%mf(lvl),this%V%mf(lvl),this%W%mf(lvl), &
          &   this%amr%geom(lvl), &
-         &   ctx_u, ctx_v, ctx_w, bc_dispatch, bc_dispatch, bc_dispatch, &
-         &   1, 1, 1, rr, this%interp_vel, lo_bc, hi_bc)
+         &   ctx_u,ctx_v,ctx_w,bc_dispatch,bc_dispatch,bc_dispatch, &
+         &   1,1,1,rr,this%interp_vel,lo_bc,hi_bc)
       end if
       ! Reconcile shared face values at box boundaries
       call this%U%mf(lvl)%override_sync(this%amr%geom(lvl))
@@ -502,7 +508,7 @@ contains
    end subroutine fill_velocity_lvl
 
    !> Fill velocity ghost cells on all levels
-   subroutine fill_velocity(this, time)
+   subroutine fill_velocity(this,time)
       implicit none
       class(amrincomp), intent(inout) :: this
       real(WP), intent(in) :: time
@@ -514,35 +520,35 @@ contains
 
    !> Fill new fine level velocity from coarse using divergence-free interpolation
    !> Used during MakeNewLevelFromCoarse (creation of new fine levels)
-   subroutine fill_velocity_from_coarse(this, lvl, time)
-      use iso_c_binding, only: c_loc, c_funloc, c_funptr, c_ptr
+   subroutine fill_velocity_from_coarse(this,lvl,time)
+      use iso_c_binding, only: c_loc,c_funloc,c_funptr,c_ptr
       use amrex_interface, only: amrmfab_fillcoarsepatch_faces
       use amrdata_class, only: amrdata_fillbc
       implicit none
       class(amrincomp), target, intent(inout) :: this
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
-      type(c_ptr) :: ctx_u, ctx_v, ctx_w
+      type(c_ptr) :: ctx_u,ctx_v,ctx_w
       type(c_funptr) :: bc_dispatch
-      integer :: rr(3), lo_bc(9), hi_bc(9)
+      integer :: rr(3),lo_bc(9),hi_bc(9)
       ! Get contexts for each velocity component
-      ctx_u = c_loc(this%U); ctx_v = c_loc(this%V); ctx_w = c_loc(this%W)
-      bc_dispatch = c_funloc(amrdata_fillbc)
+      ctx_u=c_loc(this%U);ctx_v=c_loc(this%V);ctx_w=c_loc(this%W)
+      bc_dispatch=c_funloc(amrdata_fillbc)
       ! Build combined BC array: [U_x,U_y,U_z, V_x,V_y,V_z, W_x,W_y,W_z]
-      lo_bc(1:3) = this%U%lo_bc(:,1)
-      lo_bc(4:6) = this%V%lo_bc(:,1)
-      lo_bc(7:9) = this%W%lo_bc(:,1)
-      hi_bc(1:3) = this%U%hi_bc(:,1)
-      hi_bc(4:6) = this%V%hi_bc(:,1)
-      hi_bc(7:9) = this%W%hi_bc(:,1)
-      rr = [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)]
+      lo_bc(1:3)=this%U%lo_bc(:,1)
+      lo_bc(4:6)=this%V%lo_bc(:,1)
+      lo_bc(7:9)=this%W%lo_bc(:,1)
+      hi_bc(1:3)=this%U%hi_bc(:,1)
+      hi_bc(4:6)=this%V%hi_bc(:,1)
+      hi_bc(7:9)=this%W%hi_bc(:,1)
+      rr=[this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)]
       ! Call 3-component divfree FillCoarsePatch
       call amrmfab_fillcoarsepatch_faces( &
-      &   this%U%mf(lvl), this%V%mf(lvl), this%W%mf(lvl), time, &
-      &   this%U%mf(lvl-1), this%V%mf(lvl-1), this%W%mf(lvl-1), &
-      &   this%amr%geom(lvl-1), this%amr%geom(lvl), &
-      &   ctx_u, ctx_v, ctx_w, bc_dispatch, bc_dispatch, bc_dispatch, &
-      &   1, 1, 1, rr, this%interp_vel, lo_bc, hi_bc)
+      &   this%U%mf(lvl),this%V%mf(lvl),this%W%mf(lvl),time, &
+      &   this%U%mf(lvl-1),this%V%mf(lvl-1),this%W%mf(lvl-1), &
+      &   this%amr%geom(lvl-1),this%amr%geom(lvl), &
+      &   ctx_u,ctx_v,ctx_w,bc_dispatch,bc_dispatch,bc_dispatch, &
+      &   1,1,1,rr,this%interp_vel,lo_bc,hi_bc)
       ! Reconcile shared face values at box boundaries
       call this%U%mf(lvl)%override_sync(this%amr%geom(lvl))
       call this%V%mf(lvl)%override_sync(this%amr%geom(lvl))
@@ -550,7 +556,7 @@ contains
    end subroutine fill_velocity_from_coarse
 
    !> Sync velocity ghost cells at a single level (lightweight, no C/F interpolation)
-   subroutine sync_velocity_lvl(this, lvl)
+   subroutine sync_velocity_lvl(this,lvl)
       implicit none
       class(amrincomp), intent(inout) :: this
       integer, intent(in) :: lvl
@@ -564,61 +570,59 @@ contains
       implicit none
       class(amrincomp), intent(inout) :: this
       integer :: lvl
-      do lvl = 0, this%amr%clvl()
+      do lvl=0,this%amr%clvl()
          call this%sync_velocity_lvl(lvl)
       end do
    end subroutine sync_velocity
 
    !> Fill destination MultiFabs with velocity using divergence-free interpolation
    !> Used during regridding (on_remake) to fill new layout MultiFabs
-   subroutine fill_velocity_mfab(this, Udest, Vdest, Wdest, lvl, time)
-      use iso_c_binding, only: c_loc, c_funloc, c_funptr, c_ptr
-      use amrex_interface, only: amrmfab_fillpatch_single, amrmfab_fillpatch_two_faces
+   subroutine fill_velocity_mfab(this,Udest,Vdest,Wdest,lvl,time)
+      use iso_c_binding, only: c_loc,c_funloc,c_funptr,c_ptr
+      use amrex_interface, only: amrmfab_fillpatch_single,amrmfab_fillpatch_two_faces
+      use amrex_amr_module, only: amrex_multifab
       use amrdata_class, only: amrdata_fillbc
       implicit none
       class(amrincomp), target, intent(inout) :: this
-      type(amrex_multifab), intent(inout) :: Udest, Vdest, Wdest
+      type(amrex_multifab), intent(inout) :: Udest,Vdest,Wdest
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
-      type(c_ptr) :: ctx_u, ctx_v, ctx_w
+      type(c_ptr) :: ctx_u,ctx_v,ctx_w
       type(c_funptr) :: bc_dispatch
-      integer :: rr(3), lo_bc(9), hi_bc(9)
-      real(WP) :: t_old, t_new
+      integer :: rr(3),lo_bc(9),hi_bc(9)
+      real(WP) :: t_old,t_new
 
       ! Get contexts for each velocity component
-      ctx_u = c_loc(this%U); ctx_v = c_loc(this%V); ctx_w = c_loc(this%W)
-      bc_dispatch = c_funloc(amrdata_fillbc)
-      t_old = time - 1.0e200_WP
-      t_new = time
+      ctx_u=c_loc(this%U); ctx_v=c_loc(this%V); ctx_w=c_loc(this%W)
+      bc_dispatch=c_funloc(amrdata_fillbc)
+      t_old=time-1.0e200_WP
+      t_new=time
 
       if (lvl .eq. 0) then
          ! Level 0: single-level fill (just physical BCs)
-         call amrmfab_fillpatch_single(Udest, t_old, this%U%mf(0), &
-         &   t_new, this%U%mf(0), this%amr%geom(0), ctx_u, bc_dispatch, time, 1, 1, 1)
-         call amrmfab_fillpatch_single(Vdest, t_old, this%V%mf(0), &
-         &   t_new, this%V%mf(0), this%amr%geom(0), ctx_v, bc_dispatch, time, 1, 1, 1)
-         call amrmfab_fillpatch_single(Wdest, t_old, this%W%mf(0), &
-         &   t_new, this%W%mf(0), this%amr%geom(0), ctx_w, bc_dispatch, time, 1, 1, 1)
+         call amrmfab_fillpatch_single(Udest,t_old,this%U%mf(0),t_new,this%U%mf(0),this%amr%geom(0),ctx_u,bc_dispatch,time,1,1,1)
+         call amrmfab_fillpatch_single(Vdest,t_old,this%V%mf(0),t_new,this%V%mf(0),this%amr%geom(0),ctx_v,bc_dispatch,time,1,1,1)
+         call amrmfab_fillpatch_single(Wdest,t_old,this%W%mf(0),t_new,this%W%mf(0),this%amr%geom(0),ctx_w,bc_dispatch,time,1,1,1)
       else
          ! Build combined BC array
-         lo_bc(1:3) = this%U%lo_bc(:,1)
-         lo_bc(4:6) = this%V%lo_bc(:,1)
-         lo_bc(7:9) = this%W%lo_bc(:,1)
-         hi_bc(1:3) = this%U%hi_bc(:,1)
-         hi_bc(4:6) = this%V%hi_bc(:,1)
-         hi_bc(7:9) = this%W%hi_bc(:,1)
-         rr = [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)]
+         lo_bc(1:3)=this%U%lo_bc(:,1)
+         lo_bc(4:6)=this%V%lo_bc(:,1)
+         lo_bc(7:9)=this%W%lo_bc(:,1)
+         hi_bc(1:3)=this%U%hi_bc(:,1)
+         hi_bc(4:6)=this%V%hi_bc(:,1)
+         hi_bc(7:9)=this%W%hi_bc(:,1)
+         rr=[this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)]
          ! Call 3-component divfree FillPatch
          call amrmfab_fillpatch_two_faces( &
-         &   Udest, Vdest, Wdest, time, &
-         &   t_old, this%U%mf(lvl-1), this%V%mf(lvl-1), this%W%mf(lvl-1), &
-         &   t_new, this%U%mf(lvl-1), this%V%mf(lvl-1), this%W%mf(lvl-1), &
+         &   Udest,Vdest,Wdest,time, &
+         &   t_old,this%U%mf(lvl-1),this%V%mf(lvl-1),this%W%mf(lvl-1), &
+         &   t_new,this%U%mf(lvl-1),this%V%mf(lvl-1),this%W%mf(lvl-1), &
          &   this%amr%geom(lvl-1), &
-         &   t_old, this%U%mf(lvl), this%V%mf(lvl), this%W%mf(lvl), &
-         &   t_new, this%U%mf(lvl), this%V%mf(lvl), this%W%mf(lvl), &
+         &   t_old,this%U%mf(lvl),this%V%mf(lvl),this%W%mf(lvl), &
+         &   t_new,this%U%mf(lvl),this%V%mf(lvl),this%W%mf(lvl), &
          &   this%amr%geom(lvl), &
-         &   ctx_u, ctx_v, ctx_w, bc_dispatch, bc_dispatch, bc_dispatch, &
-         &   1, 1, 1, rr, this%interp_vel, lo_bc, hi_bc)
+         &   ctx_u,ctx_v,ctx_w,bc_dispatch,bc_dispatch,bc_dispatch, &
+         &   1,1,1,rr,this%interp_vel,lo_bc,hi_bc)
       end if
       ! Reconcile shared face values at box boundaries
       call Udest%override_sync(this%amr%geom(lvl))
@@ -626,37 +630,14 @@ contains
       call Wdest%override_sync(this%amr%geom(lvl))
    end subroutine fill_velocity_mfab
 
-   !> Average down pressure for a single level (lvl+1 -> lvl)
-   !> Uses amrdata infrastructure which handles cell-centered averaging correctly
-   subroutine average_down_pressure_to(this, lvl)
-      implicit none
-      class(amrincomp), intent(inout) :: this
-      integer, intent(in) :: lvl
-      call this%P%average_downto(lvl)
-   end subroutine average_down_pressure_to
-
-   !> Average down pressure from finest to lbase
-   !> Simply calls average_down_pressure_to in a loop
-   !> @param lbase Optional: lowest level to average down to (default 0)
-   subroutine average_down_pressure(this, lbase)
-      implicit none
-      class(amrincomp), intent(inout) :: this
-      integer, intent(in), optional :: lbase
-      integer :: lvl, lb
-      lb = 0; if (present(lbase)) lb = lbase
-      do lvl = this%amr%clvl()-1, lb, -1
-         call this%average_down_pressure_to(lvl)
-      end do
-   end subroutine average_down_pressure
-
    !> Velocity boundary condition callback (shared by U, V, W)
    !> Handles staggering-aware BC fills for face-centered velocity data
    !> - ext_dir: calls user_bc callback for user-controlled values
    !> - foextrap: copies from interior (Neumann, zero gradient)
    !> - reflect_even/odd: symmetry/anti-symmetry
    subroutine velocity_fillbc(this,mf,scomp,ncomp,time,geom)
-      use amrex_amr_module, only: amrex_mfiter,amrex_mfiter_build,amrex_mfiter_destroy,amrex_bc_ext_dir,&
-      &                           amrex_bc_foextrap,amrex_bc_reflect_even,amrex_bc_reflect_odd
+      use amrex_amr_module, only: amrex_mfiter,amrex_mfiter_build,amrex_mfiter_destroy,amrex_multifab,amrex_geometry,&
+      &                           amrex_bc_ext_dir,amrex_bc_foextrap,amrex_bc_reflect_even,amrex_bc_reflect_odd
       implicit none
       class(amrdata), intent(inout) :: this
       type(amrex_multifab), intent(inout) :: mf
@@ -668,6 +649,7 @@ contains
       real(WP), dimension(:,:,:,:), contiguous, pointer :: p
       integer :: dlo(3),dhi(3),flo(3),fhi(3)
       integer :: ilo,ihi,jlo,jhi,klo,khi
+      integer :: lvl
       character(len=1) :: comp
 
       ! Get point to solver
@@ -676,10 +658,11 @@ contains
          solver=>s
       end select
 
-      ! Get domain bounds and component ID
+      ! Get domain bounds, component ID, and level
       dlo=geom%domain%lo
       dhi=geom%domain%hi
       comp=this%name(1:1)  ! 'U', 'V', or 'W'
+      lvl=this%fill_lvl_cache
 
       ! Compute staggered domain bounds for this component
       ! Cell domain: [dlo, dhi]. Face domains extend by 1 in staggered direction.
@@ -751,7 +734,7 @@ contains
             ! User-controlled: fill via user callback
             if (associated(solver%user_bc)) then
                bc_bx=amrex_box(slo,shi)
-               call solver%user_bc(solver,p,bc_bx,comp,face,time)
+               call solver%user_bc(lvl=lvl,time=time,face=face,bx=bc_bx,comp=comp,p=p)
             else
                ! Default to zero if no callback provided
                do k=slo(3),shi(3); do j=slo(2),shi(2); do i=slo(1),shi(1)
@@ -826,203 +809,56 @@ contains
 
    end subroutine velocity_fillbc
 
-   !> Correct outflow velocity to ensure global mass conservation
-   !> Scans all 6 domain faces: ext_dir faces contribute fixed flux,
-   !> foextrap faces are correctable. Correction is distributed uniformly
-   !> over all foextrap faces, optionally weighted by VF (fluid volume fraction).
-   !> Uses composite integration with fine_mask to avoid double-counting across AMR levels.
-   subroutine correct_outflow(this,VF)
-      use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
-      use parallel, only: MPI_REAL_WP
-      use messager, only: die
-      use amrex_amr_module, only: amrex_bc_foextrap,amrex_imultifab,amrex_imultifab_build,amrex_imultifab_destroy
-      use amrex_interface,  only: amrmask_make_fine
-      implicit none
-      class(amrincomp), intent(inout) :: this
-      class(amrdata), intent(in), optional :: VF
-      ! Face classification: ftype(dir,side) where dir=1,2,3 and side=1(lo),2(hi)
-      integer, parameter :: SKIP=0,FIXED=1,CORR=2,INTEGRATE=1,CORRECT=2
-      integer, dimension(3,2) :: ftype
-      logical, dimension(3) :: per
-      logical :: has_corr
-      ! Composite integration
-      real(WP) :: Qflux,Aout,Ucorr,dA,VFf
-      integer :: lvl,i,j,k,dir,side,ierr,dlo(3),dhi(3),bc
-      type(amrex_mfiter) :: mfi
-      type(amrex_box) :: bx
-      type(amrex_imultifab) :: mask
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW,pVF
-      integer, dimension(:,:,:,:), contiguous, pointer :: pMask
-      ! Sanity check
-      if (present(VF)) then; if (VF%ng.lt.1) call die('[amrincomp correct_outflow] VF must have at least 1 ghost cell'); end if
-      ! Classify faces by dir and side
-      per=[this%amr%xper,this%amr%yper,this%amr%zper]
-      ftype=SKIP; has_corr=.false.
-      do dir=1,3; do side=1,2
-         if (per(dir)) cycle
-         ! Get BC type on normal component for this dir/side
-         select case (dir)
-          case (1); bc=merge(this%U%lo_bc(1,1),this%U%hi_bc(1,1),side.eq.1)
-          case (2); bc=merge(this%V%lo_bc(2,1),this%V%hi_bc(2,1),side.eq.1)
-          case (3); bc=merge(this%W%lo_bc(3,1),this%W%hi_bc(3,1),side.eq.1)
-         end select
-         ftype(dir,side)=merge(CORR,FIXED,bc.eq.amrex_bc_foextrap)
-         if (ftype(dir,side).eq.CORR) has_corr=.true.
-      end do; end do
-      if (.not.has_corr) return
-      ! Pass 1: Integrate all face fluxes
-      Qflux=0.0_WP; Aout=0.0_WP
-      call composite_loop(INTEGRATE)
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Qflux,1,MPI_REAL_WP,MPI_SUM,this%amr%comm,ierr)
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Aout, 1,MPI_REAL_WP,MPI_SUM,this%amr%comm,ierr)
-      ! Compute correction velocity
-      if (Aout.le.0.0_WP) return
-      Ucorr=-Qflux/Aout
-      ! Pass 2: Apply correction to foextrap faces
-      call composite_loop(CORRECT)
-
-   contains
-
-      !> Composite loop over all levels with fine masking
-      !> mode=INTEGRATE: accumulate Qflux/Aout; mode=CORRECT: apply Ucorr
-      subroutine composite_loop(mode)
-         implicit none
-         integer, intent(in) :: mode
-         do lvl=0,this%amr%clvl()
-            dlo=this%amr%geom(lvl)%domain%lo
-            dhi=this%amr%geom(lvl)%domain%hi
-            if (lvl.lt.this%amr%clvl()) then
-               call amrex_imultifab_build(mask,this%amr%ba(lvl),this%amr%dm(lvl),1,0)
-               call amrmask_make_fine(mask,this%amr%ba(lvl+1),[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],0,1)
-            end if
-            call this%amr%mfiter_build(lvl,mfi,tiling=.false.)
-            do while (mfi%next())
-               bx=mfi%tilebox()
-               pU=>this%U%mf(lvl)%dataptr(mfi)
-               pV=>this%V%mf(lvl)%dataptr(mfi)
-               pW=>this%W%mf(lvl)%dataptr(mfi)
-               if (present(VF)) pVF=>VF%mf(lvl)%dataptr(mfi)
-               if (lvl.lt.this%amr%clvl()) pMask=>mask%dataptr(mfi)
-               do dir=1,3; do side=1,2
-                  if (mode.eq.INTEGRATE.and.ftype(dir,side).eq.SKIP) cycle
-                  if (mode.eq.CORRECT.and.ftype(dir,side).ne.CORR) cycle
-                  call process_face(dir,side,mode)
-               end do; end do
-            end do
-            call this%amr%mfiter_destroy(mfi)
-            if (lvl.lt.this%amr%clvl()) call amrex_imultifab_destroy(mask)
-         end do
-      end subroutine composite_loop
-
-      !> Process a single domain boundary face
-      !> dir=1,2,3 (x,y,z); side=1(lo),2(hi)
-      !> mode=INTEGRATE: accumulate flux into Qflux/Aout
-      !> mode=CORRECT: apply Ucorr correction to velocity
-      subroutine process_face(dir,side,mode)
-         implicit none
-         integer, intent(in) :: dir,side,mode
-         integer :: bnd,ci
-         real(WP) :: sgn
-         ! Outward normal sign: lo face -> -1, hi face -> +1
-         sgn=merge(-1.0_WP,1.0_WP,side.eq.1)
-         ! Staggered boundary index and adjacent interior cell
-         if (side.eq.1) then; bnd=dlo(dir); ci=dlo(dir); else; bnd=dhi(dir)+1; ci=dhi(dir); end if
-         ! Check tile ownership (tile must contain the interior cell)
-         if (bx%lo(dir).gt.ci.or.bx%hi(dir).lt.ci) return
-         ! Face area (product of transverse mesh spacings)
-         select case (dir)
-          case (1); dA=this%amr%dy(lvl)*this%amr%dz(lvl)
-          case (2); dA=this%amr%dx(lvl)*this%amr%dz(lvl)
-          case (3); dA=this%amr%dx(lvl)*this%amr%dy(lvl)
-         end select
-         ! Loop over transverse indices
-         select case (dir)
-          case (1)
-            do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2)
-               if (lvl.lt.this%amr%clvl()) then; if (pMask(ci,j,k,1).eq.0) cycle; end if
-               VFf=1.0_WP; if (present(VF)) VFf=0.5_WP*sum(pVF(bnd-1:bnd,j,k,1))
-               if (mode.eq.INTEGRATE) then
-                  Qflux=Qflux+sgn*pU(bnd,j,k,1)*VFf*dA
-                  if (ftype(dir,side).eq.CORR) Aout=Aout+VFf*dA
-               else
-                  pU(bnd,j,k,1)=pU(bnd,j,k,1)+sgn*Ucorr*VFf
-               end if
-            end do; end do
-          case (2)
-            do k=bx%lo(3),bx%hi(3); do i=bx%lo(1),bx%hi(1)
-               if (lvl.lt.this%amr%clvl()) then; if (pMask(i,ci,k,1).eq.0) cycle; end if
-               VFf=1.0_WP; if (present(VF)) VFf=0.5_WP*sum(pVF(i,bnd-1:bnd,k,1))
-               if (mode.eq.INTEGRATE) then
-                  Qflux=Qflux+sgn*pV(i,bnd,k,1)*VFf*dA
-                  if (ftype(dir,side).eq.CORR) Aout=Aout+VFf*dA
-               else
-                  pV(i,bnd,k,1)=pV(i,bnd,k,1)+sgn*Ucorr*VFf
-               end if
-            end do; end do
-          case (3)
-            do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-               if (lvl.lt.this%amr%clvl()) then; if (pMask(i,j,ci,1).eq.0) cycle; end if
-               VFf=1.0_WP; if (present(VF)) VFf=0.5_WP*sum(pVF(i,j,bnd-1:bnd,1))
-               if (mode.eq.INTEGRATE) then
-                  Qflux=Qflux+sgn*pW(i,j,bnd,1)*VFf*dA
-                  if (ftype(dir,side).eq.CORR) Aout=Aout+VFf*dA
-               else
-                  pW(i,j,bnd,1)=pW(i,j,bnd,1)+sgn*Ucorr*VFf
-               end if
-            end do; end do
-         end select
-      end subroutine process_face
-
-   end subroutine correct_outflow
-
    ! ============================================================================
-   ! PHYSICS METHODS
+   ! UTILITIES
    ! ============================================================================
 
    !> Compute divergence of velocity into internal div field, update divmax
    !> Uses composite fine masking so covered coarse cells don't pollute divmax
    subroutine get_div(this)
-      use amrex_amr_module, only: amrex_mfiter, amrex_box, amrex_imultifab, amrex_imultifab_build, amrex_imultifab_destroy
-      use amrex_interface,  only: amrmfab_compute_divergence, amrmask_make_fine
+      use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_imultifab,amrex_imultifab_build,amrex_imultifab_destroy
+      use amrex_interface,  only: amrmfab_compute_divergence,amrmask_make_fine
+      use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX,MPI_IN_PLACE
+      use parallel, only: MPI_REAL_WP
       implicit none
       class(amrincomp), intent(inout) :: this
-      integer :: lvl, i, j, k
+      integer :: lvl,i,j,k,ierr
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       type(amrex_imultifab) :: mask
       real(WP), dimension(:,:,:,:), contiguous, pointer :: pDiv
       integer, dimension(:,:,:,:), contiguous, pointer :: pMask
       ! Use our wrapper to amrex's 2nd order staggered divergence
-      do lvl = 0, this%amr%clvl()
-         call amrmfab_compute_divergence(this%div%mf(lvl), &
-            this%U%mf(lvl), this%V%mf(lvl), this%W%mf(lvl), &
-            this%amr%geom(lvl))
+      do lvl=0,this%amr%clvl()
+         call amrmfab_compute_divergence(this%div%mf(lvl),this%U%mf(lvl),this%V%mf(lvl),this%W%mf(lvl),this%amr%geom(lvl))
       end do
       ! Update divmax using composite fine masking
-      this%divmax = 0.0_WP
-      do lvl = 0, this%amr%clvl()
+      this%divmax=0.0_WP
+      do lvl=0,this%amr%clvl()
          ! Build fine mask for this level (if not finest)
          if (lvl.lt.this%amr%clvl()) then
-            call amrex_imultifab_build(mask, this%amr%ba(lvl), this%amr%dm(lvl), 1, 0)
-            call amrmask_make_fine(mask, this%amr%ba(lvl+1), [this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], 0, 1)
+            call amrex_imultifab_build(mask,this%amr%ba(lvl),this%amr%dm(lvl),1,0)
+            call amrmask_make_fine(mask,this%amr%ba(lvl+1),[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],0,1)
          end if
-         call this%amr%mfiter_build(lvl, mfi)
+         call this%amr%mfiter_build(lvl,mfi)
          do while (mfi%next())
-            bx = mfi%tilebox()
-            pDiv => this%div%mf(lvl)%dataptr(mfi)
-            if (lvl.lt.this%amr%clvl()) pMask => mask%dataptr(mfi)
-            do k = bx%lo(3), bx%hi(3); do j = bx%lo(2), bx%hi(2); do i = bx%lo(1), bx%hi(1)
+            bx=mfi%tilebox()
+            pDiv=>this%div%mf(lvl)%dataptr(mfi)
+            if (lvl.lt.this%amr%clvl()) pMask=>mask%dataptr(mfi)
+            do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                if (lvl.lt.this%amr%clvl()) then; if (pMask(i,j,k,1).eq.0) cycle; end if
-               this%divmax = max(this%divmax, abs(pDiv(i,j,k,1)))
+               this%divmax=max(this%divmax,abs(pDiv(i,j,k,1)))
             end do; end do; end do
          end do
          call this%amr%mfiter_destroy(mfi)
          if (lvl.lt.this%amr%clvl()) call amrex_imultifab_destroy(mask)
       end do
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%divmax,1,MPI_REAL_WP,MPI_MAX,this%amr%comm,ierr)
    end subroutine get_div
 
    !> Compute pressure gradient into user-provided face amrdata (assumes ghost cells are filled)
    subroutine get_pgrad(this,dPdx,dPdy,dPdz)
+      use amrex_amr_module, only: amrex_mfiter
       implicit none
       class(amrincomp), intent(inout) :: this
       type(amrdata), intent(inout) :: dPdx,dPdy,dPdz
@@ -1060,6 +896,10 @@ contains
          call this%amr%mfiter_destroy(mfi)
       end do
    end subroutine get_pgrad
+
+   ! ============================================================================
+   ! PHYSICS METHODS
+   ! ============================================================================
 
    !> Compute momentum advection and viscous terms for all levels
    !> No pressure gradient, user can add it in the main loop
@@ -1292,6 +1132,7 @@ contains
          do n=1,nfilter
             call scratch%setval(0.0_WP)
             call scratch%copy(srcmf=visc_t,srccomp=1,dstcomp=1,nc=1,ng=0)
+            call this%amr%mfab_validextrap(lvl=lvl,mfab=scratch)
             call scratch%fill_boundary(this%amr%geom(lvl))
             call this%amr%mfab_foextrap(lvl=lvl,mfab=scratch)
             call this%amr%mfiter_build(lvl,mfi)
@@ -1310,6 +1151,7 @@ contains
          end do
          call amrex_multifab_destroy(scratch)
          ! Fill visc_t ghosts after filtering
+         call this%amr%mfab_validextrap(lvl=lvl,mfab=visc_t)
          call visc_t%fill_boundary(this%amr%geom(lvl))
          call this%amr%mfab_foextrap(lvl=lvl,mfab=visc_t)
          ! Phase 3: Convert to dynamic viscosity and add to this%visc
@@ -1328,123 +1170,272 @@ contains
       end do
    end subroutine add_vreman
 
+   !> Compute CFL numbers (convective and viscous)
+   subroutine get_cfl(this,dt,cfl,cflc)
+      implicit none
+      class(amrincomp), intent(inout) :: this
+      real(WP), intent(in) :: dt
+      real(WP), intent(out) :: cfl
+      real(WP), intent(out), optional :: cflc
+      integer :: lvl
+      real(WP) :: Umax_lvl,Vmax_lvl,Wmax_lvl
+      ! Reset CFLs
+      this%CFLc_x=0.0_WP; this%CFLc_y=0.0_WP; this%CFLc_z=0.0_WP
+      this%CFLv_x=0.0_WP; this%CFLv_y=0.0_WP; this%CFLv_z=0.0_WP
+      ! Compute CFL at each level (finest level determines dt)
+      do lvl=0,this%amr%clvl()
+         Umax_lvl=this%U%norm0(lvl=lvl)
+         Vmax_lvl=this%V%norm0(lvl=lvl)
+         Wmax_lvl=this%W%norm0(lvl=lvl)
+         ! Convective CFL
+         if (this%amr%nx.gt.1) this%CFLc_x=max(this%CFLc_x,dt*Umax_lvl/this%amr%dx(lvl))
+         if (this%amr%ny.gt.1) this%CFLc_y=max(this%CFLc_y,dt*Vmax_lvl/this%amr%dy(lvl))
+         if (this%amr%nz.gt.1) this%CFLc_z=max(this%CFLc_z,dt*Wmax_lvl/this%amr%dz(lvl))
+         ! Viscous CFL (explicit stability: dt < dx^2 / (4*nu))
+         if (this%amr%nx.gt.1) this%CFLv_x=max(this%CFLv_x,4.0_WP*this%visc%norm0(lvl=lvl)*dt/(this%rho*this%amr%dx(lvl)**2))
+         if (this%amr%ny.gt.1) this%CFLv_y=max(this%CFLv_y,4.0_WP*this%visc%norm0(lvl=lvl)*dt/(this%rho*this%amr%dy(lvl)**2))
+         if (this%amr%nz.gt.1) this%CFLv_z=max(this%CFLv_z,4.0_WP*this%visc%norm0(lvl=lvl)*dt/(this%rho*this%amr%dz(lvl)**2))
+      end do
+      ! Compute max overall CFL
+      this%CFL=max(this%CFLc_x,this%CFLc_y,this%CFLc_z,this%CFLv_x,this%CFLv_y,this%CFLv_z)
+      ! Return max overall CFL
+      cfl=this%CFL
+      ! Optionally return max convective CFL
+      if (present(cflc)) cflc=max(this%CFLc_x,this%CFLc_y,this%CFLc_z)
+   end subroutine get_cfl
+
+   !> Correct outflow velocity to ensure global mass conservation
+   !> Scans all 6 domain faces: ext_dir faces contribute fixed flux,
+   !> foextrap faces are correctable. Correction is distributed uniformly
+   !> over all foextrap faces, optionally weighted by VF (fluid volume fraction).
+   !> Uses composite integration with fine_mask to avoid double-counting across AMR levels.
+   subroutine correct_outflow(this,VF)
+      use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+      use parallel, only: MPI_REAL_WP
+      use messager, only: die
+      use amrex_amr_module, only: amrex_mfiter,amrex_bc_foextrap,amrex_imultifab,amrex_imultifab_build,amrex_imultifab_destroy
+      use amrex_interface,  only: amrmask_make_fine
+      implicit none
+      class(amrincomp), intent(inout) :: this
+      class(amrdata), intent(in), optional :: VF
+      ! Face classification: ftype(dir,side) where dir=1,2,3 and side=1(lo),2(hi)
+      integer, parameter :: SKIP=0,FIXED=1,CORR=2,INTEGRATE=1,CORRECT=2
+      integer, dimension(3,2) :: ftype
+      logical, dimension(3) :: per
+      logical :: has_corr
+      ! Composite integration
+      real(WP) :: Qflux,Aout,Ucorr,dA,VFf
+      integer :: lvl,i,j,k,dir,side,ierr,dlo(3),dhi(3),bc
+      type(amrex_mfiter) :: mfi
+      type(amrex_box) :: bx
+      type(amrex_imultifab) :: mask
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW,pVF
+      integer, dimension(:,:,:,:), contiguous, pointer :: pMask
+      ! Sanity check
+      if (present(VF)) then; if (VF%ng.lt.1) call die('[amrincomp correct_outflow] VF must have at least 1 ghost cell'); end if
+      ! Classify faces by dir and side
+      per=[this%amr%xper,this%amr%yper,this%amr%zper]
+      ftype=SKIP; has_corr=.false.
+      do dir=1,3; do side=1,2
+         if (per(dir)) cycle
+         ! Get BC type on normal component for this dir/side
+         select case (dir)
+          case (1); bc=merge(this%U%lo_bc(1,1),this%U%hi_bc(1,1),side.eq.1)
+          case (2); bc=merge(this%V%lo_bc(2,1),this%V%hi_bc(2,1),side.eq.1)
+          case (3); bc=merge(this%W%lo_bc(3,1),this%W%hi_bc(3,1),side.eq.1)
+         end select
+         ftype(dir,side)=merge(CORR,FIXED,bc.eq.amrex_bc_foextrap)
+         if (ftype(dir,side).eq.CORR) has_corr=.true.
+      end do; end do
+      if (.not.has_corr) return
+      ! Pass 1: Integrate all face fluxes
+      Qflux=0.0_WP; Aout=0.0_WP
+      call composite_loop(INTEGRATE)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,Qflux,1,MPI_REAL_WP,MPI_SUM,this%amr%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,Aout, 1,MPI_REAL_WP,MPI_SUM,this%amr%comm,ierr)
+      ! Compute correction velocity
+      if (Aout.le.0.0_WP) return
+      Ucorr=-Qflux/Aout
+      ! Pass 2: Apply correction to foextrap faces
+      call composite_loop(CORRECT)
+
+   contains
+
+      !> Composite loop over all levels with fine masking
+      !> mode=INTEGRATE: accumulate Qflux/Aout; mode=CORRECT: apply Ucorr
+      subroutine composite_loop(mode)
+         implicit none
+         integer, intent(in) :: mode
+         do lvl=0,this%amr%clvl()
+            dlo=this%amr%geom(lvl)%domain%lo
+            dhi=this%amr%geom(lvl)%domain%hi
+            if (lvl.lt.this%amr%clvl()) then
+               call amrex_imultifab_build(mask,this%amr%ba(lvl),this%amr%dm(lvl),1,0)
+               call amrmask_make_fine(mask,this%amr%ba(lvl+1),[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],0,1)
+            end if
+            call this%amr%mfiter_build(lvl,mfi,tiling=.false.)
+            do while (mfi%next())
+               bx=mfi%tilebox()
+               pU=>this%U%mf(lvl)%dataptr(mfi)
+               pV=>this%V%mf(lvl)%dataptr(mfi)
+               pW=>this%W%mf(lvl)%dataptr(mfi)
+               if (present(VF)) pVF=>VF%mf(lvl)%dataptr(mfi)
+               if (lvl.lt.this%amr%clvl()) pMask=>mask%dataptr(mfi)
+               do dir=1,3; do side=1,2
+                  if (mode.eq.INTEGRATE.and.ftype(dir,side).eq.SKIP) cycle
+                  if (mode.eq.CORRECT.and.ftype(dir,side).ne.CORR) cycle
+                  call process_face(dir,side,mode)
+               end do; end do
+            end do
+            call this%amr%mfiter_destroy(mfi)
+            if (lvl.lt.this%amr%clvl()) call amrex_imultifab_destroy(mask)
+         end do
+      end subroutine composite_loop
+
+      !> Process a single domain boundary face
+      !> dir=1,2,3 (x,y,z); side=1(lo),2(hi)
+      !> mode=INTEGRATE: accumulate flux into Qflux/Aout
+      !> mode=CORRECT: apply Ucorr correction to velocity
+      subroutine process_face(dir,side,mode)
+         implicit none
+         integer, intent(in) :: dir,side,mode
+         integer :: bnd,ci
+         real(WP) :: sgn
+         ! Outward normal sign: lo face -> -1, hi face -> +1
+         sgn=merge(-1.0_WP,1.0_WP,side.eq.1)
+         ! Staggered boundary index and adjacent interior cell
+         if (side.eq.1) then; bnd=dlo(dir); ci=dlo(dir); else; bnd=dhi(dir)+1; ci=dhi(dir); end if
+         ! Check tile ownership (tile must contain the interior cell)
+         if (bx%lo(dir).gt.ci.or.bx%hi(dir).lt.ci) return
+         ! Face area (product of transverse mesh spacings)
+         select case (dir)
+          case (1); dA=this%amr%dy(lvl)*this%amr%dz(lvl)
+          case (2); dA=this%amr%dx(lvl)*this%amr%dz(lvl)
+          case (3); dA=this%amr%dx(lvl)*this%amr%dy(lvl)
+         end select
+         ! Loop over transverse indices
+         select case (dir)
+          case (1)
+            do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2)
+               if (lvl.lt.this%amr%clvl()) then; if (pMask(ci,j,k,1).eq.0) cycle; end if
+               VFf=1.0_WP; if (present(VF)) VFf=0.5_WP*sum(pVF(bnd-1:bnd,j,k,1))
+               if (mode.eq.INTEGRATE) then
+                  Qflux=Qflux+sgn*pU(bnd,j,k,1)*VFf*dA
+                  if (ftype(dir,side).eq.CORR) Aout=Aout+VFf*dA
+               else
+                  pU(bnd,j,k,1)=pU(bnd,j,k,1)+sgn*Ucorr*VFf
+               end if
+            end do; end do
+          case (2)
+            do k=bx%lo(3),bx%hi(3); do i=bx%lo(1),bx%hi(1)
+               if (lvl.lt.this%amr%clvl()) then; if (pMask(i,ci,k,1).eq.0) cycle; end if
+               VFf=1.0_WP; if (present(VF)) VFf=0.5_WP*sum(pVF(i,bnd-1:bnd,k,1))
+               if (mode.eq.INTEGRATE) then
+                  Qflux=Qflux+sgn*pV(i,bnd,k,1)*VFf*dA
+                  if (ftype(dir,side).eq.CORR) Aout=Aout+VFf*dA
+               else
+                  pV(i,bnd,k,1)=pV(i,bnd,k,1)+sgn*Ucorr*VFf
+               end if
+            end do; end do
+          case (3)
+            do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+               if (lvl.lt.this%amr%clvl()) then; if (pMask(i,j,ci,1).eq.0) cycle; end if
+               VFf=1.0_WP; if (present(VF)) VFf=0.5_WP*sum(pVF(i,j,bnd-1:bnd,1))
+               if (mode.eq.INTEGRATE) then
+                  Qflux=Qflux+sgn*pW(i,j,bnd,1)*VFf*dA
+                  if (ftype(dir,side).eq.CORR) Aout=Aout+VFf*dA
+               else
+                  pW(i,j,bnd,1)=pW(i,j,bnd,1)+sgn*Ucorr*VFf
+               end if
+            end do; end do
+         end select
+      end subroutine process_face
+
+   end subroutine correct_outflow
+
+   ! ============================================================================
+   ! SOLVER INFO
+   ! ============================================================================
+
    !> Get solver information: min/max velocity, min/max pressure, divergence, momentum, TKE
    subroutine get_info(this)
-      use amrex_amr_module, only: amrex_mfiter, amrex_box, amrex_imultifab, amrex_imultifab_build, amrex_imultifab_destroy
+      use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_imultifab,amrex_imultifab_build,amrex_imultifab_destroy
       use amrex_interface, only: amrmask_make_fine
       use parallel, only: MPI_REAL_WP
       use mpi_f08
       implicit none
       class(amrincomp), intent(inout) :: this
-      integer :: lvl, i, j, k, ierr
-      real(WP) :: dV, Uc, Vc, Wc
+      integer :: lvl,i,j,k,ierr
+      real(WP) :: dV,Uc,Vc,Wc
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       type(amrex_imultifab) :: mask
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pU, pV, pW
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pU,pV,pW
       integer, dimension(:,:,:,:), contiguous, pointer :: pMask
 
       ! First compute divergence (this updates divmax)
       call this%get_div()
 
       ! Initialize min/max values
-      this%Umax = -huge(1.0_WP)
-      this%Vmax = -huge(1.0_WP)
-      this%Wmax = -huge(1.0_WP)
-      this%Pmax = -huge(1.0_WP)
+      this%Umax=-huge(1.0_WP)
+      this%Vmax=-huge(1.0_WP)
+      this%Wmax=-huge(1.0_WP)
+      this%Pmax=-huge(1.0_WP)
 
       ! Loop over all levels for min/max
-      do lvl = 0, this%amr%clvl()
-         this%Umax = max(this%Umax, this%U%norm0(lvl=lvl))
-         this%Vmax = max(this%Vmax, this%V%norm0(lvl=lvl))
-         this%Wmax = max(this%Wmax, this%W%norm0(lvl=lvl))
-         this%Pmax = max(this%Pmax, this%P%norm0(lvl=lvl))
+      do lvl=0,this%amr%clvl()
+         this%Umax=max(this%Umax,this%U%norm0(lvl=lvl))
+         this%Vmax=max(this%Vmax,this%V%norm0(lvl=lvl))
+         this%Wmax=max(this%Wmax,this%W%norm0(lvl=lvl))
+         this%Pmax=max(this%Pmax,this%P%norm0(lvl=lvl))
       end do
 
       ! Momentum integrals (rho * U * dV, summed over cells at level 0)
-      this%rhoUint = this%rho * this%U%get_sum(lvl=0) * this%amr%cell_vol(0)
-      this%rhoVint = this%rho * this%V%get_sum(lvl=0) * this%amr%cell_vol(0)
-      this%rhoWint = this%rho * this%W%get_sum(lvl=0) * this%amr%cell_vol(0)
+      this%rhoUint=this%rho*this%U%get_sum(lvl=0)*this%amr%cell_vol(0)
+      this%rhoVint=this%rho*this%V%get_sum(lvl=0)*this%amr%cell_vol(0)
+      this%rhoWint=this%rho*this%W%get_sum(lvl=0)*this%amr%cell_vol(0)
 
       ! Kinetic energy integral: 0.5 * rho * (Uc^2 + Vc^2 + Wc^2) * dV
       ! Uses composite integration with fine masking to avoid double-counting
-      this%rhoKint = 0.0_WP
-      do lvl = 0, this%amr%clvl()
-         dV = this%amr%cell_vol(lvl)
+      this%rhoKint=0.0_WP
+      do lvl=0,this%amr%clvl()
+         dV=this%amr%cell_vol(lvl)
 
          ! Build fine mask for this level (if not finest)
-         if (lvl .lt. this%amr%clvl()) then
-            call amrex_imultifab_build(mask, this%amr%ba(lvl), this%amr%dm(lvl), 1, 0)
-            call amrmask_make_fine(mask, this%amr%ba(lvl+1), [this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], 0, 1)
+         if (lvl.lt.this%amr%clvl()) then
+            call amrex_imultifab_build(mask,this%amr%ba(lvl),this%amr%dm(lvl),1,0)
+            call amrmask_make_fine(mask,this%amr%ba(lvl+1),[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],0,1)
          end if
 
-         call this%amr%mfiter_build(lvl, mfi)
+         call this%amr%mfiter_build(lvl,mfi)
          do while (mfi%next())
-            bx = mfi%tilebox()
-            pU => this%U%mf(lvl)%dataptr(mfi)
-            pV => this%V%mf(lvl)%dataptr(mfi)
-            pW => this%W%mf(lvl)%dataptr(mfi)
-            if (lvl .lt. this%amr%clvl()) pMask => mask%dataptr(mfi)
+            bx=mfi%tilebox()
+            pU=>this%U%mf(lvl)%dataptr(mfi)
+            pV=>this%V%mf(lvl)%dataptr(mfi)
+            pW=>this%W%mf(lvl)%dataptr(mfi)
+            if (lvl.lt.this%amr%clvl()) pMask=>mask%dataptr(mfi)
 
-            do k = bx%lo(3), bx%hi(3)
-               do j = bx%lo(2), bx%hi(2)
-                  do i = bx%lo(1), bx%hi(1)
-                     ! Skip cells covered by finer level
-                     if (lvl .lt. this%amr%clvl()) then
-                        if (pMask(i,j,k,1) .eq. 0) cycle
-                     end if
-                     ! Interpolate face velocities to cell center
-                     Uc = 0.5_WP * (pU(i,j,k,1) + pU(i+1,j,k,1))
-                     Vc = 0.5_WP * (pV(i,j,k,1) + pV(i,j+1,k,1))
-                     Wc = 0.5_WP * (pW(i,j,k,1) + pW(i,j,k+1,1))
-                     ! Accumulate kinetic energy
-                     this%rhoKint = this%rhoKint + 0.5_WP * this%rho * (Uc**2 + Vc**2 + Wc**2) * dV
-                  end do
-               end do
-            end do
+            do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+               ! Skip cells covered by finer level
+               if (lvl.lt.this%amr%clvl()) then
+                  if (pMask(i,j,k,1).eq.0) cycle
+               end if
+               ! Interpolate face velocities to cell center
+               Uc=0.5_WP*(pU(i,j,k,1)+pU(i+1,j,k,1))
+               Vc=0.5_WP*(pV(i,j,k,1)+pV(i,j+1,k,1))
+               Wc=0.5_WP*(pW(i,j,k,1)+pW(i,j,k+1,1))
+               ! Accumulate kinetic energy
+               this%rhoKint=this%rhoKint+0.5_WP*this%rho*(Uc**2+Vc**2+Wc**2)*dV
+            end do; end do; end do
          end do
          call this%amr%mfiter_destroy(mfi)
 
-         if (lvl .lt. this%amr%clvl()) call amrex_imultifab_destroy(mask)
+         if (lvl.lt.this%amr%clvl()) call amrex_imultifab_destroy(mask)
       end do
 
       ! Reduce across MPI ranks
-      call MPI_ALLREDUCE(MPI_IN_PLACE, this%rhoKint, 1, MPI_REAL_WP, MPI_SUM, this%amr%comm, ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%rhoKint,1,MPI_REAL_WP,MPI_SUM,this%amr%comm,ierr)
    end subroutine get_info
-
-   !> Compute CFL numbers (convective and viscous)
-   subroutine get_cfl(this, dt, cfl, cflc)
-      implicit none
-      class(amrincomp), intent(inout) :: this
-      real(WP), intent(in)  :: dt
-      real(WP), intent(out) :: cfl
-      real(WP), intent(out), optional :: cflc
-      integer :: lvl
-      real(WP) :: Umax_lvl, Vmax_lvl, Wmax_lvl
-      ! Reset CFLs
-      this%CFLc_x = 0.0_WP; this%CFLc_y = 0.0_WP; this%CFLc_z = 0.0_WP
-      this%CFLv_x = 0.0_WP; this%CFLv_y = 0.0_WP; this%CFLv_z = 0.0_WP
-      ! Compute CFL at each level (finest level determines dt)
-      do lvl = 0, this%amr%clvl()
-         Umax_lvl = this%U%norm0(lvl=lvl)
-         Vmax_lvl = this%V%norm0(lvl=lvl)
-         Wmax_lvl = this%W%norm0(lvl=lvl)
-         ! Convective CFL
-         if (this%amr%nx.gt.1) this%CFLc_x = max(this%CFLc_x, dt * Umax_lvl / this%amr%dx(lvl))
-         if (this%amr%ny.gt.1) this%CFLc_y = max(this%CFLc_y, dt * Vmax_lvl / this%amr%dy(lvl))
-         if (this%amr%nz.gt.1) this%CFLc_z = max(this%CFLc_z, dt * Wmax_lvl / this%amr%dz(lvl))
-         ! Viscous CFL (explicit stability: dt < dx^2 / (4*nu))
-         if (this%amr%nx.gt.1) this%CFLv_x = max(this%CFLv_x, 4.0_WP * this%visc%norm0(lvl=lvl) * dt / (this%rho * this%amr%dx(lvl)**2))
-         if (this%amr%ny.gt.1) this%CFLv_y = max(this%CFLv_y, 4.0_WP * this%visc%norm0(lvl=lvl) * dt / (this%rho * this%amr%dy(lvl)**2))
-         if (this%amr%nz.gt.1) this%CFLv_z = max(this%CFLv_z, 4.0_WP * this%visc%norm0(lvl=lvl) * dt / (this%rho * this%amr%dz(lvl)**2))
-      end do
-      ! Compute max overall CFL
-      this%CFL = max(this%CFLc_x, this%CFLc_y, this%CFLc_z, this%CFLv_x, this%CFLv_y, this%CFLv_z)
-      ! Return max overall CFL
-      cfl = this%CFL
-      ! Optionally return max convective CFL
-      if (present(cflc)) cflc = max(this%CFLc_x, this%CFLc_y, this%CFLc_z)
-   end subroutine get_cfl
 
    !> Print solver info to screen
    subroutine amrincomp_print(this)
@@ -1459,30 +1450,34 @@ contains
       call log("  Grid: "//trim(this%amr%name))
    end subroutine amrincomp_print
 
+   ! ============================================================================
+   ! CHECKPOINT IO
+   ! ============================================================================
+
    !> Register solver data for checkpoint
-   subroutine register_checkpoint(this, io)
+   subroutine register_checkpoint(this,io)
       use amrio_class, only: amrio
       implicit none
       class(amrincomp), intent(inout) :: this
       class(amrio), intent(inout) :: io
-      call io%add_data(this%U, 'U')
-      call io%add_data(this%V, 'V')
-      call io%add_data(this%W, 'W')
-      call io%add_data(this%P, 'P')
+      call io%add_data(this%U,'U')
+      call io%add_data(this%V,'V')
+      call io%add_data(this%W,'W')
+      call io%add_data(this%P,'P')
    end subroutine register_checkpoint
 
    !> Restore solver data from checkpoint
-   subroutine restore_checkpoint(this, io, dirname, time)
+   subroutine restore_checkpoint(this,io,dirname,time)
       use amrio_class, only: amrio
       implicit none
       class(amrincomp), intent(inout) :: this
       class(amrio), intent(inout) :: io
       character(len=*), intent(in) :: dirname
       real(WP), intent(in) :: time
-      call io%read_data(dirname, this%U, 'U')
-      call io%read_data(dirname, this%V, 'V')
-      call io%read_data(dirname, this%W, 'W')
-      call io%read_data(dirname, this%P, 'P')
+      call io%read_data(dirname,this%U,'U')
+      call io%read_data(dirname,this%V,'V')
+      call io%read_data(dirname,this%W,'W')
+      call io%read_data(dirname,this%P,'P')
       ! Fill ghost cells (VisMF reads valid data only)
       call this%fill_velocity(time=time)
       call this%P%fill(time=time)

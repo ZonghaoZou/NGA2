@@ -21,8 +21,8 @@ module amrscalar_class
    type, extends(amrsolver) :: amrscalar
 
       ! User-configurable callbacks
-      procedure(scalar_init_iface), pointer, nopass :: user_init => null()
-      procedure(scalar_tagging_iface), pointer, nopass :: user_tagging => null()
+      procedure(scalar_init_iface), pointer, pass :: user_init => null()
+      procedure(scalar_tagging_iface), pointer, pass :: user_tagging => null()
 
       ! Scalar variable definition
       integer :: nscalar
@@ -79,12 +79,12 @@ module amrscalar_class
 
    !> Abstract interface for user-overridable tagging callback
    abstract interface
-      subroutine scalar_tagging_iface(solver, lvl, tags, time)
+      subroutine scalar_tagging_iface(solver, lvl, time, tags)
          import :: amrscalar, c_ptr, WP
          class(amrscalar), intent(inout) :: solver
          integer, intent(in) :: lvl
-         type(c_ptr), intent(in) :: tags
          real(WP), intent(in) :: time
+         type(c_ptr), intent(in) :: tags
       end subroutine scalar_tagging_iface
    end interface
 
@@ -105,7 +105,7 @@ contains
       call c_f_pointer(ctx, this)
       call this%on_init(lvl, time, ba, dm)
       ! User-provided initialization
-      if (associated(this%user_init)) call this%user_init(this, lvl, time, ba, dm)
+      if (associated(this%user_init)) call this%user_init(lvl, time, ba, dm)
    end subroutine amrscalar_on_init
 
    !> Dispatch on_coarse: calls type-bound method
@@ -142,15 +142,15 @@ contains
    end subroutine amrscalar_on_clear
 
    !> Dispatch tagging: calls user's procedure pointer with typed solver
-   subroutine amrscalar_tagging(ctx, lvl, tags, time)
+   subroutine amrscalar_tagging(ctx, lvl, time, tags)
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags
       type(amrscalar), pointer :: this
       call c_f_pointer(ctx, this)
       ! User-provided tagging
-      if (associated(this%user_tagging)) call this%user_tagging(this, lvl, tags, time)
+      if (associated(this%user_tagging)) call this%user_tagging(lvl, time, tags)
    end subroutine amrscalar_tagging
 
    !> Dispatch post_regrid: calls type-bound method
@@ -253,7 +253,7 @@ contains
       type(amrex_boxarray), intent(in) :: ba
       type(amrex_distromap), intent(in) :: dm
       ! SC gets made from coarse
-      call this%SC%on_coarse(this%SC, lvl, time, ba, dm)
+      call this%SC%on_coarse(lvl, time, ba, dm)
       ! SCold just needs geometry
       call this%SCold%reset_level(lvl, ba, dm)
       ! Reset flux register (if using refluxing)
@@ -269,7 +269,7 @@ contains
       type(amrex_boxarray), intent(in) :: ba
       type(amrex_distromap), intent(in) :: dm
       ! Delegate to SC's on_remake callback
-      call this%SC%on_remake(this%SC, lvl, time, ba, dm)
+      call this%SC%on_remake(lvl, time, ba, dm)
       ! SCold just needs new geometry
       call this%SCold%reset_level(lvl, ba, dm)
       ! Rebuild flux register for fine levels (if using refluxing)

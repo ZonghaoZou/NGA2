@@ -16,9 +16,9 @@ module amrcomp_class
    !> AMR Compressible solver type
    type, extends(amrsolver) :: amrcomp
       ! User-configurable callbacks
-      procedure(comp_init_iface), pointer, nopass :: user_init=>null()
-      procedure(comp_tagging_iface), pointer, nopass :: user_tagging=>null()
-      procedure(comp_bc_iface), pointer, nopass :: user_bc=>null()
+      procedure(comp_init_iface), pointer, pass :: user_init=>null()
+      procedure(comp_tagging_iface), pointer, pass :: user_tagging=>null()
+      procedure(comp_bc_iface), pointer, pass :: user_bc=>null()
 
       ! Equation of state function pointers: P=P(rho,I), C=C(rho,P), T=T(rho,P)
       procedure(eos_P_iface), pointer, nopass :: getP=>null()
@@ -100,12 +100,12 @@ module amrcomp_class
 
    !> Abstract interface for tagging callback
    abstract interface
-      subroutine comp_tagging_iface(solver,lvl,tags,time)
+      subroutine comp_tagging_iface(solver,lvl,time,tags)
          import :: amrcomp,c_ptr,WP
          class(amrcomp), intent(inout) :: solver
          integer, intent(in) :: lvl
-         type(c_ptr), intent(in) :: tags
          real(WP), intent(in) :: time
+         type(c_ptr), intent(in) :: tags
       end subroutine comp_tagging_iface
    end interface
 
@@ -138,14 +138,15 @@ module amrcomp_class
 
    !> Abstract interface for user BC callback
    abstract interface
-      subroutine comp_bc_iface(solver,pQ,bc_bx,face,time)
+      subroutine comp_bc_iface(solver,lvl,time,face,bx,pQ)
          use amrex_amr_module, only: amrex_box
          import :: amrcomp,WP
          class(amrcomp), intent(inout) :: solver
-         real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ
-         type(amrex_box), intent(in) :: bc_bx
-         integer, intent(in) :: face
+         integer, intent(in) :: lvl
          real(WP), intent(in) :: time
+         integer, intent(in) :: face
+         type(amrex_box), intent(in) :: bx
+         real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ
       end subroutine comp_bc_iface
    end interface
 
@@ -167,7 +168,7 @@ contains
       type(amrcomp), pointer :: this
       call c_f_pointer(ctx,this)
       call this%on_init(lvl,time,ba,dm)
-      if (associated(this%user_init)) call this%user_init(this,lvl,time,ba,dm)
+      if (associated(this%user_init)) call this%user_init(lvl,time,ba,dm)
    end subroutine amrcomp_on_init
 
    !> Dispatch on_coarse: calls type-bound method
@@ -210,16 +211,16 @@ contains
    end subroutine amrcomp_on_clear
 
    !> Dispatch tagging: calls user callback if set
-   subroutine amrcomp_tagging(ctx,lvl,tags,time)
+   subroutine amrcomp_tagging(ctx,lvl,time,tags)
       use iso_c_binding, only: c_f_pointer
       implicit none
       type(c_ptr), intent(in) :: ctx
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags
       type(amrcomp), pointer :: this
       call c_f_pointer(ctx,this)
-      if (associated(this%user_tagging)) call this%user_tagging(this,lvl,tags,time)
+      if (associated(this%user_tagging)) call this%user_tagging(lvl,time,tags)
    end subroutine amrcomp_tagging
 
    !> Dispatch post_regrid: calls type-bound method
@@ -366,7 +367,7 @@ contains
       type(amrex_boxarray), intent(in) :: ba
       type(amrex_distromap), intent(in) :: dm
       ! Use conservative interpolation from coarse for Q
-      call this%Q%on_coarse(this%Q,lvl,time,ba,dm)
+      call this%Q%on_coarse(lvl,time,ba,dm)
       ! Qold just needs to be reset
       call this%Qold%reset_level(lvl,ba,dm)
       ! Derived variables are just reset
@@ -391,7 +392,7 @@ contains
       type(amrex_boxarray), intent(in) :: ba
       type(amrex_distromap), intent(in) :: dm
       ! Use on_remake from amrdata for Q
-      call this%Q%on_remake(this%Q,lvl,time,ba,dm)
+      call this%Q%on_remake(lvl,time,ba,dm)
       ! Qold just needs to be reset
       call this%Qold%reset_level(lvl,ba,dm)
       ! Derived variables are just reset
@@ -458,6 +459,7 @@ contains
       real(WP), dimension(:,:,:,:), contiguous, pointer :: p
       integer :: ilo,ihi,jlo,jhi,klo,khi
       integer :: dlo(3),dhi(3)
+      integer :: lvl
       
       ! First apply default BC handling (foextrap,hoextrap,reflect,etc.)
       call default_fillbc(this,mf,scomp,ncomp,time,geom)
@@ -471,9 +473,10 @@ contains
       ! Check if user callback exists
       if (.not.associated(solver%user_bc)) return
 
-      ! Get domain bounds
+      ! Get domain bounds and level
       dlo=geom%domain%lo
       dhi=geom%domain%hi
+      lvl=this%fill_lvl_cache
 
       ! Loop over FABs and apply user_bc for ext_dir faces
       call amrex_mfiter_build(mfi,mf,tiling=.false.)
@@ -486,37 +489,37 @@ contains
          ! X-LOW (face=1)
          if (this%lo_bc(1,1).eq.amrex_bc_ext_dir .and. ilo.lt.dlo(1)) then
             bc_bx=amrex_box([ilo,jlo,klo],[dlo(1)-1,jhi,khi])
-            call solver%user_bc(solver,p,bc_bx,1,time)
+            call solver%user_bc(lvl=lvl,time=time,face=1,bx=bc_bx,pQ=p)
          end if
 
          ! X-HIGH (face=2)
          if (this%hi_bc(1,1).eq.amrex_bc_ext_dir .and. ihi.gt.dhi(1)) then
             bc_bx=amrex_box([dhi(1)+1,jlo,klo],[ihi,jhi,khi])
-            call solver%user_bc(solver,p,bc_bx,2,time)
+            call solver%user_bc(lvl=lvl,time=time,face=2,bx=bc_bx,pQ=p)
          end if
 
          ! Y-LOW (face=3)
          if (this%lo_bc(2,1).eq.amrex_bc_ext_dir .and. jlo.lt.dlo(2)) then
             bc_bx=amrex_box([ilo,jlo,klo],[ihi,dlo(2)-1,khi])
-            call solver%user_bc(solver,p,bc_bx,3,time)
+            call solver%user_bc(lvl=lvl,time=time,face=3,bx=bc_bx,pQ=p)
          end if
 
          ! Y-HIGH (face=4)
          if (this%hi_bc(2,1).eq.amrex_bc_ext_dir .and. jhi.gt.dhi(2)) then
             bc_bx=amrex_box([ilo,dhi(2)+1,klo],[ihi,jhi,khi])
-            call solver%user_bc(solver,p,bc_bx,4,time)
+            call solver%user_bc(lvl=lvl,time=time,face=4,bx=bc_bx,pQ=p)
          end if
 
          ! Z-LOW (face=5)
          if (this%lo_bc(3,1).eq.amrex_bc_ext_dir .and. klo.lt.dlo(3)) then
             bc_bx=amrex_box([ilo,jlo,klo],[ihi,jhi,dlo(3)-1])
-            call solver%user_bc(solver,p,bc_bx,5,time)
+            call solver%user_bc(lvl=lvl,time=time,face=5,bx=bc_bx,pQ=p)
          end if
 
          ! Z-HIGH (face=6)
          if (this%hi_bc(3,1).eq.amrex_bc_ext_dir .and. khi.gt.dhi(3)) then
             bc_bx=amrex_box([ilo,jlo,dhi(3)+1],[ihi,jhi,khi])
-            call solver%user_bc(solver,p,bc_bx,6,time)
+            call solver%user_bc(lvl=lvl,time=time,face=6,bx=bc_bx,pQ=p)
          end if
 
       end do
@@ -957,6 +960,7 @@ contains
          do n=1,nfilter
             call scratch%setval(0.0_WP)
             call scratch%copy(srcmf=beta_t,srccomp=1,dstcomp=1,nc=1,ng=0)
+            call this%amr%mfab_validextrap(lvl=lvl,mfab=scratch)
             call scratch%fill_boundary(this%amr%geom(lvl))
             call this%amr%mfab_foextrap(lvl=lvl,mfab=scratch)
             call this%amr%mfiter_build(lvl,mfi)
@@ -978,6 +982,7 @@ contains
          call amrex_multifab_destroy(scratch)
          
          ! Fill beta_t ghosts after filtering
+         call this%amr%mfab_validextrap(lvl=lvl,mfab=beta_t)
          call beta_t%fill_boundary(this%amr%geom(lvl))
          call this%amr%mfab_foextrap(lvl=lvl,mfab=beta_t)
          
@@ -1082,6 +1087,7 @@ contains
          do n=1,nfilter
             call scratch%setval(0.0_WP)
             call scratch%copy(srcmf=visc_t,srccomp=1,dstcomp=1,nc=1,ng=0)
+            call this%amr%mfab_validextrap(lvl=lvl,mfab=scratch)
             call scratch%fill_boundary(this%amr%geom(lvl))
             call this%amr%mfab_foextrap(lvl=lvl,mfab=scratch)
             call this%amr%mfiter_build(lvl,mfi)
@@ -1101,6 +1107,7 @@ contains
          call amrex_multifab_destroy(scratch)
          
          ! Fill visc_t ghosts after filtering
+         call this%amr%mfab_validextrap(lvl=lvl,mfab=visc_t)
          call visc_t%fill_boundary(this%amr%geom(lvl))
          call this%amr%mfab_foextrap(lvl=lvl,mfab=visc_t)
 

@@ -75,6 +75,8 @@ module amrex_interface
    !=====================================================================
    public :: amrmlmg_get_niters
    public :: amrmlmg_get_fluxes
+   public :: amrpoisson_build
+   public :: amrabeclap_build
 
    !=====================================================================
    ! MultiFab Averaging (unified API - not in AMReX Fortran interface)
@@ -482,6 +484,22 @@ module amrex_interface
          integer(c_int), intent(in) :: ref_ratio(3)
       end subroutine amrlinop_set_coarse_fine_bc
 
+      !> Build MLPoisson
+      subroutine amrpoisson_build_c(linop, nlevels, geom, ba, dm, semicoarsen, hidden_direction) bind(c, name='amrpoisson_build_c')
+         import :: c_ptr, c_int
+         type(c_ptr), intent(out) :: linop
+         integer(c_int), value :: nlevels, semicoarsen, hidden_direction
+         type(c_ptr), intent(in) :: geom(*), ba(*), dm(*)
+      end subroutine amrpoisson_build_c
+
+      !> Build MLABecLaplacian
+      subroutine amrabeclap_build_c(linop, nlevels, geom, ba, dm, semicoarsen, hidden_direction) bind(c, name='amrabeclap_build_c')
+         import :: c_ptr, c_int
+         type(c_ptr), intent(out) :: linop
+         integer(c_int), value :: nlevels, semicoarsen, hidden_direction
+         type(c_ptr), intent(in) :: geom(*), ba(*), dm(*)
+      end subroutine amrabeclap_build_c
+
       !====================================================================
       ! MultiFab Averaging (C bindings - unified API for all 4 types)
       ! Signature: (fine, crse, geom, ratio, ngcrse)
@@ -770,6 +788,56 @@ contains
       &   solver_ctx, bc_dispatch, scomp, dcomp, ncomp, ref_ratio, interp_type, &
       &   lo_bc, hi_bc, nbc)
    end subroutine amrmfab_fillcoarsepatch
+
+   !> Build MLPoisson operator
+   subroutine amrpoisson_build(linop, nlevels, geom, ba, dm, semicoarsen, hidden_direction)
+      use iso_c_binding, only: c_ptr
+      use amrex_amr_module, only: amrex_geometry, amrex_boxarray, amrex_distromap
+      use amrex_linear_solver_module, only: amrex_poisson
+      type(amrex_poisson), intent(inout) :: linop
+      integer, intent(in) :: nlevels
+      type(amrex_geometry), intent(in) :: geom(0:)
+      type(amrex_boxarray), intent(in) :: ba(0:)
+      type(amrex_distromap), intent(in) :: dm(0:)
+      logical, intent(in), optional :: semicoarsen
+      integer, intent(in), optional :: hidden_direction
+      type(c_ptr) :: gp(0:nlevels-1), bp(0:nlevels-1), dp(0:nlevels-1)
+      integer :: lev, sc, hd
+      sc = 0; if (present(semicoarsen)) sc = merge(1,0,semicoarsen)
+      hd = -1; if (present(hidden_direction)) hd = hidden_direction
+      do lev = 0, nlevels-1
+         gp(lev) = geom(lev)%p
+         bp(lev) = ba(lev)%p
+         dp(lev) = dm(lev)%p
+      end do
+      linop%owner = .true.
+      call amrpoisson_build_c(linop%p, nlevels, gp, bp, dp, sc, hd)
+   end subroutine amrpoisson_build
+
+   !> Build MLABecLaplacian operator
+   subroutine amrabeclap_build(linop, nlevels, geom, ba, dm, semicoarsen, hidden_direction)
+      use iso_c_binding, only: c_ptr
+      use amrex_amr_module, only: amrex_geometry, amrex_boxarray, amrex_distromap
+      use amrex_linear_solver_module, only: amrex_abeclaplacian
+      type(amrex_abeclaplacian), intent(inout) :: linop
+      integer, intent(in) :: nlevels
+      type(amrex_geometry), intent(in) :: geom(0:)
+      type(amrex_boxarray), intent(in) :: ba(0:)
+      type(amrex_distromap), intent(in) :: dm(0:)
+      logical, intent(in), optional :: semicoarsen
+      integer, intent(in), optional :: hidden_direction
+      type(c_ptr) :: gp(0:nlevels-1), bp(0:nlevels-1), dp(0:nlevels-1)
+      integer :: lev, sc, hd
+      sc = 0; if (present(semicoarsen)) sc = merge(1,0,semicoarsen)
+      hd = -1; if (present(hidden_direction)) hd = hidden_direction
+      do lev = 0, nlevels-1
+         gp(lev) = geom(lev)%p
+         bp(lev) = ba(lev)%p
+         dp(lev) = dm(lev)%p
+      end do
+      linop%owner = .true.
+      call amrabeclap_build_c(linop%p, nlevels, gp, bp, dp, sc, hd)
+   end subroutine amrabeclap_build
 
 end module amrex_interface
 

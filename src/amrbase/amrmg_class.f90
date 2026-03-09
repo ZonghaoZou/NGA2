@@ -55,6 +55,10 @@ module amrmg_class
       real(WP) :: res   = 0.0_WP  !< Final residual
       integer  :: niter = 0       !< Number of iterations
 
+      ! Semi-coarsening and hidden direction flags
+      logical :: semicoarsen = .false.
+      integer :: hidden_direction = -1  !< -1=none, 0=x, 1=y, 2=z
+
       ! Private internals
       class(amrgrid), pointer, private :: amr => null()
       logical, private :: setup_done = .false.
@@ -98,8 +102,6 @@ contains
       this%setup_done = .false.
 
       ! Set smart BC defaults based on grid periodicity
-      ! Periodic directions: amrmg_bc_periodic
-      ! Non-periodic directions: amrmg_bc_neumann
       if (amr%xper) then
          this%lo_bc(1) = amrmg_bc_periodic
          this%hi_bc(1) = amrmg_bc_periodic
@@ -122,6 +124,12 @@ contains
          this%hi_bc(3) = amrmg_bc_neumann
       end if
 
+      ! Auto-detect hidden direction for single-cell directions
+      if (amr%nx.eq.1) this%hidden_direction = 0
+      if (amr%ny.eq.1) this%hidden_direction = 1
+      if (amr%nz.eq.1) this%hidden_direction = 2
+      if (count([amr%nx,amr%ny,amr%nz].eq.1).gt.1) call die('[amrmg] Multiple single-cell directions not supported by AMReX MLMG')
+
       ! Initialize internal solution storage
       call this%sol%initialize(amr,name='sol',ncomp=1,ng=1,interp=amrex_interp_none); call this%sol%register()
 
@@ -131,12 +139,19 @@ contains
       else
          call log('[amrmg] Initialized variable-coefficient solver')
       end if
+      if (this%hidden_direction.ge.0) then
+         call log('[amrmg] Hidden direction enabled')
+      end if
+      if (this%semicoarsen) then
+         call log('[amrmg] Semi-coarsening enabled')
+      end if
    end subroutine initialize
 
    !> Setup solver - call after coefficients change or after regrid
    !> For varcoef type, bcoef fields must be provided
    subroutine setup(this, acoef, bcoef_x, bcoef_y, bcoef_z)
       use messager, only: die
+      use amrex_interface, only: amrpoisson_build, amrabeclap_build
       implicit none
       class(amrmg), intent(inout) :: this
       type(amrdata), intent(in), optional :: acoef
@@ -145,45 +160,37 @@ contains
       type(amrex_geometry), dimension(:), allocatable :: geom
       type(amrex_boxarray), dimension(:), allocatable :: ba
       type(amrex_distromap), dimension(:), allocatable :: dm
+      integer :: lev, nlevs
 
       if (this%type .eq. -1) call die('[amrmg setup] Solver not initialized')
       if (this%setup_done) call this%destroy()
 
-      ! Build AMReX wrapper arrays
-      build_arrays: block
-         integer :: lev
-         allocate(geom(0:this%amr%clvl()))
-         allocate(ba(0:this%amr%clvl()))
-         allocate(dm(0:this%amr%clvl()))
-         do lev = 0, this%amr%clvl()
-            geom(lev) = this%amr%geom(lev)
-            ba(lev) = this%amr%get_boxarray(lev)
-            dm(lev) = this%amr%get_distromap(lev)
-         end do
-      end block build_arrays
+      ! Build typed arrays for operator construction
+      nlevs = this%amr%clvl() + 1
+      allocate(geom(0:this%amr%clvl()))
+      allocate(ba(0:this%amr%clvl()))
+      allocate(dm(0:this%amr%clvl()))
+      do lev = 0, this%amr%clvl()
+         geom(lev) = this%amr%geom(lev)
+         ba(lev) = this%amr%get_boxarray(lev)
+         dm(lev) = this%amr%get_distromap(lev)
+      end do
 
       ! Build operator based on type
       select case (this%type)
 
        case (amrmg_cstcoef)
-         poisson_setup: block
-            call amrex_poisson_build(this%poisson, geom, ba, dm, &
-               metric_term=.false., agglomeration=.true., consolidation=.true., &
-               max_coarsening_level=30)
-            call this%poisson%set_domain_bc(this%lo_bc, this%hi_bc)
-            call amrex_multigrid_build(this%multigrid, this%poisson)
-            call this%multigrid%set_verbose(this%verbose)
-            call this%multigrid%set_max_iter(this%max_iter)
-            call this%multigrid%set_bottom_solver(this%bottom_solver)
-         end block poisson_setup
+         call amrpoisson_build(this%poisson, nlevs, geom, ba, dm, this%semicoarsen, this%hidden_direction)
+         call this%poisson%set_domain_bc(this%lo_bc, this%hi_bc)
+         call amrex_multigrid_build(this%multigrid, this%poisson)
+         call this%multigrid%set_verbose(this%verbose)
+         call this%multigrid%set_max_iter(this%max_iter)
+         call this%multigrid%set_bottom_solver(this%bottom_solver)
 
        case (amrmg_varcoef)
-         abeclap_setup: block
+         varcoef_setup: block
             type(amrex_multifab) :: bcoef(3)
-            integer :: lev
-            call amrex_abeclaplacian_build(this%abeclap, geom, ba, dm, &
-               metric_term=.false., agglomeration=.true., consolidation=.true., &
-               max_coarsening_level=30)
+            call amrabeclap_build(this%abeclap, nlevs, geom, ba, dm, this%semicoarsen, this%hidden_direction)
             call this%abeclap%set_domain_bc(this%lo_bc, this%hi_bc)
             call this%abeclap%set_maxorder(this%maxorder)
             call this%abeclap%set_scalars(this%alpha, this%beta)
@@ -206,8 +213,7 @@ contains
             call this%multigrid%set_verbose(this%verbose)
             call this%multigrid%set_max_iter(this%max_iter)
             call this%multigrid%set_bottom_solver(this%bottom_solver)
-         end block abeclap_setup
-
+         end block varcoef_setup
       end select
 
       this%setup_done = .true.
@@ -270,16 +276,11 @@ contains
 
    !> Level-by-level solve (for subcycling)
    !> Builds single-level operator on-the-fly (not stored)
-   !> @param lev Level to solve on (0-indexed, for geometry lookup)
-   !> @param phi_mf Solution MultiFab (in: initial guess, out: solution)
-   !> @param rhs_mf Right-hand side MultiFab
-   !> @param phi_crse_mf Coarse level solution for C/F BC (required if lev>0)
-   !> @param acoef_mf Optional cell-centered A coefficient (varcoef only)
-   !> @param bcoef_x_mf,bcoef_y_mf,bcoef_z_mf Optional face-centered B coefficients (varcoef only)
    subroutine solve_level(this, lev, phi_mf, rhs_mf, phi_crse_mf, acoef_mf, bcoef_x_mf, bcoef_y_mf, bcoef_z_mf)
       use messager, only: die, log
       use string, only: str_long
-      use amrex_interface, only: amrlinop_set_coarse_fine_bc,amrmlmg_get_niters
+      use amrex_interface, only: amrlinop_set_coarse_fine_bc, amrmlmg_get_niters, &
+      &                          amrpoisson_build, amrabeclap_build
       class(amrmg), intent(inout) :: this
       integer, intent(in) :: lev
       type(amrex_multifab), intent(inout) :: phi_mf
@@ -288,7 +289,7 @@ contains
       type(amrex_multifab), intent(in), optional :: acoef_mf
       type(amrex_multifab), intent(in), optional :: bcoef_x_mf, bcoef_y_mf, bcoef_z_mf
 
-      ! Single-level arrays for operator (always size 1, index 0)
+      ! Single-level arrays
       type(amrex_geometry) :: geom(0:0)
       type(amrex_boxarray) :: ba(0:0)
       type(amrex_distromap) :: dm(0:0)
@@ -300,14 +301,12 @@ contains
       if (lev .gt. 0 .and. .not.present(phi_crse_mf)) call die('[amrmg solve_level] phi_crse_mf required for lev>0')
 
       ! Build single-level arrays
-      setup_arrays: block
-         geom(0) = this%amr%geom(lev)
-         ba(0) = this%amr%get_boxarray(lev)
-         dm(0) = this%amr%get_distromap(lev)
-         sol(0) = phi_mf
-         rhsmf(0) = rhs_mf
-         if (lev .gt. 0) rref = [this%amr%rrefx(lev-1),this%amr%rrefy(lev-1),this%amr%rrefz(lev-1)]
-      end block setup_arrays
+      geom(0) = this%amr%geom(lev)
+      ba(0) = this%amr%get_boxarray(lev)
+      dm(0) = this%amr%get_distromap(lev)
+      sol(0) = phi_mf
+      rhsmf(0) = rhs_mf
+      if (lev .gt. 0) rref = [this%amr%rrefx(lev-1),this%amr%rrefy(lev-1),this%amr%rrefz(lev-1)]
 
       ! Solve based on operator type
       select case (this%type)
@@ -316,10 +315,7 @@ contains
          poisson_solve: block
             type(amrex_poisson) :: linop
             type(amrex_multigrid) :: mlmg
-            ! Build operator
-            call amrex_poisson_build(linop, geom, ba, dm, &
-               metric_term=.false., agglomeration=.true., consolidation=.true., &
-               max_coarsening_level=30)
+            call amrpoisson_build(linop, 1, geom, ba, dm, this%semicoarsen, this%hidden_direction)
             call linop%set_domain_bc(this%lo_bc, this%hi_bc)
             ! Set C/F BC if on refined level
             if (lev .gt. 0) call amrlinop_set_coarse_fine_bc(linop%p, phi_crse_mf%p, rref)
@@ -341,10 +337,7 @@ contains
             type(amrex_abeclaplacian) :: linop
             type(amrex_multigrid) :: mlmg
             type(amrex_multifab) :: bcoef(3)
-            ! Build operator
-            call amrex_abeclaplacian_build(linop, geom, ba, dm, &
-               metric_term=.false., agglomeration=.true., consolidation=.true., &
-               max_coarsening_level=30)
+            call amrabeclap_build(linop, 1, geom, ba, dm, this%semicoarsen, this%hidden_direction)
             call linop%set_domain_bc(this%lo_bc, this%hi_bc)
             call linop%set_maxorder(this%maxorder)
             call linop%set_scalars(this%alpha, this%beta)
@@ -370,7 +363,6 @@ contains
             call amrex_multigrid_destroy(mlmg)
             call amrex_abeclaplacian_destroy(linop)
          end block abeclap_solve
-
       end select
 
       ! Log result
@@ -384,14 +376,6 @@ contains
    end subroutine solve_level
 
    !> Get face-centered fluxes using solver's C/F-consistent stencils
-   !> For (alpha*A - beta*div(B*grad))phi = rhs, flux = -B*grad(phi)
-   !> This uses the solver's internal quadratic interpolation which is
-   !> consistent at C/F interfaces (unlike FillPatch's linear interpolation).
-   !> Works for both cstcoef (Poisson) and varcoef (ABecLaplacian).
-   !> @param phi Solution field
-   !> @param flux_x X-face-centered flux output
-   !> @param flux_y Y-face-centered flux output
-   !> @param flux_z Z-face-centered flux output
    subroutine get_fluxes(this, flux_x, flux_y, flux_z, phi)
       use iso_c_binding, only: c_ptr
       use messager, only: die
@@ -428,10 +412,7 @@ contains
       call amrmlmg_get_fluxes(this%multigrid%p, sol_ptrs, fx_ptrs, fy_ptrs, fz_ptrs, nlevs)
 
       ! Deallocate pointer arrays
-      deallocate(sol_ptrs)
-      deallocate(fx_ptrs)
-      deallocate(fy_ptrs)
-      deallocate(fz_ptrs)
+      deallocate(sol_ptrs, fx_ptrs, fy_ptrs, fz_ptrs)
    end subroutine get_fluxes
 
    !> Destroy solver internals - call before setup when operator changes

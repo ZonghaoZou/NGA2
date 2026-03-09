@@ -5,13 +5,14 @@ module amrdata_class
    use string,           only: str_medium
    use amrgrid_class,    only: amrgrid
    use amrex_amr_module, only: amrex_multifab,amrex_boxarray,amrex_distromap,&
-   &                           amrex_multifab_build,amrex_multifab_destroy,amrex_geometry,&
+   &                           amrex_geometry,amrex_interp_pc,&
    &                           amrex_interp_cell_cons,amrex_interp_face_linear,amrex_interp_node_bilinear
    implicit none
    private
 
    public :: amrdata
    public :: amrdata_on_init,amrdata_on_coarse,amrdata_on_remake,amrdata_on_clear,amrdata_fillbc
+   public :: amrex_interp_pc,amrex_interp_cell_cons,amrex_interp_face_linear,amrex_interp_node_bilinear
    public :: default_fillbc
 
    ! Special interpolation modes for amrdata
@@ -33,14 +34,16 @@ module amrdata_class
       logical :: nodal(3) = [.false., .false., .false.]    !< false=cell, true=vertex in that direction
       integer :: interp=amrex_interp_cell_cons             !< Interpolation method
       integer, dimension(:,:), allocatable :: lo_bc,hi_bc  !< Boundary conditions: lo_bc(3,ncomp), hi_bc(3,ncomp)
+      ! Cache level index for fillbc callback
+      integer :: fill_lvl_cache=-1
       ! Callback pointers (set to defaults in initialize)
-      procedure(on_init_iface),   pointer, nopass :: on_init   => null()
-      procedure(on_coarse_iface), pointer, nopass :: on_coarse => null()
-      procedure(on_remake_iface), pointer, nopass :: on_remake => null()
-      procedure(on_clear_iface),  pointer, nopass :: on_clear  => null()
-      procedure(fillbc_iface),    pointer, nopass :: fillbc    => null()
+      procedure(on_init_iface),   pointer, pass :: on_init   => null()
+      procedure(on_coarse_iface), pointer, pass :: on_coarse => null()
+      procedure(on_remake_iface), pointer, pass :: on_remake => null()
+      procedure(on_clear_iface),  pointer, pass :: on_clear  => null()
+      procedure(fillbc_iface),    pointer, pass :: fillbc    => null()
       ! User-provided initialization callback
-      procedure(on_init_iface),   pointer, nopass :: user_init => null()
+      procedure(on_init_iface),   pointer, pass :: user_init => null()
    contains
       ! Lifecycle methods
       procedure :: initialize       !< Initialize amrdata with amrgrid and parameters
@@ -192,6 +195,7 @@ contains
 
    !> Finalize the amrdata object
    subroutine finalize(this)
+      use amrex_amr_module, only: amrex_multifab_destroy
       class(amrdata), intent(inout) :: this
       integer :: i
       ! Destroy all MultiFabs
@@ -238,6 +242,7 @@ contains
 
    !> Reset mfab on a level given new BoxArray and DistroMap
    subroutine reset_level(this,lvl,ba,dm)
+      use amrex_amr_module, only: amrex_multifab_build,amrex_multifab_destroy
       class(amrdata), intent(inout) :: this
       integer, intent(in) :: lvl
       type(amrex_boxarray),  intent(in) :: ba
@@ -248,6 +253,7 @@ contains
 
    !> Destroy mfab on a level
    subroutine clear_level(this,lvl)
+      use amrex_amr_module, only: amrex_multifab_destroy
       class(amrdata), intent(inout) :: this
       integer, intent(in) :: lvl
       call amrex_multifab_destroy(this%mf(lvl))
@@ -311,7 +317,7 @@ contains
          call this%mf(lvl)%setval(0.0_WP)
       end select
       ! User-provided initialization (called for all modes except none without user_init)
-      if (associated(this%user_init)) call this%user_init(this, lvl, time, ba, dm)
+      if (associated(this%user_init)) call this%user_init(lvl, time, ba, dm)
    end subroutine default_on_init
 
    !> Default on_coarse: reset level and fill based on interp mode
@@ -329,7 +335,7 @@ contains
          ! Workspace mode: just allocate, don't fill
        case (amrex_interp_reinit)
          ! Reinit mode: call user_init instead of interpolating
-         if (associated(this%user_init)) call this%user_init(this, lvl, time, ba, dm)
+         if (associated(this%user_init)) call this%user_init(lvl, time, ba, dm)
        case default
          ! Standard interpolation: fill from coarse
          call this%fill_from_coarse(lvl, time)
@@ -353,7 +359,7 @@ contains
        case (amrex_interp_reinit)
          ! Reinit mode: reallocate and call user_init
          call this%reset_level(lvl, ba, dm)
-         if (associated(this%user_init)) call this%user_init(this, lvl, time, ba, dm)
+         if (associated(this%user_init)) call this%user_init(lvl, time, ba, dm)
        case default
          ! Standard interpolation: FillPatch old data into new layout
          ! Build temp MultiFab with new layout (0 ghost cells for FillPatch)
@@ -392,7 +398,7 @@ contains
       mf = mf_ptr
       geom = geom_ptr
       ! Call the fillbc callback
-      call this%fillbc(this, mf, int(scomp), int(ncomp), real(time, WP), geom)
+      call this%fillbc(mf, int(scomp), int(ncomp), real(time, WP), geom)
    end subroutine amrdata_fillbc
 
    !> Dispatch callback for on_init
@@ -405,7 +411,7 @@ contains
       type(amrex_distromap), intent(in) :: dm
       type(amrdata), pointer :: this
       call c_f_pointer(ctx, this)
-      call this%on_init(this, lvl, time, ba, dm)
+      call this%on_init(lvl, time, ba, dm)
    end subroutine amrdata_on_init
 
    !> Dispatch callback for on_coarse
@@ -418,7 +424,7 @@ contains
       type(amrex_distromap), intent(in) :: dm
       type(amrdata), pointer :: this
       call c_f_pointer(ctx, this)
-      call this%on_coarse(this, lvl, time, ba, dm)
+      call this%on_coarse(lvl, time, ba, dm)
    end subroutine amrdata_on_coarse
 
    !> Dispatch callback for on_remake
@@ -431,7 +437,7 @@ contains
       type(amrex_distromap), intent(in) :: dm
       type(amrdata), pointer :: this
       call c_f_pointer(ctx, this)
-      call this%on_remake(this, lvl, time, ba, dm)
+      call this%on_remake(lvl, time, ba, dm)
    end subroutine amrdata_on_remake
 
    !> Dispatch callback for on_clear
@@ -441,7 +447,7 @@ contains
       integer, intent(in) :: lvl
       type(amrdata), pointer :: this
       call c_f_pointer(ctx, this)
-      call this%on_clear(this, lvl)
+      call this%on_clear(lvl)
    end subroutine amrdata_on_clear
 
    !> Fill fine level from coarse only (for creating new fine levels)
@@ -463,6 +469,7 @@ contains
       end select
       bc_dispatch_ptr = c_funloc(amrdata_fillbc)
       ! Call C++ wrapper
+      this%fill_lvl_cache=lvl ! Cache current level
       call amrmfab_fillcoarsepatch(this%mf(lvl), time, this%mf(lvl-1), &
       &   this%amr%geom(lvl-1), this%amr%geom(lvl), data_ctx, bc_dispatch_ptr, &
       &   1, 1, this%ncomp, [this%amr%rrefx(lvl-1),this%amr%rrefy(lvl-1),this%amr%rrefz(lvl-1)], this%interp, this%lo_bc, this%hi_bc, this%ncomp)
@@ -490,6 +497,7 @@ contains
       end select
       bc_dispatch_ptr = c_funloc(amrdata_fillbc)
       ! Call appropriate FillPatch (scomp/dcomp use 1-indexed Fortran convention)
+      this%fill_lvl_cache=lvl ! Cache current level
       if (lvl .eq. 0) then
          call amrmfab_fillpatch_single(this%mf(0), t_old, this%mf(0), &
          &   t_new, this%mf(0), this%amr%geom(0), data_ctx, bc_dispatch_ptr, &
@@ -538,6 +546,7 @@ contains
       end select
       bc_dispatch_ptr = c_funloc(amrdata_fillbc)
       ! Call appropriate FillPatch
+      this%fill_lvl_cache=lvl ! Cache current level
       if (lvl .eq. 0) then
          call amrmfab_fillpatch_single(dest, t_old, this%mf(0), &
          &   t_new, this%mf(0), this%amr%geom(0), data_ctx, bc_dispatch_ptr, &
@@ -575,15 +584,16 @@ contains
       end do
    end subroutine sync
 
-   !> Average down from finest level to coarsest (ensures level consistency)
+   !> Average down from finest level to lbase (ensures level consistency)
    !> Simply calls average_downto in a loop from finest to coarsest
-   subroutine average_down(this)
+   subroutine average_down(this,lbase)
       implicit none
       class(amrdata), intent(inout) :: this
-      integer :: lvl
-      if (.not.associated(this%amr)) return
+      integer, intent(in), optional :: lbase
+      integer :: lvl,lb
+      lb=0; if (present(lbase)) lb=lbase
       ! Loop from finest to coarsest
-      do lvl = this%amr%clvl()-1, 0, -1
+      do lvl=this%amr%clvl()-1,lb,-1
          call this%average_downto(lvl)
       end do
    end subroutine average_down
@@ -593,26 +603,25 @@ contains
    !> - nodal_count=1 (face): amrmfab_average_down_face
    !> - nodal_count=2 (edge): amrmfab_average_down_edge
    !> - nodal_count=3 (node): amrmfab_average_down_node
-   subroutine average_downto(this, lvl)
-      use amrex_interface, only: amrmfab_average_down_cell, amrmfab_average_down_face, &
-      &                          amrmfab_average_down_edge, amrmfab_average_down_node
+   subroutine average_downto(this,lvl)
+      use messager, only: die
+      use amrex_interface, only: amrmfab_average_down_cell,amrmfab_average_down_face, &
+      &                          amrmfab_average_down_edge,amrmfab_average_down_node
       implicit none
       class(amrdata), intent(inout) :: this
       integer, intent(in) :: lvl
-      integer :: nodal_count
-      if (.not.associated(this%amr)) return
-      if (lvl.lt.0 .or. lvl.ge.this%amr%clvl()) return
-      nodal_count = count(this%nodal)
+      ! Check that level is valid
+      if (lvl.lt.0.or.lvl.ge.this%amr%clvl()) call die('[amrdata average_downto] invalid level provided')
       ! Pass geometry for periodic fix-up
-      select case (nodal_count)
+      select case (count(this%nodal))
        case (0) ! Cell-centered
-         call amrmfab_average_down_cell(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_cell(fmf=this%mf(lvl+1),cmf=this%mf(lvl),rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],cgeom=this%amr%geom(lvl))
        case (1) ! Face-centered
-         call amrmfab_average_down_face(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_face(fmf=this%mf(lvl+1),cmf=this%mf(lvl),rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],cgeom=this%amr%geom(lvl))
        case (2) ! Edge-centered
-         call amrmfab_average_down_edge(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_edge(fmf=this%mf(lvl+1),cmf=this%mf(lvl),rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],cgeom=this%amr%geom(lvl))
        case (3) ! Node-centered
-         call amrmfab_average_down_node(fmf=this%mf(lvl+1), cmf=this%mf(lvl), rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)], cgeom=this%amr%geom(lvl))
+         call amrmfab_average_down_node(fmf=this%mf(lvl+1),cmf=this%mf(lvl),rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],cgeom=this%amr%geom(lvl))
       end select
    end subroutine average_downto
 

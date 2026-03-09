@@ -136,6 +136,39 @@ contains
 
    !> Implicit mechanical relaxation for stiffened gas EOS pair
    !> Solves quadratic for equilibrium pressure Peq where PL=PG=Peq,
+   !> then computes adjustments to VF and internal energies via p*dV work exchange.
+   !> Conserves: phasic masses Q(1:2), total internal energy Q(3)+Q(4), momentum Q(5:7)
+   ! subroutine P_relax_implicit(VF,Q,Peq,dVF,dQ)
+   !    use amrmpcomp_class, only: VFlo,VFhi
+   !    implicit none
+   !    real(WP),               intent(in) :: VF
+   !    real(WP), dimension(:), intent(in) :: Q
+   !    real(WP), intent(inout) :: Peq
+   !    real(WP), intent(out), optional :: dVF
+   !    real(WP), dimension(:), intent(out), optional :: dQ
+   !    real(WP) :: invG1G,invG1L,d0,d1,facG,facL,a,b,d
+   !    ! Skip if any conserved quantity is non-positive (EOS undefined)
+   !    if (any(Q(1:4).le.0.0_WP)) return
+   !    ! Precompute EOS constants
+   !    invG1L=1.0_WP/(GammaL-1.0_WP); d0=GammaL*PinfL*invG1L; d1=1.0_WP+invG1L
+   !    ! Switch behavior depending on how the subroutine is called
+   !    if (.not.present(dVF)) then
+   !       ! First mode: return Peq by solving a*Peq^2 + b*Peq + d = 0
+   !       invG1G=1.0_WP/(GammaG-1.0_WP); facG=GammaG*PinfG*invG1G; facL=invG1G+VF
+   !       a=d1*facL-VF*(invG1G+1.0_WP)
+   !       b=d1*(facG-Q(4))-VF*facG+d0*facL-Q(3)*(invG1G+1.0_WP)
+   !       d=d0*(facG-Q(4))-Q(3)*facG
+   !       if (b**2-4.0_WP*a*d.lt.0.0_WP) return
+   !       Peq=(-b+sqrt(b**2-4.0_WP*a*d))/(2.0_WP*a)
+   !    else
+   !       ! Second mode: use provided Peq to compute dVF and dQ
+   !       dVF=(VF*Peq+Q(3))/(d1*Peq+d0)-VF
+   !       dQ=0.0_WP; dQ(3)=-Peq*dVF; dQ(4)=+Peq*dVF
+   !    end if
+   ! end subroutine P_relax_implicit
+
+   !> Implicit mechanical relaxation for stiffened gas EOS pair
+   !> Solves quadratic for equilibrium pressure Peq where PL=PG=Peq,
    !> then adjusts VF and internal energies via p*dV work exchange.
    !> Conserves: phasic masses Q(1:2), total internal energy Q(3)+Q(4), momentum Q(5:7)
    subroutine P_relax_implicit(VF,Q)
@@ -249,30 +282,39 @@ contains
       type(amrex_distromap), intent(in) :: dm
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pVF,pCliq,pCgas
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pVF,pCL,pCG
       real(WP), dimension(3) :: BL,BG
       real(WP) :: dx,dy,dz,myVF,IEL,x_cc,rhoG,pG,uG,H
       integer :: i,j,k
+      integer, parameter :: nref=3
+      ! Get mesh size
       dx=solver%amr%dx(lvl); dy=solver%amr%dy(lvl); dz=solver%amr%dz(lvl)
+      ! Get internal energy of liquid
       IEL=get_IL(rhoL1,pL1)
+      ! Use passed ba/dm since grid is being constructed
       call amrex_mfiter_build(mfi,ba,dm,tiling=.false.)
       do while (mfi%next())
          ! Get pointers to data
-         pQ   =>solver%Q%mf(lvl)%dataptr(mfi)
-         pVF  =>solver%VF%mf(lvl)%dataptr(mfi)
-         pCliq=>solver%Cliq%mf(lvl)%dataptr(mfi)
-         pCgas=>solver%Cgas%mf(lvl)%dataptr(mfi)
+         pQ =>solver%Q%mf(lvl)%dataptr(mfi)
+         pVF=>solver%VF%mf(lvl)%dataptr(mfi)
+         if (lvl.eq.solver%amr%maxlvl) then
+            pCL=>solver%CL%dataptr(mfi)
+            pCG=>solver%CG%dataptr(mfi)
+         end if
          ! Loop over grown tilebox
          bx=mfi%growntilebox(solver%nover)
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
             ! Compute VF and barycenters from levelset
             call initialize_volume_moments(lo=[solver%amr%xlo+real(i  ,WP)*dx,solver%amr%ylo+real(j  ,WP)*dy,solver%amr%zlo+real(k  ,WP)*dz], &
             &                              hi=[solver%amr%xlo+real(i+1,WP)*dx,solver%amr%ylo+real(j+1,WP)*dy,solver%amr%zlo+real(k+1,WP)*dz], &
-            &                              levelset=sphere_levelset,time=time,level=3,VFlo=VFlo,VF=myVF,BL=BL,BG=BG)
-            ! Store volume moments
+            &                              levelset=sphere_levelset,time=time,level=nref,VFlo=VFlo,VF=myVF,BL=BL,BG=BG)
+            ! Store volume fraction
             pVF(i,j,k,1)=myVF
-            pCliq(i,j,k,1:3)=BL
-            pCgas(i,j,k,1:3)=BG
+            ! Store barycenters
+            if (lvl.eq.solver%amr%maxlvl) then
+               pCL(i,j,k,:)=BL
+               pCG(i,j,k,:)=BG
+            end if
             ! Compute local gas state from shock profile
             x_cc=solver%amr%xlo+(real(i,WP)+0.5_WP)*dx
             H=Hshock(x=Xs-x_cc,delta=0.5_WP*dx)
@@ -293,17 +335,18 @@ contains
    end subroutine shockdrop_init
 
    !> Apply inflow BC at low-x (face=1)
-   subroutine shock_dirichlet(solver,pQ,bc_bx,face,time)
+   subroutine shock_dirichlet(solver,lvl,time,face,bx,pQ)
       use amrex_amr_module, only: amrex_box
       class(amrmpcomp), intent(inout) :: solver
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ
-      type(amrex_box), intent(in) :: bc_bx
-      integer, intent(in) :: face
+      integer, intent(in) :: lvl
       real(WP), intent(in) :: time
+      integer, intent(in) :: face
+      type(amrex_box), intent(in) :: bx
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ
       integer :: i,j,k
       select case (face)
        case (1)  ! X-LOW: Dirichlet inflow with post-shock (gas only, no liquid)
-         do k=bc_bx%lo(3),bc_bx%hi(3); do j=bc_bx%lo(2),bc_bx%hi(2); do i=bc_bx%lo(1),bc_bx%hi(1)
+         do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
             pQ(i,j,k,1)=0.0_WP                  ! No liquid
             pQ(i,j,k,2)=rhoG2                   ! Gas density
             pQ(i,j,k,3)=0.0_WP                  ! No liquid energy
@@ -315,15 +358,15 @@ contains
       end select
    end subroutine shock_dirichlet
 
-   !> Tagger based on vorticity, divergence, and VF gradient
-   subroutine my_tagger(solver,lvl,tags_ptr,time)
+   !> Tagger based on normalized velocity gradient
+   subroutine my_tagger(solver,lvl,time,tags_ptr)
       use iso_c_binding,    only: c_ptr,c_char
       use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_tagboxarray
       use amrgrid_class,    only: SETtag
       class(amrmpcomp), intent(inout) :: solver
       integer, intent(in) :: lvl
-      type(c_ptr), intent(in) :: tags_ptr
       real(WP), intent(in) :: time
+      type(c_ptr), intent(in) :: tags_ptr
       type(amrex_tagboxarray) :: tags
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
@@ -338,10 +381,12 @@ contains
       tags=tags_ptr
       call solver%amr%mfiter_build(lvl,mfi)
       do while (mfi%next())
-         bx=mfi%tilebox()
+         ! Get pointers to data
          tagarr=>tags%dataPtr(mfi)
          pQ=>solver%Q%mf(lvl)%dataptr(mfi)
          pVisc=>solver%visc%mf(lvl)%dataptr(mfi)
+         ! Loop over tile
+         bx=mfi%tilebox()
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
             ! Get rho and mu
             rho=sum(pQ(i,j,k,1:2))
@@ -492,13 +537,13 @@ contains
          ! Provide pressure relaxation model
          fs%relax=>P_relax_implicit
          ! Set initial conditions
-         fs%user_init=>shockdrop_init
+         fs%user_mpcomp_init=>shockdrop_init
          ! Set BCs
          if (.not.amr%xper) then
-            fs%vof_lo_bc(1)=BC_GAS
+            fs%lo_bc(1)=BC_GAS
             fs%Q%lo_bc(1,:)=amrex_bc_ext_dir
             fs%Q%hi_bc(1,:)=amrex_bc_foextrap
-            fs%user_bc=>shock_dirichlet
+            fs%user_mpcomp_bc=>shock_dirichlet
          end if
       end block create_solver
       
@@ -518,7 +563,7 @@ contains
          regrid_evt=event(time=time,name='Regrid')
          call param_read('Regrid nsteps',regrid_evt%nper)
          ! Set case-specific tagging
-         fs%user_tagging=>my_tagger
+         fs%user_mpcomp_tagging=>my_tagger
          call param_read('Tagging Rec',Rec_tag)
          call param_read('Tagging Res',Res_tag)
          ! Build the grid
@@ -604,6 +649,7 @@ contains
          call mfile%add_column(fs%VFmin,'VFmin')
          call mfile%add_column(fs%VFmax,'VFmax')
          call mfile%add_column(fs%VFint,'VFint')
+         call mfile%add_column(fs%dPmax,'dPmax')
          call mfile%write()
          ! Create CFL monitor
          cflfile=monitor(amRoot=amr%amRoot,name='cfl')
@@ -667,8 +713,6 @@ contains
          call tfile%add_column(fs%wtmin_plicnet,'plicnet_min')
          call tfile%add_column(fs%wtmax_polygon,'polygon_max')
          call tfile%add_column(fs%wtmin_polygon,'polygon_min')
-         call tfile%add_column(fs%ncells_max,'cells_max')
-         call tfile%add_column(fs%ncells_min,'cells_min')
          call tfile%add_column(fs%nmixed_max,'mixed_max')
          call tfile%add_column(fs%nmixed_min,'mixed_min')
          call tfile%write()
@@ -690,10 +734,7 @@ contains
          
          ! Remember old state
          call fs%Qold%copy(src=fs%Q)
-         call fs%VFold%copy(src=fs%VF)
-         call fs%Cliqold%copy(src=fs%Cliq)
-         call fs%Cgasold%copy(src=fs%Cgas)
-         call fs%PLICold%copy(src=fs%PLIC)
+         call fs%store_old()
          
          ! ===== RK2 Stage 1: dQdt = f(t, Q) =====
          call fs%get_dQdt(Q=fs%Q,dQdt=dQdt,dt=0.5_WP*time%dt,time=time%t)
@@ -702,7 +743,7 @@ contains
          call fs%Q%copy(src=fs%Qold); call fs%Q%saxpy(a=0.5_WP*time%dt,src=dQdt)
          call fs%Q%average_down(); call fs%Q%fill(time=time%t+0.5_WP*time%dt)
          call check_Q('RK1   ')
-         call fs%apply_relax()
+         call fs%apply_relax(time=time%t+0.5_WP*time%dt)
          call check_Q('RELAX1')
          call fs%get_dQdt(Q=fs%Q,dQdt=dQdt,dt=time%dt,time=time%t+0.5_WP*time%dt)
 
@@ -710,11 +751,11 @@ contains
          call fs%Q%copy(src=fs%Qold); call fs%Q%saxpy(a=time%dt,src=dQdt)
          call fs%Q%average_down(); call fs%Q%fill(time=time%t)
          call check_Q('RK2   ')
-         call fs%apply_relax()
+         call fs%apply_relax(time=time%t)
          call check_Q('RELAX2')
 
-         ! Rebuild PLIC and reset moments
-         call fs%build_plic(time%t); call fs%reset_moments()
+         ! Rebuild PLIC
+         call fs%build_plic(time%t)
 
          ! Recompute primitive variables
          call fs%get_primitive(fs%Q)
