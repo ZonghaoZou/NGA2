@@ -1204,46 +1204,14 @@ contains
       integer,  dimension(3)   :: bblo,bbhi,cijk
       logical :: bb_pure_liq, bb_pure_gas
       real(WP), dimension(3)   :: fbary
-      real(WP), dimension(3)   :: offset
       real(WP) :: total_mf
       real(WP), dimension(3,9) :: face
       real(WP), dimension(:,:,:,:), allocatable :: FX,FY,FZ
-      real(WP), dimension(:,:,:,:), allocatable :: gradUc,gradVc,gradWc
-      integer :: ip,jp,kp,im,jm,km,idir
-      real(WP) :: idp,idm
       
       this%MFX=0.0_WP; this%MFY=0.0_WP; this%MFZ=0.0_WP
       allocate(FX(1:8,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FX=0.0_WP
       allocate(FY(1:8,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FY=0.0_WP
       allocate(FZ(1:8,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));FZ=0.0_WP
-
-      ! Allocate and compute MINMOD-limited velocity gradients for second-order reconstruction
-      allocate(gradUc(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));gradUc=0.0_WP
-      allocate(gradVc(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));gradVc=0.0_WP
-      allocate(gradWc(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));gradWc=0.0_WP
-      do k=this%cfg%kmino_+1,this%cfg%kmaxo_-1
-         do j=this%cfg%jmino_+1,this%cfg%jmaxo_-1
-            do i=this%cfg%imino_+1,this%cfg%imaxo_-1
-               if (this%mask(i,j,k).ne.0) cycle
-               do idir=1,3
-                  select case (idir)
-                  case (1) ! X gradient
-                     ip=i+1; jp=j; kp=k; idp=this%cfg%dxmi(i+1)
-                     im=i-1; jm=j; km=k; idm=this%cfg%dxmi(i  )
-                  case (2) ! Y gradient
-                     ip=i; jp=j+1; kp=k; idp=this%cfg%dymi(j+1)
-                     im=i; jm=j-1; km=k; idm=this%cfg%dymi(j  )
-                  case (3) ! Z gradient
-                     ip=i; jp=j; kp=k+1; idp=this%cfg%dzmi(k+1)
-                     im=i; jm=j; km=k-1; idm=this%cfg%dzmi(k  )
-                  end select
-                  gradUc(idir,i,j,k)=mmgrad((Uc(ip,jp,kp)-Uc(i,j,k))*idp,(Uc(i,j,k)-Uc(im,jm,km))*idm)
-                  gradVc(idir,i,j,k)=mmgrad((Vc(ip,jp,kp)-Vc(i,j,k))*idp,(Vc(i,j,k)-Vc(im,jm,km))*idm)
-                  gradWc(idir,i,j,k)=mmgrad((Wc(ip,jp,kp)-Wc(i,j,k))*idp,(Wc(i,j,k)-Wc(im,jm,km))*idm)
-               end do
-            end do
-         end do
-      end do
 
       ! Loop over the domain and compute fluxes using semi-Lagrangian algorithm
       do k=this%cfg%kmin_,this%cfg%kmax_+1
@@ -1297,17 +1265,15 @@ contains
                             if (bb_pure_liq) then
                                SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
                                cijk=myijk(:,1)
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                               SLflux(9 )=SLflux(9 )+rho_l*fvol*Uc(cijk(1),cijk(2),cijk(3))
+                               SLflux(10)=SLflux(10)+rho_l*fvol*Vc(cijk(1),cijk(2),cijk(3))
+                               SLflux(11)=SLflux(11)+rho_l*fvol*Wc(cijk(1),cijk(2),cijk(3))
                             else
                                SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
                                cijk=myijk(:,1)
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                               SLflux(12)=SLflux(12)+rho_g*fvol*Uc(cijk(1),cijk(2),cijk(3))
+                               SLflux(13)=SLflux(13)+rho_g*fvol*Vc(cijk(1),cijk(2),cijk(3))
+                               SLflux(14)=SLflux(14)+rho_g*fvol*Wc(cijk(1),cijk(2),cijk(3))
                             end if
                          else
                             SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
@@ -1377,17 +1343,15 @@ contains
                             if (bb_pure_liq) then
                                SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
                                cijk=myijk(:,1)
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                               SLflux(9 )=SLflux(9 )+rho_l*fvol*Uc(cijk(1),cijk(2),cijk(3))
+                               SLflux(10)=SLflux(10)+rho_l*fvol*Vc(cijk(1),cijk(2),cijk(3))
+                               SLflux(11)=SLflux(11)+rho_l*fvol*Wc(cijk(1),cijk(2),cijk(3))
                             else
                                SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
                                cijk=myijk(:,1)
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                               SLflux(12)=SLflux(12)+rho_g*fvol*Uc(cijk(1),cijk(2),cijk(3))
+                               SLflux(13)=SLflux(13)+rho_g*fvol*Vc(cijk(1),cijk(2),cijk(3))
+                               SLflux(14)=SLflux(14)+rho_g*fvol*Wc(cijk(1),cijk(2),cijk(3))
                             end if
                          else
                             SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
@@ -1457,17 +1421,15 @@ contains
                             if (bb_pure_liq) then
                                SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
                                cijk=myijk(:,1)
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                               SLflux(9 )=SLflux(9 )+rho_l*fvol*Uc(cijk(1),cijk(2),cijk(3))
+                               SLflux(10)=SLflux(10)+rho_l*fvol*Vc(cijk(1),cijk(2),cijk(3))
+                               SLflux(11)=SLflux(11)+rho_l*fvol*Wc(cijk(1),cijk(2),cijk(3))
                             else
                                SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
                                cijk=myijk(:,1)
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                               SLflux(12)=SLflux(12)+rho_g*fvol*Uc(cijk(1),cijk(2),cijk(3))
+                               SLflux(13)=SLflux(13)+rho_g*fvol*Vc(cijk(1),cijk(2),cijk(3))
+                               SLflux(14)=SLflux(14)+rho_g*fvol*Wc(cijk(1),cijk(2),cijk(3))
                             end if
                          else
                             SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
@@ -1546,22 +1508,6 @@ contains
       call this%cfg%sync(this%MFZ)
 
       contains
-      ! Minmod gradient limiter
-      function mmgrad(g1,g2) result(g)
-        implicit none
-        real(WP), intent(in) :: g1,g2
-        real(WP) :: g
-        if (g1*g2.le.0.0_WP) then
-           g=0.0_WP
-        else
-           if (abs(g1).lt.abs(g2)) then
-              g=g1
-           else
-              g=g2
-           end if
-        end if
-      end function mmgrad
-
       function get_Pindices(Pnt,ijk_i) result(ijk_o)
          implicit none
          real(WP), dimension(3), intent(in) :: Pnt
@@ -1605,10 +1551,9 @@ contains
             myflux(1)=bb_vol; myflux(3:5)=bb_vol*bb_bary
             ! Use barycenter to find the correct donor cell
             bb_ijk=get_Pindices(bb_bary,myind(:,1))
-            offset=bb_bary-[this%cfg%xm(bb_ijk(1)),this%cfg%ym(bb_ijk(2)),this%cfg%zm(bb_ijk(3))]
-            myflux(9) =rho_l*bb_vol*(Uc(bb_ijk(1),bb_ijk(2),bb_ijk(3))+sum(gradUc(:,bb_ijk(1),bb_ijk(2),bb_ijk(3))*offset))
-            myflux(10)=rho_l*bb_vol*(Vc(bb_ijk(1),bb_ijk(2),bb_ijk(3))+sum(gradVc(:,bb_ijk(1),bb_ijk(2),bb_ijk(3))*offset))
-            myflux(11)=rho_l*bb_vol*(Wc(bb_ijk(1),bb_ijk(2),bb_ijk(3))+sum(gradWc(:,bb_ijk(1),bb_ijk(2),bb_ijk(3))*offset))
+            myflux(9) =rho_l*bb_vol*Uc(bb_ijk(1),bb_ijk(2),bb_ijk(3))
+            myflux(10)=rho_l*bb_vol*Vc(bb_ijk(1),bb_ijk(2),bb_ijk(3))
+            myflux(11)=rho_l*bb_vol*Wc(bb_ijk(1),bb_ijk(2),bb_ijk(3))
             return
          else if (all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)) then
             ! Pure gas
@@ -1617,10 +1562,9 @@ contains
             myflux(2)=bb_vol; myflux(6:8)=bb_vol*bb_bary
             ! Use barycenter to find the correct donor cell
             bb_ijk=get_Pindices(bb_bary,myind(:,1))
-            offset=bb_bary-[this%cfg%xm(bb_ijk(1)),this%cfg%ym(bb_ijk(2)),this%cfg%zm(bb_ijk(3))]
-            myflux(12)=rho_g*bb_vol*(Uc(bb_ijk(1),bb_ijk(2),bb_ijk(3))+sum(gradUc(:,bb_ijk(1),bb_ijk(2),bb_ijk(3))*offset))
-            myflux(13)=rho_g*bb_vol*(Vc(bb_ijk(1),bb_ijk(2),bb_ijk(3))+sum(gradVc(:,bb_ijk(1),bb_ijk(2),bb_ijk(3))*offset))
-            myflux(14)=rho_g*bb_vol*(Wc(bb_ijk(1),bb_ijk(2),bb_ijk(3))+sum(gradWc(:,bb_ijk(1),bb_ijk(2),bb_ijk(3))*offset))
+            myflux(12)=rho_g*bb_vol*Uc(bb_ijk(1),bb_ijk(2),bb_ijk(3))
+            myflux(13)=rho_g*bb_vol*Vc(bb_ijk(1),bb_ijk(2),bb_ijk(3))
+            myflux(14)=rho_g*bb_vol*Wc(bb_ijk(1),bb_ijk(2),bb_ijk(3))
             return
          end if
 
@@ -1633,14 +1577,12 @@ contains
          else
             ! Leaf: single cell, cut by PLIC
              myflux(1:8)=cut_tet_plic(tetin,myind(1,1),myind(2,1),myind(3,1))
-            bb_bary=0.25_WP*(tetin(:,1)+tetin(:,2)+tetin(:,3)+tetin(:,4))
-            offset=bb_bary-[this%cfg%xm(myind(1,1)),this%cfg%ym(myind(2,1)),this%cfg%zm(myind(3,1))]
-            myflux(9 )=rho_l*myflux(1)*(Uc(myind(1,1),myind(2,1),myind(3,1))+sum(gradUc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(10)=rho_l*myflux(1)*(Vc(myind(1,1),myind(2,1),myind(3,1))+sum(gradVc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(11)=rho_l*myflux(1)*(Wc(myind(1,1),myind(2,1),myind(3,1))+sum(gradWc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(12)=rho_g*myflux(2)*(Uc(myind(1,1),myind(2,1),myind(3,1))+sum(gradUc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(13)=rho_g*myflux(2)*(Vc(myind(1,1),myind(2,1),myind(3,1))+sum(gradVc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(14)=rho_g*myflux(2)*(Wc(myind(1,1),myind(2,1),myind(3,1))+sum(gradWc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
+            myflux(9 )=rho_l*myflux(1)*Uc(myind(1,1),myind(2,1),myind(3,1))
+            myflux(10)=rho_l*myflux(1)*Vc(myind(1,1),myind(2,1),myind(3,1))
+            myflux(11)=rho_l*myflux(1)*Wc(myind(1,1),myind(2,1),myind(3,1))
+            myflux(12)=rho_g*myflux(2)*Uc(myind(1,1),myind(2,1),myind(3,1))
+            myflux(13)=rho_g*myflux(2)*Vc(myind(1,1),myind(2,1),myind(3,1))
+            myflux(14)=rho_g*myflux(2)*Wc(myind(1,1),myind(2,1),myind(3,1))
             return
          end if
          ! Find case of cut

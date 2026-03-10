@@ -2,3 +2,5 @@ vfs_class_default                  is the one that I have used for all the other
 vfs_class_noirl_tets               also works and it is purely based on 8 tets by passing the use of polyhedron in the first place.
 vfs_class_noirl_polyfirst_thentest adapts the amrvof geometry version
 vfs_class_amrvof                   fully adpots amrvof geometry, everythign is self-contained in the tranpsort_flux subroutine
+vfs_class_amrvof_dissipationfree   adds the dissipation free fall back suggestd in the amrcomp solv
+vfs_class_amrvof_minmod            adds the minmom gradient and offset based on cell center to the tet barycenter
