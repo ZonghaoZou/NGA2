@@ -1296,14 +1296,14 @@ contains
                             fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
                             if (bb_pure_liq) then
                                SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
-                               cijk=myijk(:,1)
+                               cijk=get_Pindices(fbary,myijk(:,1))
                                offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
                                SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
                             else
                                SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
-                               cijk=myijk(:,1)
+                               cijk=get_Pindices(fbary,myijk(:,1))
                                offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
                                SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
@@ -1376,14 +1376,14 @@ contains
                             fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
                             if (bb_pure_liq) then
                                SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
-                               cijk=myijk(:,1)
+                               cijk=get_Pindices(fbary,myijk(:,1))
                                offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
                                SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
                             else
                                SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
-                               cijk=myijk(:,1)
+                               cijk=get_Pindices(fbary,myijk(:,1))
                                offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
                                SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
@@ -1456,14 +1456,14 @@ contains
                             fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
                             if (bb_pure_liq) then
                                SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
-                               cijk=myijk(:,1)
+                               cijk=get_Pindices(fbary,myijk(:,1))
                                offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
                                SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
                             else
                                SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
-                               cijk=myijk(:,1)
+                               cijk=get_Pindices(fbary,myijk(:,1))
                                offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
                                SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
                                SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))

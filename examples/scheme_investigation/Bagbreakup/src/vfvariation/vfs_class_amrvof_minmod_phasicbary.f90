@@ -1632,15 +1632,15 @@ contains
             dir=3; cut_ind=maxval(myind(3,:)); d(:)=tetin(3,:)-this%cfg%z(cut_ind)
          else
             ! Leaf: single cell, cut by PLIC
-             myflux(1:8)=cut_tet_plic(tetin,myind(1,1),myind(2,1),myind(3,1))
-            bb_bary=0.25_WP*(tetin(:,1)+tetin(:,2)+tetin(:,3)+tetin(:,4))
-            offset=bb_bary-[this%cfg%xm(myind(1,1)),this%cfg%ym(myind(2,1)),this%cfg%zm(myind(3,1))]
-            myflux(9 )=rho_l*myflux(1)*(Uc(myind(1,1),myind(2,1),myind(3,1))+sum(gradUc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(10)=rho_l*myflux(1)*(Vc(myind(1,1),myind(2,1),myind(3,1))+sum(gradVc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(11)=rho_l*myflux(1)*(Wc(myind(1,1),myind(2,1),myind(3,1))+sum(gradWc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(12)=rho_g*myflux(2)*(Uc(myind(1,1),myind(2,1),myind(3,1))+sum(gradUc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(13)=rho_g*myflux(2)*(Vc(myind(1,1),myind(2,1),myind(3,1))+sum(gradVc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
-            myflux(14)=rho_g*myflux(2)*(Wc(myind(1,1),myind(2,1),myind(3,1))+sum(gradWc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
+            myflux(1:8)=cut_tet_plic(tetin,myind(1,1),myind(2,1),myind(3,1))
+            offset=myflux(3:5)-myflux(1)*[this%cfg%xm(myind(1,1)),this%cfg%ym(myind(2,1)),this%cfg%zm(myind(3,1))]
+            myflux(9 )=rho_l*(myflux(1)*Uc(myind(1,1),myind(2,1),myind(3,1))+sum(gradUc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
+            myflux(10)=rho_l*(myflux(1)*Vc(myind(1,1),myind(2,1),myind(3,1))+sum(gradVc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
+            myflux(11)=rho_l*(myflux(1)*Wc(myind(1,1),myind(2,1),myind(3,1))+sum(gradWc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
+            offset=myflux(6:8)-myflux(2)*[this%cfg%xm(myind(1,1)),this%cfg%ym(myind(2,1)),this%cfg%zm(myind(3,1))]
+            myflux(12)=rho_g*(myflux(2)*Uc(myind(1,1),myind(2,1),myind(3,1))+sum(gradUc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
+            myflux(13)=rho_g*(myflux(2)*Vc(myind(1,1),myind(2,1),myind(3,1))+sum(gradVc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
+            myflux(14)=rho_g*(myflux(2)*Wc(myind(1,1),myind(2,1),myind(3,1))+sum(gradWc(:,myind(1,1),myind(2,1),myind(3,1))*offset))
             return
          end if
          ! Find case of cut
