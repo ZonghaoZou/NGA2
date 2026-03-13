@@ -26,7 +26,7 @@ module simulation
    
    !> Postprocessing tool
    type(postproc) :: pproc
-   logical :: only_pproc=.false.
+   logical :: only_pproc=.true.
    logical :: only_inlet=.false.
    public :: simulation_init,simulation_run,simulation_final
 
@@ -52,7 +52,7 @@ contains
          call atomization%init()
          
          ! Initialize disper simulation
-         call disper%init()
+         call disper%init(atomization%cfg)
 
          ! If restarting, the domains could be out of sync, so resync
          ! time by forcing injector to be at same time as atomization
@@ -62,17 +62,17 @@ contains
          ! Initialize couplers from injector to atomization
          create_coupler_i2a: block
             use parallel, only: group
-            xcpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call xcpl_i2a%set_src(injector%cfg,'x'); call xcpl_i2a%set_dst(atomization%cfg,'x'); call xcpl_i2a%initialize()
-            ycpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call ycpl_i2a%set_src(injector%cfg,'y'); call ycpl_i2a%set_dst(atomization%cfg,'y'); call ycpl_i2a%initialize()
-            zcpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call zcpl_i2a%set_src(injector%cfg,'z'); call zcpl_i2a%set_dst(atomization%cfg,'z'); call zcpl_i2a%initialize()
+            xcpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call xcpl_i2a%set_src(injector%cfg); call xcpl_i2a%set_dst(atomization%cfg); call xcpl_i2a%initialize()
+            ycpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call ycpl_i2a%set_src(injector%cfg); call ycpl_i2a%set_dst(atomization%cfg); call ycpl_i2a%initialize()
+            zcpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call zcpl_i2a%set_src(injector%cfg); call zcpl_i2a%set_dst(atomization%cfg); call zcpl_i2a%initialize()
          end block create_coupler_i2a
 
          ! Initialize couplers from atomization tp disper
          create_coupler_a2d: block
             use parallel, only: group
-            xcpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call xcpl_a2d%set_src(atomization%cfg,'x'); call xcpl_a2d%set_dst(disper%cfg,'x'); call xcpl_a2d%initialize()
-            ycpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call ycpl_a2d%set_src(atomization%cfg,'y'); call ycpl_a2d%set_dst(disper%cfg,'y'); call ycpl_a2d%initialize()
-            zcpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call zcpl_a2d%set_src(atomization%cfg,'z'); call zcpl_a2d%set_dst(disper%cfg,'z'); call zcpl_a2d%initialize()
+            xcpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call xcpl_a2d%set_src(atomization%cfg); call xcpl_a2d%set_dst(disper%cfg); call xcpl_a2d%initialize()
+            ycpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call ycpl_a2d%set_src(atomization%cfg); call ycpl_a2d%set_dst(disper%cfg); call ycpl_a2d%initialize()
+            zcpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call zcpl_a2d%set_src(atomization%cfg); call zcpl_a2d%set_dst(disper%cfg); call zcpl_a2d%initialize()
          end block create_coupler_a2d
       end if
       
@@ -92,7 +92,20 @@ contains
       else
          ! Atomization drives overall time integration
          do while (.not.atomization%time%done())
-            
+            ! Advance particles in the dispersion domain
+            particle_advancement: block
+               ! Increment time
+               call disper%fs%get_cfl(disper%time%dt,disper%time%cfl)
+               call disper%time%adjust_dt()
+               call disper%time%increment()
+               ! Record droplets
+               call disper%record_droplet() 
+               ! Advance particles
+               disper%resU=disper%fs%rho
+               disper%resV=disper%fs%visc
+               call disper%lp%advance(dt=disper%time%dt,U=disper%fs%U,V=disper%fs%V,W=disper%fs%W,rho=disper%resU,visc=disper%resV)              
+            end block particle_advancement
+
             ! Advance injector and atomization simulation until they're caught up
             do while (atomization%time%t.le.disper%time%t)
                
@@ -107,9 +120,9 @@ contains
                   integer :: n,i,j,k
                   type(bcond), pointer :: mybc
                   ! Exchange data using cpl12x/y/z couplers
-                  call xcpl_i2a%push(injector%fs%U); call xcpl_i2a%transfer(); call xcpl_i2a%pull(atomization%resU)
-                  call ycpl_i2a%push(injector%fs%V); call ycpl_i2a%transfer(); call ycpl_i2a%pull(atomization%resV)
-                  call zcpl_i2a%push(injector%fs%W); call zcpl_i2a%transfer(); call zcpl_i2a%pull(atomization%resW)
+                  call xcpl_i2a%push(injector%fs%U,loc='x'); call xcpl_i2a%transfer(); call xcpl_i2a%pull(atomization%resU,loc='x')
+                  call ycpl_i2a%push(injector%fs%V,loc='y'); call ycpl_i2a%transfer(); call ycpl_i2a%pull(atomization%resV,loc='y')
+                  call zcpl_i2a%push(injector%fs%W,loc='z'); call zcpl_i2a%transfer(); call zcpl_i2a%pull(atomization%resW,loc='z')
                   ! Apply time-varying Dirichlet conditions
                   call atomization%fs%get_bcond('gas_inlet',mybc)
                   do n=1,mybc%itr%no_
@@ -126,13 +139,13 @@ contains
 
             ! Handle coupling between atomization and disper
             coupling_a2d: block
-               disper%U2on3=0.0_WP; call xcpl_a2d%push(atomization%fs%U); call xcpl_a2d%transfer(); call xcpl_a2d%pull(disper%U2on3)
-               disper%V2on3=0.0_WP; call ycpl_a2d%push(atomization%fs%V); call ycpl_a2d%transfer(); call ycpl_a2d%pull(disper%V2on3)
-               disper%W2on3=0.0_WP; call zcpl_a2d%push(atomization%fs%W); call zcpl_a2d%transfer(); call zcpl_a2d%pull(disper%W2on3)
+               disper%U2on3=0.0_WP; call xcpl_a2d%push(atomization%fs%U,loc='x'); call xcpl_a2d%transfer(); call xcpl_a2d%pull(disper%U2on3,loc='x')
+               disper%V2on3=0.0_WP; call ycpl_a2d%push(atomization%fs%V,loc='y'); call ycpl_a2d%transfer(); call ycpl_a2d%pull(disper%V2on3,loc='y')
+               disper%W2on3=0.0_WP; call zcpl_a2d%push(atomization%fs%W,loc='z'); call zcpl_a2d%transfer(); call zcpl_a2d%pull(disper%W2on3,loc='z')
             end block coupling_a2d
 
             ! Advance disper simulation by providing the atomization mesh for volumetric forcing
-            call disper%step(atomization%cfg)
+            call disper%step()
          end do
       end if
       

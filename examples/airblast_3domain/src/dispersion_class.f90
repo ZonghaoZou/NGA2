@@ -16,8 +16,8 @@ module dispersion_class
     use ddadi_class,       only: ddadi
     use partmesh_class,    only: partmesh
     implicit none
-    private
-   !  type(lpt), public :: lp         !< Lagrangian particle tracking    
+    private 
+
     public :: dispersion
     
     !> Nozzle object
@@ -39,6 +39,7 @@ module dispersion_class
        
        !> Flow solver
        type(incomp)      :: fs    !< Incompressible flow solver
+       type(ddadi)       :: vs    !< DDADI solver for velocity
        type(hypre_str)   :: ps    !< Structured Hypre linear solver for pressure
        type(sgsmodel)    :: sgs   !< SGS model for eddy viscosity
        type(timetracker) :: time  !< Time info
@@ -60,8 +61,9 @@ module dispersion_class
        real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
        
        !> IB velocity and mass source
-       real(WP), dimension(:,:,:), allocatable :: Uib,Vib,Wib
        real(WP), dimension(:,:,:), allocatable :: U2on3,V2on3,W2on3
+       real(WP), dimension(:,:,:), allocatable :: x_cell,y_cell,z_cell
+       real(WP), dimension(:,:,:), allocatable :: x_face,y_face,z_face
        
        !> Fluid definition
        real(WP) :: visc
@@ -77,14 +79,10 @@ module dispersion_class
     
  
     !> Hardcode inlet positions used in locator functions at x=-0.01
-   ! real(WP), parameter, public :: dl=0.0025_WP   ! Liquid pipe diameter ~(inner+outer)/2
    real(WP), parameter, public :: dl=0.003_WP   ! Liquid outer pipe diameter 
-   ! real(WP), parameter, public :: dg=0.0100_WP   ! Gas pipe diameter ~(inner+outer)/2
-   ! 0.0206 doesn't seem right, it seems to be over estimating
    real(WP), parameter, public :: dg=0.0206_WP   ! Gas pipe diameter ~(inner+outer)/2
    real(WP), parameter, public :: rl=0.0010_WP   ! Liquid pipe inner radius
    real(WP), parameter, public :: rlo=0.0015_WP   ! Liquid pipe outer radius
-   real(WP), parameter, public :: rgi=0.005_WP   ! Liquid pipe outer radius
    real(WP) :: rho_l
     
  contains
@@ -98,91 +96,81 @@ module dispersion_class
       implicit none
       class(dispersion), intent(inout) :: this
       character(len=str_medium) :: filename
-      real(WP), dimension(:,:), allocatable :: pinfo,pinfo_
-      integer, dimension(:), allocatable:: plist,dispels
-    !   real(WP) :: xloc_30,xloc_60,xloc_90,xloc_120,xloc_150,input_xloc
-      real(WP) :: xloc_90,xloc_100,xloc_150,xloc_200,input_xloc
-    !   integer:: n,count_30,count_60,count_90,count_120,count_150,totalcount,input_count,i
-      integer:: n,count_90,count_100,count_150,count_200,totalcount,input_count,i
-      integer:: rank,count,ierr,iunit
-    !   xloc_30=30e-3_WP; xloc_60=60e-3_WP; xloc_90=90e-3_WP; xloc_120=120e-3_WP ; xloc_150=150e-3_WP
-      xloc_90=90e-3_WP;xloc_100=100e-3_WP;xloc_150=150e-3_WP;xloc_200=200e-3_WP
-    !   count_30=0; count_60=0; count_90=0; count_120=0; count_150=0
-      count_90=0;count_100=0;count_150=0;count_200=0 
+      integer, dimension(:), allocatable:: plist
+      real(WP) :: xloc_90,input_xloc
+      integer:: n,count_90,totalcount,input_count,i
+      xloc_90=90e-3_WP; count_90=0
       allocate(plist(0:this%cfg%nproc-1))
       ! For each particle on each processor, count how many have passed the different x locations
       do n =1, this%lp%np_
-       !  if (this%lp%p(n)%pos(1).lt.xloc_30 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_30) count_30=count_30+1
-       !  if (this%lp%p(n)%pos(1).lt.xloc_60 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_60) count_60=count_60+1
         if (this%lp%p(n)%pos(1).lt.xloc_90 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_90) count_90=count_90+1
-       !  if (this%lp%p(n)%pos(1).lt.xloc_120 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_120) count_120=count_120+1
-        if (this%lp%p(n)%pos(1).lt.xloc_100 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_100) count_100=count_100+1
-        if (this%lp%p(n)%pos(1).lt.xloc_150 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_150) count_150=count_150+1
-        if (this%lp%p(n)%pos(1).lt.xloc_200 .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.xloc_200) count_200=count_200+1
       end do
-      
-    !   input_count=count_30; input_xloc=xloc_30; call output()
-    !   input_count=count_60; input_xloc=xloc_60; call output()
       input_count=count_90; input_xloc=xloc_90; call output()
-    !   input_count=count_120; input_xloc=xloc_120; call output()
-      input_count=count_100; input_xloc=xloc_100; call output()
-      input_count=count_150; input_xloc=xloc_150; call output()
-      input_count=count_200; input_xloc=xloc_200; call output()
- 
+
+      deallocate(plist)
       contains
-      
       subroutine output()
-         implicit none 
-         ! Lets first deal with xloc = 30e-3
+         implicit none
+         integer, dimension(:), allocatable :: plist8,dispels8
+         real(WP), dimension(:), allocatable :: sendbuf,recvbuf
+         integer :: p_idx,count,rank,ierr,iunit
          call MPI_AllGATHER(input_count,1,MPI_INTEGER,plist,1,MPI_INTEGER,this%cfg%comm,ierr)
          totalcount=sum(plist)
          if (totalcount .gt. 0) then
-            allocate(pinfo_(1:8,1:input_count))
-            allocate(pinfo(1:8,1:totalcount))
-            allocate(dispels(0:this%cfg%nproc-1))
+            ! Pack local particle data contiguously: 8 values per particle
+            allocate(sendbuf(1:8*input_count))
+            allocate(recvbuf(1:8*totalcount))
+            allocate(plist8(0:this%cfg%nproc-1))
+            allocate(dispels8(0:this%cfg%nproc-1))
             input_count=0
-            do n =1, this%lp%np_
+            do n=1,this%lp%np_
                if (this%lp%p(n)%pos(1).lt.input_xloc .and. this%lp%p(n)%pos(1)+this%time%dt*this%lp%p(n)%vel(1).ge.input_xloc) then
+                  p_idx=input_count*8
+                  sendbuf(p_idx+1)=this%lp%p(n)%d
+                  sendbuf(p_idx+2)=this%lp%p(n)%vel(1)
+                  sendbuf(p_idx+3)=this%lp%p(n)%vel(2)
+                  sendbuf(p_idx+4)=this%lp%p(n)%vel(3)
+                  sendbuf(p_idx+5)=this%lp%p(n)%pos(1)
+                  sendbuf(p_idx+6)=this%lp%p(n)%pos(2)
+                  sendbuf(p_idx+7)=this%lp%p(n)%pos(3)
+                  sendbuf(p_idx+8)=real(this%lp%p(n)%id,WP)
                   input_count=input_count+1
-                  pinfo_(1,  input_count)=this%lp%p(n)%d
-                  pinfo_(2:4,input_count)=this%lp%p(n)%vel
-                  pinfo_(5:7,input_count)=this%lp%p(n)%pos
-                  pinfo_(8,  input_count)=this%lp%p(n)%id
                end if
             end do
-            ! Calculate dispels
-            count = 0
+            ! Build counts and displacements scaled by 8
+            count=0
             do rank=0,this%cfg%nproc-1
-               dispels(rank) = count
-               count = count + plist(rank)
+               plist8(rank)=plist(rank)*8
+               dispels8(rank)=count
+               count=count+plist8(rank)
             end do
-            ! Communicate to root
-            do i = 1,8
-               call MPI_GATHERV(pinfo_(i,:),input_count,MPI_REAL_WP,pinfo(i,:),plist,dispels,MPI_REAL_WP,0,this%cfg%comm)
-            end do
+            ! Single MPI_GATHERV instead of 8 separate calls
+            call MPI_GATHERV(sendbuf,input_count*8,MPI_REAL_WP,recvbuf,plist8,dispels8,MPI_REAL_WP,0,this%cfg%comm)
             !!! Write to droplet list !!!
-            if (this%cfg%amRoot)  then
-             !   filename='spray-disper/x=30e-3'
+            if (this%cfg%amRoot) then
                write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-               open(newunit=iunit,file=trim(filename),form='formatted',status='old',access='stream',position='append',iostat=ierr)
+               open(newunit=iunit,file=trim(filename),form='formatted',status='old',position='append',iostat=ierr)
                if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-               do i = 1,totalcount
-               write(iunit,'(f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,f24.16,1x,f24.16,1x,f24.16,1x,I2)')this%time%t,pinfo(1,i),pinfo(2,i),pinfo(3,i)&
-               &,pinfo(4,i),pinfo(5,i),pinfo(6,i),pinfo(7,i),INT(pinfo(8,i))
+               do i=1,totalcount
+                  p_idx=(i-1)*8
+                  write(iunit,'(f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,f24.16,1x,I2)') &
+                     & this%time%t,recvbuf(p_idx+1),recvbuf(p_idx+2),recvbuf(p_idx+3), &
+                     & recvbuf(p_idx+4),recvbuf(p_idx+5),recvbuf(p_idx+6),recvbuf(p_idx+7),INT(recvbuf(p_idx+8))
                end do
                close(iunit)
             end if
-            deallocate(pinfo,pinfo_,dispels)
-         end if 
+            deallocate(sendbuf,recvbuf,plist8,dispels8)
+         end if
       end subroutine
       
     end subroutine record_droplet
     
     !> Initialization of dispersion simulation
-    subroutine init(this)
+    subroutine init(this,cfga2d)
        use parallel, only: amRoot
        implicit none
        class(dispersion), intent(inout) :: this
+       type(ibconfig), intent(inout) :: cfga2d
        
        ! Read the input
        this%input=inputfile(amRoot=amRoot,filename='input_dispersion')
@@ -191,17 +179,17 @@ module dispersion_class
        call this%geometry_init()
        
        ! Initialize the simulation
-       call this%simulation_init()
+       call this%simulation_init(cfga2d)
        
     end subroutine init
     
     
     !> Initialize geometry
     subroutine geometry_init(this)
-       use sgrid_class, only: sgrid
-       implicit none
-       class(dispersion) :: this
-       type(sgrid) :: grid
+      use sgrid_class, only: sgrid
+      implicit none
+      class(dispersion) :: this
+      type(sgrid) :: grid
        
        ! Create a grid from input params
        create_grid: block
@@ -225,7 +213,6 @@ module dispersion_class
           do k=1,nz+1
              z(k)=real(k-1,WP)/real(nz,WP)*Lz-0.5_WP*Lz
           end do
-          
           ! General serial grid object
           grid=sgrid(coord=cartesian,no=2,x=x,y=y,z=z,xper=.false.,yper=.false.,zper=.false.,name='dispersion')
           
@@ -362,10 +349,10 @@ module dispersion_class
     
     
     !> Initialize simulation
-    subroutine simulation_init(this)
+    subroutine simulation_init(this,cfga2d)
        implicit none
        class(dispersion), intent(inout) :: this
-       
+       type(ibconfig), intent(inout) :: cfga2d
        
        ! Initialize time tracker with 2 subiterations
        initialize_timetracker: block
@@ -385,9 +372,6 @@ module dispersion_class
           allocate(this%Ui  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%Ui=0.0_WP
           allocate(this%Vi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%Vi=0.0_WP
           allocate(this%Wi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%Wi=0.0_WP
-          allocate(this%Uib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%Uib=0.0_WP
-          allocate(this%Vib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%Vib=0.0_WP
-          allocate(this%Wib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));  this%Wib=0.0_WP
           allocate(this%U2on3  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%U2on3=0.0_WP
           allocate(this%V2on3  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%V2on3=0.0_WP
           allocate(this%W2on3  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));this%W2on3=0.0_WP
@@ -445,7 +429,6 @@ module dispersion_class
           call this%input%read('Liquid density',rho_l)
           ! Define gas and liquid inlet boundary conditions
          call this%fs%add_bcond(name='gas_inlet',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=gas_inlet)
-         ! call this%fs%add_bcond(name='liq_inlet',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=liq_inlet)
          ! Outflow on the right
          call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.false.,locator=right_boundary)
          ! Slip on the sides
@@ -458,10 +441,8 @@ module dispersion_class
          this%ps%maxlevel=16
          call this%input%read('Pressure iteration',this%ps%maxit)
          call this%input%read('Pressure tolerance',this%ps%rcvg)
-         ! Configure implicit velocity solver
-         ! this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
-         ! Setup the solver
-         call this%fs%setup(pressure_solver=this%ps)!,implicit_solver=this%vs)
+         ! Configure pressure solver
+         call this%fs%setup(pressure_solver=this%ps)
        end block create_flow_solver
        
        
@@ -482,7 +463,7 @@ module dispersion_class
             call this%df%pull(name='U',var=this%fs%U)
             call this%df%pull(name='V',var=this%fs%V)
             call this%df%pull(name='W',var=this%fs%W)
-            call this%df%pull(name='P',var=this%fs%P)  !< Reset pressure upon restart because I've noticed IB is causing drift...
+            call this%df%pull(name='P',var=this%fs%P)  
          end if
          ! Read in gas flow rate and convert to SI
          call this%input%read('Gas flow rate (SLPM)',Qgas)
@@ -515,6 +496,22 @@ module dispersion_class
          call this%fs%get_div()
       end block initialize_velocity
        
+      ! Precalculate nudge
+      nudge_precalculation: block
+         integer :: i,j,k
+         do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
+            do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
+               do i=this%fs%cfg%imin_,this%fs%cfg%imax_
+                     this%x_cell(i,j,k)=max((cfga2d%x(cfga2d%imax+1)-    this%fs%cfg%x (i) )/(cfga2d%x(cfga2d%imax+1)),0.0_WP)
+                     this%x_face(i,j,k)=max((cfga2d%x(cfga2d%imax+1)-    this%fs%cfg%xm(i) )/(cfga2d%x(cfga2d%imax+1)),0.0_WP)
+                     this%y_cell(i,j,k)=max((        0.5_WP*cfga2d%yL-abs(this%fs%cfg%y (j)))/(0.5_WP*cfga2d%yL        ),0.0_WP)
+                     this%y_face(i,j,k)=max((        0.5_WP*cfga2d%yL-abs(this%fs%cfg%ym(j)))/(0.5_WP*cfga2d%yL        ),0.0_WP)
+                     this%z_cell(i,j,k)=max((        0.5_WP*cfga2d%zL-abs(this%fs%cfg%z (k)))/(0.5_WP*cfga2d%zL        ),0.0_WP)
+                     this%z_face(i,j,k)=max((        0.5_WP*cfga2d%zL-abs(this%fs%cfg%zm(k)))/(0.5_WP*cfga2d%zL        ),0.0_WP)
+               end do
+            end do
+         end do
+      end block nudge_precalculation
        
       initialize_lpt: block
          use string, only: str_medium
@@ -524,63 +521,25 @@ module dispersion_class
          logical :: partfile_exists
          integer :: ierr,iunit
          real(WP) :: input_xloc
-         this%lp=lpt(cfg=this%cfg,name='spray_dispersion')
+         this%lp=lpt(cfg=this%cfg,name='spray')
          this%lp%rho=rho_l
          this%lp%filter_width=3.5_WP*this%cfg%min_meshsize
+         this%lp%drag_model='Schiller-Naumann'
          call this%lp%resize(0)
-         ! this%lp%filter_width=3.5_WP*this%cfg%min_meshsize
          if (this%restarted) then
             call this%input%read('Restart from',timestamp,default='')
             inquire(file='restart/part_dispersion_'//trim(timestamp),exist=partfile_exists)
-            ! If so, read it
             if (partfile_exists) call this%lp%read(filename='restart/part_dispersion_'//trim(timestamp))
          end if
  
          if (this%lp%cfg%amroot) then
             if (.not.isdir('spray-disper')) call makedir('spray-disper')
-          !   filename='spray-disper/x=30e-3'
-          !   input_xloc = 30e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-          !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-          !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-          !   close(iunit)         
-          ! !   filename='spray-disper/x=60e-3'
-          !   input_xloc = 60e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-          !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-          !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-          !   close(iunit)         
-          ! !   filename='spray-disper/x=90e-3'
-          !   input_xloc = 90e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-          !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-          !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-          !   close(iunit)         
-          ! !   filename='spray-disper/x=120e-3'
-          !   input_xloc = 120e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-          !   open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-          !   if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-          !   close(iunit)    
-          !   filename='spray-disper/x=150e-3'
             input_xloc = 90e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
+            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',iostat=ierr)
             if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
             close(iunit)
- 
-            input_xloc = 100e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-            close(iunit)
- 
-            input_xloc = 150e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-            close(iunit)     
-            
-            input_xloc = 200e-3_WP; write(filename, '("spray-disper/x=",ES10.3)') input_xloc
-            open(newunit=iunit,file=trim(filename),form='formatted',status='unknown',access='stream',iostat=ierr)
-            if (ierr.ne.0) call die('[Dipersion stat analysis] Could not open file: '//trim(filename))
-            close(iunit)     
          end if
       end block initialize_lpt
- 
       
       create_pmesh: block
          integer :: i
@@ -658,20 +617,9 @@ module dispersion_class
     
  
     !> Take one time step
-    subroutine step(this,cfga2d)
+    subroutine step(this)
        implicit none
        class(dispersion), intent(inout) :: this
-       type(ibconfig), intent(inout) :: cfga2d
-       ! Increment time
-       call this%fs%get_cfl(this%time%dt,this%time%cfl)
-       call this%time%adjust_dt()
-       call this%time%increment()
-      
-       call this%record_droplet() 
-       
-       this%resU=this%fs%rho
-       this%resV=this%fs%visc
-       call this%lp%advance(dt=this%time%dt,U=this%fs%U,V=this%fs%V,W=this%fs%W,rho=this%resU,visc=this%resV)
  
        ! Remember old velocity
        this%fs%Uold=this%fs%U
@@ -703,34 +651,19 @@ module dispersion_class
           this%resV=-2.0_WP*(this%fs%rho*this%fs%V-this%fs%rho*this%fs%Vold)+this%time%dt*this%resV
           this%resW=-2.0_WP*(this%fs%rho*this%fs%W-this%fs%rho*this%fs%Wold)+this%time%dt*this%resW
           
- 
           nudge: block
             integer :: i,j,k
             real(WP) :: xcoord,ycoord,zcoord
             do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
                do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
                   do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-                     if (this%fs%umask(i,j,k).eq.0) then
-                        xcoord=max((cfga2d%x(cfga2d%imax+1)-    this%fs%cfg%x (i) )/(cfga2d%x(cfga2d%imax+1)),0.0_WP)
-                        ycoord=max((        0.5_WP*cfga2d%yL-abs(this%fs%cfg%ym(j)))/(0.5_WP*cfga2d%yL        ),0.0_WP)
-                        zcoord=max((        0.5_WP*cfga2d%zL-abs(this%fs%cfg%zm(k)))/(0.5_WP*cfga2d%zL        ),0.0_WP)
-                        this%resU(i,j,k)=this%resU(i,j,k)+(this%U2on3(i,j,k)-this%fs%U(i,j,k))*(xcoord*ycoord*zcoord)**2
-                     end if
-                     if (this%fs%vmask(i,j,k).eq.0) then
-                        xcoord=max((cfga2d%x(cfga2d%imax+1)-    this%fs%cfg%xm(i) )/(cfga2d%x(cfga2d%imax+1)),0.0_WP)
-                        ycoord=max((        0.5_WP*cfga2d%yL-abs(this%fs%cfg%y (j)))/(0.5_WP*cfga2d%yL        ),0.0_WP)
-                        zcoord=max((        0.5_WP*cfga2d%zL-abs(this%fs%cfg%zm(k)))/(0.5_WP*cfga2d%zL        ),0.0_WP)
-                        this%resV(i,j,k)=this%resV(i,j,k)+(this%V2on3(i,j,k)-this%fs%V(i,j,k))*(xcoord*ycoord*zcoord)**2
-                     end if
-                     if (this%fs%wmask(i,j,k).eq.0) then
-                        xcoord=max((cfga2d%x(cfga2d%imax+1)-    this%fs%cfg%xm(i) )/(cfga2d%x(cfga2d%imax+1)),0.0_WP)
-                        ycoord=max((        0.5_WP*cfga2d%yL-abs(this%fs%cfg%ym(j)))/(0.5_WP*cfga2d%yL        ),0.0_WP)
-                        zcoord=max((        0.5_WP*cfga2d%zL-abs(this%fs%cfg%z (k)))/(0.5_WP*cfga2d%zL        ),0.0_WP)
-                        this%resW(i,j,k)=this%resW(i,j,k)+(this%W2on3(i,j,k)-this%fs%W(i,j,k))*(xcoord*ycoord*zcoord)**2
-                     end if
+                     if (this%fs%umask(i,j,k).eq.0) this%resU(i,j,k)=this%resU(i,j,k)+(this%U2on3(i,j,k)-this%fs%U(i,j,k))*(this%x_cell(i,j,k)*this%y_face(i,j,k)*this%z_face(i,j,k))**2
+                     if (this%fs%vmask(i,j,k).eq.0) this%resV(i,j,k)=this%resV(i,j,k)+(this%V2on3(i,j,k)-this%fs%V(i,j,k))*(this%x_face(i,j,k)*this%y_cell(i,j,k)*this%z_face(i,j,k))**2
+                     if (this%fs%wmask(i,j,k).eq.0) this%resW(i,j,k)=this%resW(i,j,k)+(this%W2on3(i,j,k)-this%fs%W(i,j,k))*(this%x_face(i,j,k)*this%y_face(i,j,k)*this%z_cell(i,j,k))**2
                   end do
                end do
             end do
+            call this%cfg%sync(this%resU); call this%cfg%sync(this%resV); call this%cfg%sync(this%resW)
          end block nudge
           ! Form implicit residuals
          !  call this%fs%solve_implicit(this%time%dt,this%resU,this%resV,this%resW)
@@ -739,29 +672,6 @@ module dispersion_class
           this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU/this%fs%rho
           this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV/this%fs%rho
           this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW/this%fs%rho
-          
-         !  ! Apply direct IB forcing
-         !  ibforcing: block
-         !     integer :: i,j,k
-         !     real(WP) :: VFx,VFy,VFz
-         !     do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
-         !        do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
-         !           do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-         !              ! Compute staggered VF
-         !              VFx=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-         !              VFy=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-         !              VFz=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-         !              ! Enforce IB velocity
-         !              if (this%fs%umask(i,j,k).eq.0) this%fs%U(i,j,k)=VFx*this%fs%U(i,j,k)+(1.0_WP-VFx)*this%Uib(i,j,k)
-         !              if (this%fs%vmask(i,j,k).eq.0) this%fs%V(i,j,k)=VFy*this%fs%V(i,j,k)+(1.0_WP-VFy)*this%Vib(i,j,k)
-         !              if (this%fs%wmask(i,j,k).eq.0) this%fs%W(i,j,k)=VFz*this%fs%W(i,j,k)+(1.0_WP-VFz)*this%Wib(i,j,k)
-         !           end do
-         !        end do
-         !     end do
-         !     call this%fs%cfg%sync(this%fs%U)
-         !     call this%fs%cfg%sync(this%fs%V)
-         !     call this%fs%cfg%sync(this%fs%W)
-         !  end block ibforcing
           
           ! Apply other boundary conditions on the resulting fields
           call this%fs%apply_bcond(this%time%t,this%time%dt)
@@ -793,7 +703,6 @@ module dispersion_class
        
        ! Output to ensight
        if (this%ens_evt%occurs()) then 
-            call this%ens_out%write_data(this%time%t)
             update_pmesh: block
                integer :: i
                call this%lp%update_partmesh(this%pmesh)
@@ -803,17 +712,15 @@ module dispersion_class
                   this%pmesh%vec(:,1,i)=this%lp%p(i)%vel
                end do
             end block update_pmesh 
+            call this%ens_out%write_data(this%time%t)
        end if
        
        ! Perform and output monitoring
        call this%fs%get_max()
        call this%mfile%write()
        call this%cflfile%write()
-      !  call this%lp%get_max()
-      ! call this%pfile%write()
        ! Finally, see if it's time to save restart files
        if (this%save_evt%occurs()) then
-         if (this%cfg%amRoot) print *, " Starting dispersion writing"
           save_restart: block
              use string, only: str_medium
              character(len=str_medium) :: timestamp
@@ -831,7 +738,6 @@ module dispersion_class
              call this%df%write(fdata='restart/data_dispersion_'//trim(adjustl(timestamp)))
              call this%lp%write(filename='restart/part_dispersion_'//trim(adjustl(timestamp)))
           end block save_restart
-          if (this%cfg%amRoot) print *, " Finishing dispersion writing"
        end if
        
     end subroutine step
@@ -844,10 +750,9 @@ module dispersion_class
        
        ! Deallocate work arrays
        deallocate(this%resU,this%resV,this%resW,this%Ui,this%Vi,this%Wi,this%gradU)
-       deallocate(this%Uib,this%Vib,this%Wib)
+       deallocate(this%U2on3,this%V2on3,this%W2on3)
        
     end subroutine final
-    
     
     !> Function that localizes the right domain boundary
     function right_boundary(pg,i,j,k) result(isIn)
@@ -858,20 +763,6 @@ module dispersion_class
       isIn=.false.
       if (i.eq.pg%imax+1) isIn=.true.
    end function right_boundary
-   
- 
-   !> Function that localizes liquid stream at -x
-   function liq_inlet(pg,i,j,k) result(isIn)
-      use pgrid_class, only: pgrid
-      class(pgrid), intent(in) :: pg
-      integer, intent(in) :: i,j,k
-      logical :: isIn
-      real(WP) :: rad
-      isIn=.false.
-      rad=sqrt(pg%ym(j)**2+pg%zm(k)**2)
-      if (rad.lt.0.5_WP*dl.and.i.eq.pg%imin) isIn=.true.
-   end function liq_inlet
-   
    
    !> Function that localizes gas stream at -x
    function gas_inlet(pg,i,j,k) result(isIn)

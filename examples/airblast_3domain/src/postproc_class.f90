@@ -8,6 +8,8 @@ module postproc_class
    use timetracker_class, only: timetracker
    use cclabel_class,     only: cclabel
    use lpt_class,         only: lpt
+   use tpns_class,        only: tpns
+   use sgsmodel_class,    only: sgsmodel
    implicit none
    private
    
@@ -26,11 +28,17 @@ module postproc_class
       type(ensight)  :: ens_out  !< Ensight output for flow variables
       type(cclabel)  :: ccl
       type(lpt)      :: lp       !< Tracking particles
+      type(tpns)     :: fs    !< Two-phase flow solver
+      type(sgsmodel) :: sgs   !< SGS model for eddy viscosity
       !> Data arrays
       real(WP), dimension(:,:,:), allocatable :: VF
       real(WP), dimension(:), allocatable :: Lb,by,bz
       real(WP), dimension(:,:), allocatable :: U
-      ! real(WP), dimension(:,:), allocatable :: by,bz
+      !> Add these for the SGS model
+      real(WP), dimension(:,:,:,:,:), allocatable :: gradU ! Adjust dimensions to match your solver's signature
+      real(WP), dimension(:,:,:), allocatable :: resU
+      real(WP), dimension(:,:,:,:), allocatable :: SR
+      real(WP), dimension(:,:,:), allocatable :: U_mean, V_mean, W_mean
    contains
       procedure :: analyze
       procedure, private :: read_ensight_scalar
@@ -38,15 +46,98 @@ module postproc_class
       procedure, private :: read_ensight_part
       procedure, private :: extract_core
       procedure, private :: analyze_core
-      procedure, private :: extract_EPL
-      procedure, private :: analyze_EPL
-      procedure, private :: extract_InletVel
-      procedure, private :: analyze_InletVel
-      procedure, private :: extract_droplets
+      procedure, private :: extract_dissipation
+      procedure, private :: compute_mean_fields
+      ! procedure, private :: extract_EPL
+      ! procedure, private :: analyze_EPL
+      ! procedure, private :: extract_InletVel
+      ! procedure, private :: analyze_InletVel
+      ! procedure, private :: extract_droplets
    end type postproc
+
+   real(WP), parameter, public :: dl=0.003_WP   ! Liquid outer pipe diameter 
+   real(WP), parameter, public :: dg=0.0206_WP   ! Gas pipe diameter ~(inner+outer)/2
+   real(WP), parameter, public :: rl=0.0010_WP   ! Liquid pipe inner radius
+   real(WP), parameter, public :: rlo=0.0015_WP   ! Liquid pipe outer radius
       
 contains
-   
+   !> Function that localizes the right domain boundary
+   function right_boundary(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (i.eq.pg%imax+1) isIn=.true.
+   end function right_boundary
+
+   !> Function that localizes liquid stream at -x
+   function liq_inlet(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      real(WP) :: rad
+      isIn=.false.
+      rad=sqrt(pg%ym(j)**2+pg%zm(k)**2)
+      if (rad.lt.0.5_WP*dl.and.i.eq.pg%imin) isIn=.true.
+   end function liq_inlet
+
+   !> Function that localizes gas stream at -x
+   function gas_inlet(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      real(WP) :: rad
+      isIn=.false.
+      rad=sqrt(pg%ym(j)**2+pg%zm(k)**2)
+      if (rad.ge.0.5_WP*dl.and.rad.lt.0.5_WP*dg.and.i.eq.pg%imin) isIn=.true.
+   end function gas_inlet
+
+   !> Function that localizes the top (y+) of the domain
+   function yp_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      implicit none
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (j.eq.pg%jmax+1) isIn=.true.
+   end function yp_locator
+
+   !> Function that localizes the bottom (y-) of the domain
+   function ym_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      implicit none
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (j.eq.pg%jmin) isIn=.true.
+   end function ym_locator
+
+   !> Function that localizes the top (z+) of the domain
+   function zp_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      implicit none
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (k.eq.pg%kmax+1) isIn=.true.
+   end function zp_locator
+
+   !> Function that localizes the bottom (z-) of the domain
+   function zm_locator(pg,i,j,k) result(isIn)
+      use pgrid_class, only: pgrid
+      implicit none
+      class(pgrid), intent(in) :: pg
+      integer, intent(in) :: i,j,k
+      logical :: isIn
+      isIn=.false.
+      if (k.eq.pg%kmin) isIn=.true.
+   end function zm_locator
    
    !> Read a scalar ensight file to an WP array - handle ghost cells as well
    subroutine read_ensight_scalar(this,filename,SC)
@@ -216,9 +307,6 @@ contains
       ! Allocate droplet stats arrays
       allocate(dvol(1:this%ccl%nstruct)); dvol=0.0_WP
       allocate(xmax(1:this%ccl%nstruct)); xmax=-HUGE(x)
-      ! allocate(mybv(this%cfg%imin:this%cfg%imax)); mybv=0.0_WP
-      ! allocate(myby(this%cfg%imin:this%cfg%imax)); myby=0.0_WP
-      ! allocate(mybz(this%cfg%imin:this%cfg%imax)); mybz=0.0_WP
       ! First pass to accumulate volume, position, and velocity
       do n=1,this%ccl%nstruct
          ! Loop over cells in structure
@@ -239,18 +327,11 @@ contains
          i=this%ccl%struct(n)%map(1,m); j=this%ccl%struct(n)%map(2,m); k=this%ccl%struct(n)%map(3,m)
          ! Integrate barycenter only for liquid core outside exit
          if (this%cfg%xm(i).ge.0.0_WP) then
-            !mybv(i)=mybv(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)
-            !myby(i)=myby(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%ym(j)
-            !mybz(i)=mybz(i)+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%zm(k)
             mybv=mybv+VFtmp(i,j,k)*this%cfg%vol(i,j,k)
             myby=myby+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%ym(j)
             mybz=mybz+VFtmp(i,j,k)*this%cfg%vol(i,j,k)*this%cfg%zm(k)
          end if
       end do 
-
-      ! call MPI_ALLREDUCE(MPI_IN_PLACE,mybv,size(mybv),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-      ! call MPI_ALLREDUCE(MPI_IN_PLACE,myby,size(myby),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-      ! call MPI_ALLREDUCE(MPI_IN_PLACE,mybz,size(mybz),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,mybv,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,myby,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,mybz,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
@@ -259,14 +340,6 @@ contains
          this%by(nfile)=myby/mybv
          this%bz(nfile)=mybz/mybv         
       end if
-
-
-      ! do i = this%cfg%imin,this%cfg%imax
-      !    if (mybv(i).gt.0.0_WP) then
-      !       this%by(i,nfile)=myby(i)/mybv(i)
-      !       this%bz(i,nfile)=mybz(i)/mybv(i)
-      !    end if
-      ! end do
       contains
       
       !> Function that identifies cells that need a label
@@ -314,202 +387,337 @@ contains
       end if
    end subroutine analyze_core
 
-   !> Extract a liquid droplets from CCL data
-   subroutine extract_EPL(this,VF,nfile)
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE,MPI_MAX
+   ! !> Extract a liquid droplets from CCL data
+   ! subroutine extract_EPL(this,VF,nfile)
+   !    use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE,MPI_MAX
+   !    use parallel,  only: MPI_REAL_WP
+   !    implicit none
+   !    class(postproc), intent(inout) :: this
+   !    integer, intent(in) :: nfile
+   !    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: VF
+
+   !    integer :: i,j,k
+   !    ! Sum all the VF in z direction
+   !    do k=this%cfg%kmin_,this%cfg%kmax_
+   !       do j=this%cfg%jmin_,this%cfg%jmax_
+   !          do i=this%cfg%imin_,this%cfg%imax_
+   !             this%VF(i,j,nfile)=this%VF(i,j,nfile)+VF(i,j,k)*this%cfg%dz(k)
+   !          end do
+   !       end do
+   !    end do
+
+   ! end subroutine extract_EPL
+
+   ! !> Extract a liquid droplets from CCL data
+   ! subroutine analyze_EPL(this,dir,xconst,yconst)
+   !    use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE,MPI_MAX
+   !    use parallel,  only: MPI_REAL_WP
+   !    use string,   only: str_medium
+   !    implicit none
+   !    class(postproc), intent(inout) :: this
+   !    character(len=str_medium) :: filename
+   !    integer, intent(in) :: dir
+   !    real(WP), intent(in) :: xconst,yconst
+   !    real(WP), dimension(:), allocatable :: EPL_avg,EPL_std
+   !    integer :: i,j,ierr
+   !       select case (dir)
+   !          ! constant in x
+   !          case(1)
+   !             ! allocate the list accounting for the whole y range
+   !             allocate(EPL_avg(this%cfg%jmin:this%cfg%jmax));EPL_avg=0.0_WP
+   !             allocate(EPL_std(this%cfg%jmin:this%cfg%jmax));EPL_std=0.0_WP
+   !             do j=this%cfg%jmin_,this%cfg%jmax_
+   !                do i=this%cfg%imin_,this%cfg%imax_
+   !                   if (this%cfg%xm(i-1).lt.xconst.and.this%cfg%xm(i).ge.xconst) then
+   !                      EPL_avg(j)=sum(this%VF(i,j,:))/size(this%VF(i,j,:))
+   !                      EPL_std(j)=sqrt(sum((this%VF(i,j,:)-EPL_avg(j))**2)/size(this%VF(i,j,:)))
+   !                   end if
+   !                end do
+   !             end do
+   !             call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_avg,size(EPL_avg),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   !             call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_std,size(EPL_std),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   !             if (this%cfg%amRoot) then
+   !                filename="x.csv"
+   !                ! filename="x="
+   !                ! write(filename, '(F0.2, ".csv")') xconst
+   !                ! Open file dynamically with append mode
+   !                open(unit=10, file=filename, status="replace", action="write")
+   !                do j=this%cfg%jmin,this%cfg%jmax
+   !                   write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%ym(j),EPL_avg(j),EPL_std(j)
+   !                end do
+   !                close(unit=10)
+   !             end if
+   !          ! constant in y
+   !          case(2)
+   !             ! allocate the list accounting for the whole x range
+   !             allocate(EPL_avg(this%cfg%imin:this%cfg%imax));EPL_avg=0.0_WP
+   !             allocate(EPL_std(this%cfg%imin:this%cfg%imax));EPL_std=0.0_WP
+   !             do i=this%cfg%imin_,this%cfg%imax_
+   !                do j=this%cfg%jmin_,this%cfg%jmax_
+   !                   if (this%cfg%ym(j-1).lt.yconst.and.this%cfg%ym(j).ge.yconst) then
+   !                      EPL_avg(i)=sum(this%VF(i,j,:))/size(this%VF(i,j,:))
+   !                      EPL_std(i)=sqrt(sum((this%VF(i,j,:)-EPL_avg(i))**2)/size(this%VF(i,j,:)))
+   !                      ! print *, "i1",this%cfg%xm(i),EPL_avg(i),EPL_std(i),sum(this%VF(i,j,:))/size(this%VF(i,j,:)),sqrt(sum((this%VF(i,j,:)-EPL_avg(i))**2)/size(this%VF(i,j,:)))
+   !                   end if
+   !                end do
+   !             end do
+   !             call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_avg,size(EPL_avg),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   !             call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_std,size(EPL_std),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+   !             if (this%cfg%amRoot) then
+   !                filename="y.csv"
+   !                ! filename="y="
+   !                ! write(filename, '(F0.2, ".csv")') xconst
+   !                ! Open file dynamically with append mode
+   !                open(unit=10, file=filename, status="replace", action="write")
+   !                do i=this%cfg%imin,this%cfg%imax
+   !                   write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%xm(i),EPL_avg(i),EPL_std(i)
+   !                end do
+   !                close(unit=10)
+   !             end if
+   !       end select
+   ! end subroutine analyze_EPL
+
+!   !> Extract a pmesh skeleton of the liquid core from CCL data
+!    subroutine extract_InletVel(this,U,nfile)
+!       use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+!       use parallel,  only: MPI_REAL_WP
+!       implicit none
+!       class(postproc), intent(inout) :: this
+!       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: U
+!       real(WP), dimension(:), allocatable :: Utmp
+!       real(WP) :: velmesurement
+!       integer, intent(in) :: nfile
+!       integer:: i,j,k,ierr
+!       velmesurement=0.0003_WP
+!       allocate(Utmp(this%cfg%jmin:this%cfg%jmax));Utmp=0.0_WP
+!       ! Loop through x domain and get x location
+!       do k=this%cfg%kmin_,this%cfg%kmax_
+!          do i=this%cfg%imin_,this%cfg%imax_
+!             if (this%cfg%zm(k).ge.0.0_WP .and. this%cfg%zm(k-1).lt.0.0_WP ) then
+!                if (this%cfg%xm(i).ge.velmesurement .and. this%cfg%xm(i-1).lt.velmesurement ) then
+!                   do j = this%cfg%jmin_,this%cfg%jmax_
+!                      Utmp(j) = U(i,j,k)
+!                   end do
+!                end if
+!             end if
+!          end do
+!       end do
+!       call MPI_ALLREDUCE(MPI_IN_PLACE,Utmp,size(Utmp),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+!       this%U(:,nfile) = Utmp
+!    end subroutine extract_InletVel
+
+!    !> Extract a pmesh skeleton of the liquid core from CCL data
+!    subroutine analyze_InletVel(this)
+!       use mathtools, only: Pi
+!       use string,   only: str_medium
+!       implicit none
+!       class(postproc), intent(inout) :: this
+!       character(len=str_medium) :: filename
+!       real(WP), dimension(:), allocatable :: Uinlet_avg,Uinlet_std
+!       integer :: j
+!       real(WP), parameter :: SLPM2SI=1.66667E-5_WP
+!       real(WP) :: dg,Qaxial,Uaxial,Aaxial,dl
+!       dg=0.01_WP
+!       dl=0.003_WP
+!       ! call this%input%read('Total flow rate (SLPM)',Qaxial)
+!       Qaxial=150.0_WP*SLPM2SI
+!       Aaxial=0.25_WP*Pi*(dg**2-dl**2)
+!       Uaxial=Qaxial/Aaxial 
+!       allocate(Uinlet_avg(this%cfg%jmin:this%cfg%jmax));Uinlet_avg=0.0_WP
+!       allocate(Uinlet_std(this%cfg%jmin:this%cfg%jmax));Uinlet_std=0.0_WP
+!       do j=this%cfg%jmin,this%cfg%jmax
+!          Uinlet_avg(j)=sum(this%U(j,:))/size(this%U(j,:))
+!          Uinlet_std(j)=sqrt(sum((this%U(j,:)-Uinlet_avg(j))**2)/size(this%U(j,:)))
+!       end do
+!       if (this%cfg%amRoot) then
+!          filename="Uinlet.csv"
+!          ! Open file dynamically with append mode
+!          open(unit=10, file=filename, status="replace", action="write")
+!          do j=this%cfg%jmin,this%cfg%jmax
+!             write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%ym(j)/dg,Uinlet_avg(j)/Uaxial,Uinlet_std(j)/Uaxial
+!          end do
+!          close(unit=10)
+!       end if
+
+!    end subroutine analyze_InletVel
+
+   ! !> Extract a pmesh skeleton of the liquid core from CCL data
+   ! subroutine extract_droplets(this)
+   !    use mathtools, only: Pi
+   !    use string,   only: str_medium
+   !    implicit none
+   !    class(postproc), intent(inout) :: this
+   !    character(len=str_medium) :: filename
+   !    real(WP), dimension(:), allocatable :: Uinlet_avg,Uinlet_std
+   !    integer :: j
+   !    real(WP), parameter :: SLPM2SI=1.66667E-5_WP
+   !    real(WP) :: dg,Qaxial,Uaxial,Aaxial,dl
+   !    dg=0.01_WP
+   !    dl=0.003_WP
+   !    Qaxial=2.0_WP*85.7_WP*SLPM2SI
+   !    Aaxial=0.25_WP*Pi*(dg**2-dl**2)
+   !    Uaxial=Qaxial/Aaxial 
+   !    allocate(Uinlet_avg(this%cfg%jmin:this%cfg%jmax));Uinlet_avg=0.0_WP
+   !    allocate(Uinlet_std(this%cfg%jmin:this%cfg%jmax));Uinlet_std=0.0_WP
+   !    do j=this%cfg%jmin,this%cfg%jmax
+   !       Uinlet_avg(j)=sum(this%U(j,:))/size(this%U(j,:))
+   !       Uinlet_std(j)=sqrt(sum((this%U(j,:)-Uinlet_avg(j))**2)/size(this%U(j,:)))
+   !    end do
+   !    if (this%cfg%amRoot) then
+   !       filename="Uinlet.csv"
+   !       ! Open file dynamically with append mode
+   !       open(unit=10, file=filename, status="replace", action="write")
+   !       do j=this%cfg%jmin,this%cfg%jmax
+   !          write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%ym(j)/dg,Uinlet_avg(j)/Uaxial,Uinlet_std(j)/Uaxial
+   !       end do
+   !       close(unit=10)
+   !    end if
+
+   ! end subroutine extract_droplets
+
+   !> Calculate local dissipation, Vreman SGS viscosity, and area-weighted scales
+   !> Calculate local dissipation and area-weighted scales using built-in SGS model
+   !> Calculate local dissipation using native solver routines
+   subroutine extract_dissipation(this, U, V, W, VF, nfile, fstart)
+      use mpi_f08,   only: MPI_ALLREDUCE, MPI_SUM, MPI_IN_PLACE
       use parallel,  only: MPI_REAL_WP
+      use sgsmodel_class, only: vreman
       implicit none
       class(postproc), intent(inout) :: this
-      integer, intent(in) :: nfile
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: VF
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: U, V, W, VF
+      integer, intent(in) :: nfile,fstart
 
-      integer :: i,j,k
-      ! Sum all the VF in z direction
-      do k=this%cfg%kmin_,this%cfg%kmax_
-         do j=this%cfg%jmin_,this%cfg%jmax_
-            do i=this%cfg%imin_,this%cfg%imax_
-               this%VF(i,j,nfile)=this%VF(i,j,nfile)+VF(i,j,k)*this%cfg%dz(k)
+      real(WP) :: nu_phys, rho_c, sigma, nu_sgs, eps_local, S2
+      real(WP) :: gradVF_x, gradVF_y, gradVF_z, mag_gradVF, vol
+      real(WP) :: dx, dy, dz, dt
+      real(WP), dimension(:), allocatable :: eps_sum_x, area_sum_x, d_H_x
+      integer :: i, j, k, ierr
+
+      ! Extract physical properties
+      nu_phys = this%fs%visc_g / this%fs%rho_g
+      rho_c   = this%fs%rho_g
+      sigma   = this%fs%sigma
+      dt = 1.1e-6_WP
+
+      !> 1. Pass Ensight velocity to the flow solver
+      this%fs%U = U
+      this%fs%V = V
+      this%fs%W = W
+      
+      this%resU = this%fs%rho_g 
+      call this%fs%get_gradu(this%gradU)
+      call this%sgs%get_visc(type=vreman, dt=dt, rho=this%resU, gradu=this%gradU)
+
+      this%fs%U = U-this%U_mean
+      this%fs%V = V-this%V_mean
+      this%fs%W = W-this%W_mean
+      
+      call this%fs%get_strainrate(this%SR)
+
+      allocate(eps_sum_x(this%cfg%imin:this%cfg%imax));  eps_sum_x = 0.0_WP
+      allocate(area_sum_x(this%cfg%imin:this%cfg%imax)); area_sum_x = 0.0_WP
+      allocate(d_H_x(this%cfg%imin:this%cfg%imax));      d_H_x = 0.0_WP
+
+      !> 3. Loop to calculate Dissipation & Area Weights
+      do k = this%cfg%kmin_, this%cfg%kmax_
+         dz = this%cfg%dz(k)
+         do j = this%cfg%jmin_, this%cfg%jmax_
+            dy = this%cfg%dy(j)
+            do i = this%cfg%imin_, this%cfg%imax_
+               dx = this%cfg%dx(i)
+               vol = dx * dy * dz
+
+               ! Kinematic SGS Viscosity
+               nu_sgs = this%sgs%visc(i,j,k) / rho_c
+
+               ! S2 Contraction exactly from your SR array mapping:
+               ! SR(1,2,3) are diagonal (S11, S22, S33)
+               ! SR(4,5,6) are off-diagonal (S12, S23, S13)
+               S2 = this%SR(1,i,j,k)**2 + this%SR(2,i,j,k)**2 + this%SR(3,i,j,k)**2 + &
+                    2.0_WP * (this%SR(4,i,j,k)**2 + this%SR(5,i,j,k)**2 + this%SR(6,i,j,k)**2)
+
+               ! Total Dissipation
+               eps_local = 2.0_WP * (nu_phys + nu_sgs) * S2
+
+               ! VOF Gradient for Interfacial Area Weighting
+               gradVF_x = (VF(i+1,j,k) - VF(i-1,j,k)) / (2.0_WP * dx)
+               gradVF_y = (VF(i,j+1,k) - VF(i,j-1,k)) / (2.0_WP * dy)
+               gradVF_z = (VF(i,j,k+1) - VF(i,j,k-1)) / (2.0_WP * dz)
+               mag_gradVF = sqrt(gradVF_x**2 + gradVF_y**2 + gradVF_z**2)
+
+               eps_sum_x(i)  = eps_sum_x(i)  + (eps_local * mag_gradVF * vol)
+               area_sum_x(i) = area_sum_x(i) + (mag_gradVF * vol)
+
             end do
          end do
       end do
 
-   end subroutine extract_EPL
+      !> 4. Parallel Reduction
+      call MPI_ALLREDUCE(MPI_IN_PLACE, eps_sum_x,  size(eps_sum_x),  MPI_REAL_WP, MPI_SUM, this%cfg%comm, ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE, area_sum_x, size(area_sum_x), MPI_REAL_WP, MPI_SUM, this%cfg%comm, ierr)
 
-   !> Extract a liquid droplets from CCL data
-   subroutine analyze_EPL(this,dir,xconst,yconst)
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE,MPI_MAX
-      use parallel,  only: MPI_REAL_WP
-      use string,   only: str_medium
-      implicit none
-      class(postproc), intent(inout) :: this
-      character(len=str_medium) :: filename
-      integer, intent(in) :: dir
-      real(WP), intent(in) :: xconst,yconst
-      real(WP), dimension(:), allocatable :: EPL_avg,EPL_std
-      integer :: i,j,ierr
-         select case (dir)
-            ! constant in x
-            case(1)
-               ! allocate the list accounting for the whole y range
-               allocate(EPL_avg(this%cfg%jmin:this%cfg%jmax));EPL_avg=0.0_WP
-               allocate(EPL_std(this%cfg%jmin:this%cfg%jmax));EPL_std=0.0_WP
-               do j=this%cfg%jmin_,this%cfg%jmax_
-                  do i=this%cfg%imin_,this%cfg%imax_
-                     if (this%cfg%xm(i-1).lt.xconst.and.this%cfg%xm(i).ge.xconst) then
-                        EPL_avg(j)=sum(this%VF(i,j,:))/size(this%VF(i,j,:))
-                        EPL_std(j)=sqrt(sum((this%VF(i,j,:)-EPL_avg(j))**2)/size(this%VF(i,j,:)))
-                     end if
-                  end do
-               end do
-               call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_avg,size(EPL_avg),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-               call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_std,size(EPL_std),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-               if (this%cfg%amRoot) then
-                  filename="x.csv"
-                  ! filename="x="
-                  ! write(filename, '(F0.2, ".csv")') xconst
-                  ! Open file dynamically with append mode
-                  open(unit=10, file=filename, status="replace", action="write")
-                  do j=this%cfg%jmin,this%cfg%jmax
-                     write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%ym(j),EPL_avg(j),EPL_std(j)
-                  end do
-                  close(unit=10)
-               end if
-            ! constant in y
-            case(2)
-               ! allocate the list accounting for the whole x range
-               allocate(EPL_avg(this%cfg%imin:this%cfg%imax));EPL_avg=0.0_WP
-               allocate(EPL_std(this%cfg%imin:this%cfg%imax));EPL_std=0.0_WP
-               do i=this%cfg%imin_,this%cfg%imax_
-                  do j=this%cfg%jmin_,this%cfg%jmax_
-                     if (this%cfg%ym(j-1).lt.yconst.and.this%cfg%ym(j).ge.yconst) then
-                        EPL_avg(i)=sum(this%VF(i,j,:))/size(this%VF(i,j,:))
-                        EPL_std(i)=sqrt(sum((this%VF(i,j,:)-EPL_avg(i))**2)/size(this%VF(i,j,:)))
-                        ! print *, "i1",this%cfg%xm(i),EPL_avg(i),EPL_std(i),sum(this%VF(i,j,:))/size(this%VF(i,j,:)),sqrt(sum((this%VF(i,j,:)-EPL_avg(i))**2)/size(this%VF(i,j,:)))
-                     end if
-                  end do
-               end do
-               call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_avg,size(EPL_avg),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-               call MPI_ALLREDUCE(MPI_IN_PLACE,EPL_std,size(EPL_std),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-               if (this%cfg%amRoot) then
-                  filename="y.csv"
-                  ! filename="y="
-                  ! write(filename, '(F0.2, ".csv")') xconst
-                  ! Open file dynamically with append mode
-                  open(unit=10, file=filename, status="replace", action="write")
-                  do i=this%cfg%imin,this%cfg%imax
-                     write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%xm(i),EPL_avg(i),EPL_std(i)
-                  end do
-                  close(unit=10)
-               end if
-         end select
-   end subroutine analyze_EPL
-
-  !> Extract a pmesh skeleton of the liquid core from CCL data
-   subroutine extract_InletVel(this,U,nfile)
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
-      use parallel,  only: MPI_REAL_WP
-      implicit none
-      class(postproc), intent(inout) :: this
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: U
-      real(WP), dimension(:), allocatable :: Utmp
-      real(WP) :: velmesurement
-      integer, intent(in) :: nfile
-      integer:: i,j,k,ierr
-      ! velmesurement=-0.0003_WP
-      velmesurement=0.0003_WP
-      allocate(Utmp(this%cfg%jmin:this%cfg%jmax));Utmp=0.0_WP
-      ! Loop through x domain and get x location
-      do k=this%cfg%kmin_,this%cfg%kmax_
-         do i=this%cfg%imin_,this%cfg%imax_
-            if (this%cfg%zm(k).ge.0.0_WP .and. this%cfg%zm(k-1).lt.0.0_WP ) then
-               if (this%cfg%xm(i).ge.velmesurement .and. this%cfg%xm(i-1).lt.velmesurement ) then
-                  do j = this%cfg%jmin_,this%cfg%jmax_
-                     Utmp(j) = U(i,j,k)
-                  end do
-               end if
+      !> 5. Output (Streaming Tidy Data)
+      if (this%cfg%amRoot) then
+         open(unit=11, file="Hinze_Scale_x.csv", position="append", action="write")
+         ! Write header only on the first file
+         if (nfile == fstart) write(11, '("nfile, x, eps_avg, d_H")') 
+         
+         do i = this%cfg%imin, this%cfg%imax
+            if (area_sum_x(i) .gt. 0.0_WP) then
+               eps_sum_x(i) = eps_sum_x(i) / area_sum_x(i)
+               d_H_x(i) = 0.725_WP * (sigma / rho_c)**0.6_WP * eps_sum_x(i)**(-0.4_WP)
+               
+               ! Add nfile to the output string
+               write(11, '(I6, ",", F24.16, ",", F24.16, ",", F24.16)') &
+                     nfile, this%cfg%xm(i), eps_sum_x(i), d_H_x(i)
             end if
          end do
-      end do
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Utmp,size(Utmp),MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
-      this%U(:,nfile) = Utmp
-   end subroutine extract_InletVel
+         close(unit=11)
+      end if
+      
+      deallocate(eps_sum_x, area_sum_x, d_H_x)
+   end subroutine extract_dissipation
 
-   !> Extract a pmesh skeleton of the liquid core from CCL data
-   subroutine analyze_InletVel(this)
-      use mathtools, only: Pi
+   subroutine compute_mean_fields(this, fstart, fend)
       use string,   only: str_medium
+      use messager, only: log
       implicit none
       class(postproc), intent(inout) :: this
+      integer, intent(in) :: fstart, fend
+      
+      real(WP), dimension(:,:,:), allocatable :: U_tmp, V_tmp, W_tmp
       character(len=str_medium) :: filename
-      real(WP), dimension(:), allocatable :: Uinlet_avg,Uinlet_std
-      integer :: j
-      real(WP), parameter :: SLPM2SI=1.66667E-5_WP
-      real(WP) :: dg,Qaxial,Uaxial,Aaxial,dl
-      dg=0.01_WP
-      dl=0.003_WP
-      ! call this%input%read('Total flow rate (SLPM)',Qaxial)
-      Qaxial=150.0_WP*SLPM2SI
-      ! Qaxial=2.0_WP*85.7_WP*SLPM2SI
-      Aaxial=0.25_WP*Pi*(dg**2-dl**2)
-      Uaxial=Qaxial/Aaxial 
-      ! if (this%cfg%amRoot) print *, Uaxial
-      ! print *, dg,Qaxial,Aaxial,Uaxial+
-      allocate(Uinlet_avg(this%cfg%jmin:this%cfg%jmax));Uinlet_avg=0.0_WP
-      allocate(Uinlet_std(this%cfg%jmin:this%cfg%jmax));Uinlet_std=0.0_WP
-      do j=this%cfg%jmin,this%cfg%jmax
-         Uinlet_avg(j)=sum(this%U(j,:))/size(this%U(j,:))
-         Uinlet_std(j)=sqrt(sum((this%U(j,:)-Uinlet_avg(j))**2)/size(this%U(j,:)))
+      integer :: nfile
+      real(WP) :: nfiles_total
+      
+      allocate(U_tmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(V_tmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(W_tmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      
+      call log('--- Starting Pre-Processing: Computing Mean Velocity Fields ---')
+      
+      do nfile = fstart, fend
+         filename='ensight/atom/velocity/velocity.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
+         call this%read_ensight_vector(filename, U_tmp, V_tmp, W_tmp)
+         
+         this%U_mean = this%U_mean + U_tmp
+         this%V_mean = this%V_mean + V_tmp
+         this%W_mean = this%W_mean + W_tmp
       end do
-      if (this%cfg%amRoot) then
-         filename="Uinlet.csv"
-         ! Open file dynamically with append mode
-         open(unit=10, file=filename, status="replace", action="write")
-         do j=this%cfg%jmin,this%cfg%jmax
-            write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%ym(j)/dg,Uinlet_avg(j)/Uaxial,Uinlet_std(j)/Uaxial
-         end do
-         close(unit=10)
-      end if
-
-   end subroutine analyze_InletVel
-
-   !> Extract a pmesh skeleton of the liquid core from CCL data
-   subroutine extract_droplets(this)
-      use mathtools, only: Pi
-      use string,   only: str_medium
-      implicit none
-      class(postproc), intent(inout) :: this
-      character(len=str_medium) :: filename
-      real(WP), dimension(:), allocatable :: Uinlet_avg,Uinlet_std
-      integer :: j
-      real(WP), parameter :: SLPM2SI=1.66667E-5_WP
-      real(WP) :: dg,Qaxial,Uaxial,Aaxial,dl
-      dg=0.01_WP
-      dl=0.003_WP
-      ! call this%input%read('Total flow rate (SLPM)',Qaxial)
-      ! Qaxial=150.0_WP*SLPM2SI
-      Qaxial=2.0_WP*85.7_WP*SLPM2SI
-      Aaxial=0.25_WP*Pi*(dg**2-dl**2)
-      Uaxial=Qaxial/Aaxial 
-      if (this%cfg%amRoot) print *, Uaxial
-      ! print *, dg,Qaxial,Aaxial,Uaxial+
-      allocate(Uinlet_avg(this%cfg%jmin:this%cfg%jmax));Uinlet_avg=0.0_WP
-      allocate(Uinlet_std(this%cfg%jmin:this%cfg%jmax));Uinlet_std=0.0_WP
-      do j=this%cfg%jmin,this%cfg%jmax
-         Uinlet_avg(j)=sum(this%U(j,:))/size(this%U(j,:))
-         Uinlet_std(j)=sqrt(sum((this%U(j,:)-Uinlet_avg(j))**2)/size(this%U(j,:)))
-      end do
-      if (this%cfg%amRoot) then
-         filename="Uinlet.csv"
-         ! Open file dynamically with append mode
-         open(unit=10, file=filename, status="replace", action="write")
-         do j=this%cfg%jmin,this%cfg%jmax
-            write(10, '(F24.16, ",", F24.16, ",", F24.16)') this%cfg%ym(j)/dg,Uinlet_avg(j)/Uaxial,Uinlet_std(j)/Uaxial
-         end do
-         close(unit=10)
-      end if
-
-   end subroutine extract_droplets
-
+      
+      nfiles_total = real(fend - fstart + 1, WP)
+      this%U_mean = this%U_mean / nfiles_total
+      this%V_mean = this%V_mean / nfiles_total
+      this%W_mean = this%W_mean / nfiles_total
+      
+      ! Sync the ghost cells for the mean fields
+      call this%cfg%sync(this%U_mean)
+      call this%cfg%sync(this%V_mean)
+      call this%cfg%sync(this%W_mean)
+      
+      deallocate(U_tmp, V_tmp, W_tmp)
+      call log('--- Mean Velocity Fields Computed Successfully ---')
+   end subroutine compute_mean_fields
 
    !> Analysis of atom simulation
    subroutine analyze(this)
@@ -555,33 +763,63 @@ contains
          this%cfg=config(grp=group,decomp=partition,grid=grid)
       end block create_config
       
+      ! Create an incompressible flow solver with bconds
+      create_flow_solver: block
+         use tpns_class,      only: dirichlet,clipped_neumann,slip
+         ! Create flow solver
+         this%fs=tpns(cfg=this%cfg,name='Two-phase NS')
+         ! Set the flow properties
+         call this%input%read('Liquid dynamic viscosity',this%fs%visc_l)
+         call this%input%read('Gas dynamic viscosity'   ,this%fs%visc_g)
+         call this%input%read('Liquid density',this%fs%rho_l)
+         call this%input%read('Gas density'   ,this%fs%rho_g)
+         call this%input%read('Surface tension coefficient',this%fs%sigma)
+         ! Define gas and liquid inlet boundary conditions
+         call this%fs%add_bcond(name='gas_inlet',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=gas_inlet)
+         call this%fs%add_bcond(name='liq_inlet',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=liq_inlet)
+         ! Outflow on the right
+         call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.false.,locator=right_boundary)
+         ! Slip on the sides
+         call this%fs%add_bcond(name='bc_yp',type=slip,face='y',dir=+1,canCorrect=.true.,locator=yp_locator)
+         call this%fs%add_bcond(name='bc_ym',type=slip,face='y',dir=-1,canCorrect=.true.,locator=ym_locator)
+         call this%fs%add_bcond(name='bc_zp',type=slip,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
+         call this%fs%add_bcond(name='bc_zm',type=slip,face='z',dir=-1,canCorrect=.true.,locator=zm_locator)
+         this%fs%U=0.0_WP; this%fs%V=0.0_WP; this%fs%W=0.0_WP
+      end block create_flow_solver
+
+      ! Create an LES model
+      create_sgs: block
+         this%sgs=sgsmodel(cfg=this%fs%cfg,umask=this%fs%umask,vmask=this%fs%vmask,wmask=this%fs%wmask)
+      end block create_sgs
+
       call this%input%read('File start',fstart); call this%input%read('File end',fend);
       ! Initialize CCL
       call this%ccl%initialize(pg=this%cfg%pgrid,name='ccl')
       ! Allocate work arrays
       allocate_data: block
-         allocate(this%VF(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,fstart:fend)); this%VF=0.0_WP
-         allocate(this%Lb(fstart:fend));this%Lb=0.0_WP
-         ! allocate(this%by(this%cfg%imin:this%cfg%imax,fstart:fend)); this%by=0.0_WP
-         ! allocate(this%bz(this%cfg%imin:this%cfg%imax,fstart:fend)); this%bz=0.0_WP
-         allocate(this%by(fstart:fend)); this%by=0.0_WP
-         allocate(this%bz(fstart:fend)); this%bz=0.0_WP
-         allocate(this%U (this%cfg%jmin:this%cfg%jmax,fstart:fend)); this%U =0.0_WP
-         ! allocate(this%U (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%U=0.0_WP
-         ! allocate(this%Lb(fstart:fend)); this%Lb=0.0_WP
-         ! allocate(this%bv(this%cfg%imino:this%cfg%imaxo)); this%bv=0.0_WP
+         ! allocate(this%VF(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,fstart:fend)); this%VF=0.0_WP
+         ! allocate(this%Lb(fstart:fend));this%Lb=0.0_WP
+         ! allocate(this%by(fstart:fend)); this%by=0.0_WP
+         ! allocate(this%bz(fstart:fend)); this%bz=0.0_WP
+         ! allocate(this%U (this%cfg%jmin:this%cfg%jmax,fstart:fend)); this%U =0.0_WP
          allocate(VFtmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); VFtmp=0.0_WP
          allocate(U(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); U=0.0_WP
          allocate(V(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); V=0.0_WP
          allocate(W(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); W=0.0_WP
+         allocate(this%U_mean(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%U_mean=0.0_WP
+         allocate(this%V_mean(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%V_mean=0.0_WP
+         allocate(this%W_mean(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%W_mean=0.0_WP
+         allocate(this%gradU(1:3,1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))   
+         allocate(this%resU(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%SR(1:6,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       end block allocate_data
       
 
 
-      initialze_lpt: block
-         this%lp=lpt(cfg=this%cfg,name='spray_analyze')
-         call this%lp%resize(0)
-      end block initialze_lpt
+      ! initialze_lpt: block
+      !    this%lp=lpt(cfg=this%cfg,name='spray_analyze')
+      !    call this%lp%resize(0)
+      ! end block initialze_lpt
 
       ! create_pmesh: block
       !    integer :: i
@@ -601,6 +839,7 @@ contains
       !    this%ens_out=ensight(cfg=this%cfg,name='spray_analyze')
       !    call this%ens_out%add_particle('part',this%pmesh)
       ! end block testlpt_ensight
+      call this%compute_mean_fields(fstart,fend)
 
       ! Run on all files available
       do nfile=fstart,fend
@@ -608,13 +847,14 @@ contains
          call log('Postprocessing file '//trim(filename)//'...')
          call this%read_ensight_scalar(filename,VFtmp)
          ! call log('|----> VOF read successfully')
-         ! filename='ensight/atom/velocity/velocity.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
-         ! call this%read_ensight_vector(filename,U,V,W)
-         ! call log('|----> Vel read successfully')
+         filename='ensight/atom/velocity/velocity.'; write(filename(len_trim(filename)+1:len_trim(filename)+6),'(i6.6)') nfile
+         call log('Postprocessing file '//trim(filename)//'...')
+         call this%read_ensight_vector(filename,U,V,W)
+         call this%extract_dissipation(U,V,W,VFtmp,nfile,fstart)
          ! call this%extract_EPL(VF=VFtmp,nfile=nfile)
          ! call log('|----> EPL calculation done')
-         call this%extract_core(VFtmp=VFtmp,nfile=nfile)
-         call log('|----> liquid core extracted')
+         ! call this%extract_core(VFtmp=VFtmp,nfile=nfile)
+         ! call log('|----> liquid core extracted')
          ! call this%extract_InletVel(U=U,nfile=nfile)
          ! call log('|----> Inlet Vel extracted')
          ! call this%read_ensight_part(nfile=nfile)
@@ -631,7 +871,7 @@ contains
       ! call this%ens_out%write_data(this%time%t)
       
       ! call this%analyze_EPL(dir=2,xconst=0.0_WP,yconst=0.0_WP)
-      call this%analyze_core(fstart,fend)
+      ! call this%analyze_core(fstart,fend)
       ! call this%analyze_InletVel()
    end subroutine analyze
    

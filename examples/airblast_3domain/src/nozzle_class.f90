@@ -662,7 +662,6 @@ contains
       ! call this%record_stats()
       ! Finally, see if it's time to save restart files
       if (this%save_evt%occurs()) then
-         ! if (this%cfg%amRoot) print *, " Starting nozzle writing"
          save_restart: block
             use string, only: str_medium
             character(len=str_medium) :: timestamp
@@ -679,7 +678,6 @@ contains
             call this%df%push(name='MM', var=this%sgs%MM)
             call this%df%write(fdata='restart/data_nozzle_'//trim(adjustl(timestamp)))
          end block save_restart
-         ! if (this%cfg%amRoot) print *, " Finishing nozzle writing"
       end if
       
    end subroutine step
