@@ -575,9 +575,8 @@ contains
          else
             ! Fresh start
             call amr%init_from_scratch(time=time%t)
-            ! Build PLIC and reset moments
+            ! Build PLIC
             call fs%build_plic(time%t)
-            call fs%reset_moments()
          end if
          ! Compute viscosities
          call get_viscosities()
@@ -733,7 +732,6 @@ contains
          call time%increment()
          
          ! Remember old state
-         call fs%Qold%copy(src=fs%Q)
          call fs%store_old()
          
          ! ===== RK2 Stage 1: dQdt = f(t, Q) =====

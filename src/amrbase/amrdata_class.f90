@@ -5,14 +5,14 @@ module amrdata_class
    use string,           only: str_medium
    use amrgrid_class,    only: amrgrid
    use amrex_amr_module, only: amrex_multifab,amrex_boxarray,amrex_distromap,&
-   &                           amrex_geometry,amrex_interp_pc,&
+   &                           amrex_geometry,amrex_interp_pc,amrex_bc_foextrap,&
    &                           amrex_interp_cell_cons,amrex_interp_face_linear,amrex_interp_node_bilinear
    implicit none
    private
 
    public :: amrdata
    public :: amrdata_on_init,amrdata_on_coarse,amrdata_on_remake,amrdata_on_clear,amrdata_fillbc
-   public :: amrex_interp_pc,amrex_interp_cell_cons,amrex_interp_face_linear,amrex_interp_node_bilinear
+   public :: amrex_interp_pc,amrex_bc_foextrap,amrex_interp_cell_cons,amrex_interp_face_linear,amrex_interp_node_bilinear
    public :: default_fillbc
 
    ! Special interpolation modes for amrdata
@@ -83,7 +83,7 @@ module amrdata_class
       procedure :: norm1            !< L1 norm at level
       procedure :: norm2            !< L2 norm at level
       ! Vector operations
-      procedure :: get_magnitude    !< C = sqrt(A²+B²+C²) from 3 sources
+      procedure :: get_magnitude    !< M = sqrt(srcX(compX)²+srcY(compY)²+srcZ(compZ)²), comps default to 1
       ! Iteration helper
       procedure :: mfiter_build     !< Build MFIter from this data's MultiFab
    end type amrdata
@@ -514,18 +514,20 @@ contains
    end subroutine fill_lvl
 
    !> Fill ghost cells and coarse-fine boundary data on all levels
-   subroutine fill(this, time)
+   subroutine fill(this,time,lbase)
       implicit none
       class(amrdata), intent(inout) :: this
       real(WP), intent(in) :: time
-      integer :: lvl
-      do lvl = 0, this%amr%clvl()
-         call this%fill_lvl(lvl, time)
+      integer, intent(in), optional :: lbase
+      integer :: lvl,lb
+      lb=0; if (present(lbase)) lb=lbase
+      do lvl=lb,this%amr%clvl()
+         call this%fill_lvl(lvl,time)
       end do
    end subroutine fill
 
    !> Fill into a target MultiFab from this amrdata (for regrid callbacks)
-   subroutine fill_mfab(this, dest, lvl, time)
+   subroutine fill_mfab(this,dest,lvl,time)
       use iso_c_binding, only: c_loc, c_funloc, c_funptr, c_ptr
       use amrex_amr_module, only: amrex_multifab
       use amrex_interface, only: amrmfab_fillpatch_single, amrmfab_fillpatch_two
@@ -575,11 +577,13 @@ contains
    end subroutine sync_lvl
 
    !> Lightweight same-level ghost sync on all levels
-   subroutine sync(this)
+   subroutine sync(this,lbase)
       implicit none
       class(amrdata), intent(inout) :: this
-      integer :: lvl
-      do lvl = 0, this%amr%clvl()
+      integer, intent(in), optional :: lbase
+      integer :: lvl,lb
+      lb=0; if (present(lbase)) lb=lbase
+      do lvl=lb,this%amr%clvl()
          call this%sync_lvl(lvl)
       end do
    end subroutine sync
@@ -934,15 +938,19 @@ contains
    end function norm2
 
    !> Compute magnitude: this = sqrt(srcX² + srcY² + srcZ²)
-   subroutine get_magnitude(this,srcX,srcY,srcZ,nghost)
+   subroutine get_magnitude(this,srcX,srcY,srcZ,compX,compY,compZ,nghost)
       use amrex_amr_module, only: amrex_mfiter,amrex_mfiter_build,amrex_mfiter_destroy,amrex_box
       class(amrdata), intent(inout) :: this
       class(amrdata), intent(in) :: srcX,srcY,srcZ
+      integer, intent(in), optional :: compX,compY,compZ
       integer, intent(in), optional :: nghost
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       real(WP), dimension(:,:,:,:), contiguous, pointer :: pM,pX,pY,pZ
-      integer :: i,j,k,n,lvl,ng
+      integer :: i,j,k,lvl,ng,cx,cy,cz
+      cx=1; if (present(compX)) cx=compX
+      cy=1; if (present(compY)) cy=compY
+      cz=1; if (present(compZ)) cz=compZ
       ng=min(this%ng,srcX%ng,srcY%ng,srcZ%ng); if (present(nghost)) ng=nghost
       do lvl=0,this%amr%clvl()
          call amrex_mfiter_build(mfi,this%mf(lvl),tiling=.true.)
@@ -954,11 +962,9 @@ contains
             pZ=>srcZ%mf(lvl)%dataptr(mfi)
             ! Loop over grown tile
             bx=mfi%growntilebox(ng)
-            do n=1,this%ncomp
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                  pM(i,j,k,n)=sqrt(pX(i,j,k,n)**2+pY(i,j,k,n)**2+pZ(i,j,k,n)**2)
-               end do; end do; end do
-            end do
+            do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
+               pM(i,j,k,1)=sqrt(pX(i,j,k,cx)**2+pY(i,j,k,cy)**2+pZ(i,j,k,cz)**2)
+            end do; end do; end do
          end do
          call amrex_mfiter_destroy(mfi)
       end do

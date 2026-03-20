@@ -106,9 +106,11 @@ module amrmpcomp_class
       procedure :: tagging
       procedure :: get_cost
       ! Physics methods
+      procedure :: store_old
       procedure :: get_primitive
       procedure :: get_conserved
       procedure :: get_dQdt
+      procedure :: build_plic
       procedure :: clean_Q
       procedure :: apply_relax
       procedure :: add_viscartif
@@ -524,13 +526,10 @@ contains
       class(amrmpcomp), intent(inout) :: this
       integer, intent(in) :: lbase
       real(WP), intent(in) :: time
-      integer :: lvl
       ! Parent handles VF average-down + fill
       call this%amrvof%post_regrid(lbase,time)
       ! Average down conserved variables Q for C/F consistency
-      do lvl=this%amr%clvl()-1,lbase,-1
-         call this%Q%average_downto(lvl)
-      end do
+      call this%Q%average_down(lbase)
       ! Fill Q ghosts and rebuild primitives
       call this%Q%fill(time)
       call this%get_primitive(this%Q)
@@ -683,6 +682,16 @@ contains
    ! PHYSICS METHODS
    ! ============================================================================
 
+   !> Copy current state to old state
+   subroutine store_old(this)
+      implicit none
+      class(amrmpcomp), intent(inout) :: this
+      ! Store interface state
+      call this%amrvof%store_old()
+      ! Store conserved variables
+      call this%Qold%copy(src=this%Q)
+   end subroutine store_old
+
    !> Calculate primitive variables from conserved variables
    !> Q layout: (1) VF*rhoL, (2) (1-VF)*rhoG, (3) VF*rhoL*IL, (4) (1-VF)*rhoG*IG, (5) rhoU, (6) rhoV, (7) rhoW
    subroutine get_primitive(this,Q)
@@ -817,13 +826,13 @@ contains
 
    !> Calculate dQdt from passed Q
    subroutine get_dQdt(this,Q,dQdt,dt,time)
-       use amrex_amr_module, only: amrex_multifab,amrex_mfiter,amrex_box
-       use mpi_f08, only: MPI_Wtime
-       implicit none
-       class(amrmpcomp), intent(inout) :: this
-       type(amrdata), intent(inout) :: Q
-       type(amrdata), intent(inout) :: dQdt
-       real(WP), intent(in) :: dt,time
+      use amrex_amr_module, only: amrex_multifab,amrex_mfiter,amrex_box
+      use mpi_f08, only: MPI_Wtime
+      implicit none
+      class(amrmpcomp), intent(inout) :: this
+      type(amrdata), intent(inout) :: Q
+      type(amrdata), intent(inout) :: dQdt
+      real(WP), intent(in) :: dt,time
       real(WP) :: t0,t1
       type(amrex_multifab), dimension(0:this%amr%maxlvl) :: Fx,Fy,Fz
       type(amrex_multifab) :: Vx,Vy,Vz
@@ -1340,7 +1349,7 @@ contains
                bx=mfi%tilebox()
                do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                   ! VF/barycenter update at band cells (finest level only)
-                  if (lvl.eq.this%amr%clvl()) then
+                  if (lvl.eq.this%amr%maxlvl) then
                      ! Work on band cells only
                      if (pBand(i,j,k,1).gt.0.0_WP) then
                         ! Old phasic moments

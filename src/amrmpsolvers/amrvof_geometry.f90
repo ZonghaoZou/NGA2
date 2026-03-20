@@ -9,7 +9,7 @@ module amrvof_geometry
    public :: tet_map, cut_side, cut_v1, cut_v2, cut_vtet
    public :: cut_ntets, cut_nvert, cut_nntet
    public :: get_plane_dist
-   public :: tet_vol, tet_sign, cut_tet_vol, cut_hex_vol
+   public :: tet_vol, tet_sign, poly_area, cut_tet_vol, cut_hex_vol
    public :: correct_flux_poly
    public :: cut_hex_polygon, hex_poly_nvert
    public :: flux_poly_moments
@@ -364,6 +364,24 @@ contains
       a=vert(:,1)-vert(:,4); b=vert(:,2)-vert(:,4); c=vert(:,3)-vert(:,4)
       s=sign(1.0_WP,-(a(1)*(b(2)*c(3)-c(2)*b(3))-a(2)*(b(1)*c(3)-c(1)*b(3))+a(3)*(b(1)*c(2)-c(1)*b(2))))
    end function tet_sign
+
+   !> Compute area of a convex polygon with nv vertices via triangle fan
+   !> verts(:,1:nv) are the polygon vertices in cyclic order
+   pure function poly_area(nv,verts) result(area)
+      implicit none
+      integer,  intent(in) :: nv
+      real(WP), dimension(3,nv), intent(in) :: verts
+      real(WP) :: area
+      real(WP), dimension(3) :: a,b,c
+      integer :: n
+      area=0.0_WP
+      do n=2,nv-1
+         a=verts(:,n  )-verts(:,1)
+         b=verts(:,n+1)-verts(:,1)
+         c=[a(2)*b(3)-a(3)*b(2), a(3)*b(1)-a(1)*b(3), a(1)*b(2)-a(2)*b(1)]
+         area=area+0.5_WP*sqrt(c(1)**2+c(2)**2+c(3)**2)
+      end do
+   end function poly_area
    
    !> Cut a tetrahedron by a plane and return liquid/gas volumes and barycenters
    !> Input:  v(:,1:4) = 4 tet vertices, plane(1:4) = [nx,ny,nz,d] where n.x=d defines plane

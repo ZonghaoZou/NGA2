@@ -167,10 +167,10 @@ contains
    !> Write all registered data to checkpoint directory
    subroutine write(this,dirname,time,step)
       use string,          only: str_long,itoa
-      use iso_c_binding,   only: c_null_char
+      use iso_c_binding,   only: c_null_char,c_associated
       use amrex_amr_module,only: amrex_boxarray,amrex_box
       use amrex_interface, only: amrmfab_vismf_write,amrcheckpoint_prebuild_dirs,amrcheckpoint_mfab_prefix
-      use messager,        only: log
+      use messager,        only: log,warn
       use parallel,        only: MPI_REAL_WP
       use mpi_f08,         only: MPI_BCAST,MPI_INTEGER
       implicit none
@@ -254,10 +254,14 @@ contains
       ! Write raw multifab data (single level each)
       mfcurrent => this%first_mfab
       do while (associated(mfcurrent))
-         call amrcheckpoint_mfab_prefix(mfab_path, len(mfab_path), mfcurrent%level, &
-            trim(dirname)//c_null_char, 'Level_'//c_null_char, &
-            trim(mfcurrent%name)//c_null_char)
-         call amrmfab_vismf_write(mfcurrent%ptr%p, trim(mfab_path)//c_null_char)
+         if (c_associated(mfcurrent%ptr%p)) then
+            call amrcheckpoint_mfab_prefix(mfab_path, len(mfab_path), mfcurrent%level, &
+               trim(dirname)//c_null_char, 'Level_'//c_null_char, &
+               trim(mfcurrent%name)//c_null_char)
+            call amrmfab_vismf_write(mfcurrent%ptr%p, trim(mfab_path)//c_null_char)
+         else
+            if (this%amr%amRoot) call warn('[amrio] skipping unbuilt mfab: '//trim(mfcurrent%name))
+         end if
          mfcurrent => mfcurrent%next
       end do
 

@@ -750,6 +750,24 @@ void amrmlmg_get_fluxes(void *mlmg, void **sol_mfs, void **flux_x,
   mg->getFluxes(fluxes, sol, amrex::MLMG::Location::FaceCenter);
 }
 
+// Composite dot product for PCG with AMR: sums all valid cells at all levels.
+// Covered coarse cells are included because comp_residual's average_down
+// overwrites them with averaged fine values — they participate in the actual
+// residual and must be accounted for in convergence checking.
+//   mf1_ptrs, mf2_ptrs  - arrays of MultiFab pointers (one per level, 0-indexed)
+//   ba_fine_ptrs, ref_ratios - reserved (unused, kept for ABI compatibility)
+//   nlevs                - number of AMR levels
+double amrmlmg_dot_composite(void **mf1_ptrs, void **mf2_ptrs,
+                              void **ba_fine_ptrs, int *ref_ratios, int nlevs) {
+  amrex::Real result = 0.0;
+  for (int lev = 0; lev < nlevs; ++lev) {
+    auto *mf1 = static_cast<amrex::MultiFab *>(mf1_ptrs[lev]);
+    auto *mf2 = static_cast<amrex::MultiFab *>(mf2_ptrs[lev]);
+    result += amrex::MultiFab::Dot(*mf1, 0, *mf2, 0, 1, 0);
+  }
+  return static_cast<double>(result);
+}
+
 //=============================================================================
 // MultiFab Averaging Utilities (Unified API)
 // All 4 types (cell, face, edge, node) have the same signature pattern:

@@ -75,6 +75,7 @@ module amrex_interface
    !=====================================================================
    public :: amrmlmg_get_niters
    public :: amrmlmg_get_fluxes
+   public :: amrmlmg_dot_composite
    public :: amrpoisson_build
    public :: amrabeclap_build
 
@@ -450,6 +451,19 @@ module amrex_interface
          type(c_ptr), intent(in) :: flux_x(*), flux_y(*), flux_z(*)
          integer(c_int), value :: nlevs
       end subroutine amrmlmg_get_fluxes
+
+      !> Composite masked dot product over all AMR levels
+      !> Excludes coarse cells covered by finer levels (no double counting)
+      !>   mf1_ptrs, mf2_ptrs - arrays of MultiFab pointers (one per level)
+      !>   ba_fine_ptrs       - BoxArray pointers (ba_fine_ptrs(lev+1) used for mask at lev)
+      !>   ref_ratios         - flattened (rx,ry,rz)*nlevs array
+      !>   nlevs              - total number of AMR levels
+      real(c_double) function amrmlmg_dot_composite(mf1_ptrs, mf2_ptrs, ba_fine_ptrs, ref_ratios, nlevs) bind(c)
+         import :: c_ptr, c_int, c_double
+         type(c_ptr), intent(in) :: mf1_ptrs(*), mf2_ptrs(*), ba_fine_ptrs(*)
+         integer(c_int), intent(in) :: ref_ratios(*)
+         integer(c_int), value :: nlevs
+      end function amrmlmg_dot_composite
 
       !====================================================================
       ! Per-direction wrappers (bypass AMReX scalar-only Fortran interfaces)
