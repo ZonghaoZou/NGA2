@@ -1,0 +1,176 @@
+!> Various definitions and tools for running an NGA2 simulation
+module simulation
+   use precision,         only: WP
+   use postproc_class,    only: postproc
+   use nozzle_class,      only: nozzle
+   use atom_class,        only: atom
+   use dispersion_class,  only: dispersion
+   use coupler_class,     only: coupler
+   implicit none
+   private
+   
+   !> Injector simulation
+   type(nozzle) :: injector
+   
+   !> Atomization simulation
+   type(atom) :: atomization
+   
+   !> Dispersion simulation
+   type(dispersion) :: disper
+
+   !> Couplers from injector to atomization
+   type(coupler) :: xcpl_i2a,ycpl_i2a,zcpl_i2a
+
+   !> Couplers from atomization to disper
+   type(coupler) :: xcpl_a2d,ycpl_a2d,zcpl_a2d
+   
+   !> Postprocessing tool
+   type(postproc) :: pproc
+   logical :: only_pproc=.true.
+   logical :: only_inlet=.false.
+   public :: simulation_init,simulation_run,simulation_final
+
+contains
+   
+   
+   !> Initialization of our simulation
+   subroutine simulation_init
+      implicit none
+      
+      ! Postproc handling
+      
+      if (only_pproc) then
+         call pproc%analyze()
+         return
+      end if 
+      
+      ! Initialize injector simulation
+      call injector%init()
+      
+      if (.not. only_inlet) then
+         ! Initialize atomization simulation
+         call atomization%init()
+         
+         ! Initialize disper simulation
+         call disper%init(atomization%cfg)
+
+         ! If restarting, the domains could be out of sync, so resync
+         ! time by forcing injector to be at same time as atomization
+         injector%time%t=atomization%time%t
+         disper%time%t=atomization%time%t
+
+         ! Initialize couplers from injector to atomization
+         create_coupler_i2a: block
+            use parallel, only: group
+            xcpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call xcpl_i2a%set_src(injector%cfg); call xcpl_i2a%set_dst(atomization%cfg); call xcpl_i2a%initialize()
+            ycpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call ycpl_i2a%set_src(injector%cfg); call ycpl_i2a%set_dst(atomization%cfg); call ycpl_i2a%initialize()
+            zcpl_i2a=coupler(src_grp=group,dst_grp=group,name='nozzle_to_atom'); call zcpl_i2a%set_src(injector%cfg); call zcpl_i2a%set_dst(atomization%cfg); call zcpl_i2a%initialize()
+         end block create_coupler_i2a
+
+         ! Initialize couplers from atomization tp disper
+         create_coupler_a2d: block
+            use parallel, only: group
+            xcpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call xcpl_a2d%set_src(atomization%cfg); call xcpl_a2d%set_dst(disper%cfg); call xcpl_a2d%initialize()
+            ycpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call ycpl_a2d%set_src(atomization%cfg); call ycpl_a2d%set_dst(disper%cfg); call ycpl_a2d%initialize()
+            zcpl_a2d=coupler(src_grp=group,dst_grp=group,name='atom_to_disper'); call zcpl_a2d%set_src(atomization%cfg); call zcpl_a2d%set_dst(disper%cfg); call zcpl_a2d%initialize()
+         end block create_coupler_a2d
+      end if
+      
+   end subroutine simulation_init
+   
+   
+   !> Run the simulation
+   subroutine simulation_run
+      implicit none
+      
+      ! Postproc handling
+      if (only_pproc) return
+      if (only_inlet) then
+         do while (.not. injector%time%done()) 
+            call injector%step()
+         end do 
+      else
+         ! Atomization drives overall time integration
+         do while (.not.atomization%time%done())
+            ! Advance particles in the dispersion domain
+            particle_advancement: block
+               ! Increment time
+               call disper%fs%get_cfl(disper%time%dt,disper%time%cfl)
+               call disper%time%adjust_dt()
+               call disper%time%increment()
+               ! Record droplets
+               call disper%record_droplet() 
+               ! Advance particles
+               disper%resU=disper%fs%rho
+               disper%resV=disper%fs%visc
+               call disper%lp%advance(dt=disper%time%dt,U=disper%fs%U,V=disper%fs%V,W=disper%fs%W,rho=disper%resU,visc=disper%resV)              
+            end block particle_advancement
+
+            ! Advance injector and atomization simulation until they're caught up
+            do while (atomization%time%t.le.disper%time%t)
+               
+               ! Advance injector simulation until it's caught up
+               do while (injector%time%t.le.atomization%time%t)
+                  call injector%step()
+               end do
+               
+               ! Handle coupling between injector and atomization
+               coupling_i2a: block
+                  use tpns_class, only: bcond
+                  integer :: n,i,j,k
+                  type(bcond), pointer :: mybc
+                  ! Exchange data using cpl12x/y/z couplers
+                  call xcpl_i2a%push(injector%fs%U,loc='x'); call xcpl_i2a%transfer(); call xcpl_i2a%pull(atomization%resU,loc='x')
+                  call ycpl_i2a%push(injector%fs%V,loc='y'); call ycpl_i2a%transfer(); call ycpl_i2a%pull(atomization%resV,loc='y')
+                  call zcpl_i2a%push(injector%fs%W,loc='z'); call zcpl_i2a%transfer(); call zcpl_i2a%pull(atomization%resW,loc='z')
+                  ! Apply time-varying Dirichlet conditions
+                  call atomization%fs%get_bcond('gas_inlet',mybc)
+                  do n=1,mybc%itr%no_
+                     i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+                     atomization%fs%U(i  ,j,k)=atomization%resU(i  ,j,k)*sum(atomization%fs%itpr_x(:,i  ,j,k)*atomization%cfg%VF(i-1:i,    j,    k))
+                     atomization%fs%V(i-1,j,k)=atomization%resV(i-1,j,k)*sum(atomization%fs%itpr_y(:,i-1,j,k)*atomization%cfg%VF(i-1  ,j-1:j,    k))
+                     atomization%fs%W(i-1,j,k)=atomization%resW(i-1,j,k)*sum(atomization%fs%itpr_z(:,i-1,j,k)*atomization%cfg%VF(i-1  ,j    ,k-1:k))
+                  end do
+               end block coupling_i2a
+               
+               ! Advance atomization simulation
+               call atomization%step(disper%lp)
+            end do  
+
+            ! Handle coupling between atomization and disper
+            coupling_a2d: block
+               disper%U2on3=0.0_WP; call xcpl_a2d%push(atomization%fs%U,loc='x'); call xcpl_a2d%transfer(); call xcpl_a2d%pull(disper%U2on3,loc='x')
+               disper%V2on3=0.0_WP; call ycpl_a2d%push(atomization%fs%V,loc='y'); call ycpl_a2d%transfer(); call ycpl_a2d%pull(disper%V2on3,loc='y')
+               disper%W2on3=0.0_WP; call zcpl_a2d%push(atomization%fs%W,loc='z'); call zcpl_a2d%transfer(); call zcpl_a2d%pull(disper%W2on3,loc='z')
+            end block coupling_a2d
+
+            ! Advance disper simulation by providing the atomization mesh for volumetric forcing
+            call disper%step()
+         end do
+      end if
+      
+   end subroutine simulation_run
+   
+   
+   !> Finalize the NGA2 simulation
+   subroutine simulation_final
+      implicit none
+      
+      ! Postproc handling
+      if (only_pproc) return
+
+      ! Finalize injector simulation
+      call injector%final()
+      
+      if (.not. only_inlet) then
+         ! Finalize atomization simulation
+         call atomization%final()
+
+         ! Finalize disper simulation
+         call disper%final()
+      end if
+         
+   end subroutine simulation_final
+   
+
+end module simulation
