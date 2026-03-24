@@ -1901,32 +1901,35 @@ contains
    !    this%wt_relax=this%wt_relax+(MPI_Wtime()-t0)
    ! end subroutine apply_relax
    
-   !> Add artificial bulk viscosity to this%beta
-   subroutine add_viscartif(this,dt,Cartif)
+   !> Add artificial bulk viscosity to this%beta and this%visc
+   subroutine add_viscartif(this,dt,Cartif,Cvisc)
       use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_multifab,amrex_multifab_destroy
       use mpi_f08, only: MPI_Wtime
       implicit none
       class(amrmpcomp), intent(inout) :: this
       real(WP), intent(in) :: dt
       real(WP), intent(in), optional :: Cartif
+      real(WP), intent(in), optional :: Cvisc
       ! Local variables
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       type(amrex_multifab) :: beta_t,scratch
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pBeta_t,pScratch,pU,pV,pW,pC,pBeta,pVF,pRHOL,pRHOG
-      real(WP) :: dxi,dyi,dzi,dx,dy,dz,max_beta,myCartif,t0
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pBeta_t,pScratch,pU,pV,pW,pC,pBeta,pVisc,pVF,pRHOL,pRHOG
+      real(WP) :: dxi,dyi,dzi,dx,dy,dz,max_beta,myCartif,t0,myCvisc,my_beta
       real(WP) :: dudy,dudz,dvdx,dvdz,dwdx,dwdy,vort,grad_div
-      integer :: lvl,i,j,k,si,sj,sk,n
+      integer :: lvl,i,j,k
       ! Parameters
       real(WP), parameter :: max_cfl=0.5_WP
       integer, parameter :: nfilter=2
-      real(WP), dimension(-1:+1), parameter :: filter=[1.0_WP/6.0_WP,2.0_WP/3.0_WP,1.0_WP/6.0_WP]
       
       ! Start timer
       t0=MPI_Wtime()
 
       ! Set model constant
       if (present(Cartif)) then; myCartif=Cartif; else; myCartif=5.0_WP; end if
+
+      ! Set shear viscosity constant
+      if (present(Cvisc)) then; myCvisc=Cvisc; else; myCvisc=0.0_WP; end if
       
       ! Loop over levels
       do lvl=0,this%amr%clvl()
@@ -1991,48 +1994,27 @@ contains
             end do; end do; end do
          end do
          call this%amr%mfiter_destroy(mfi)
-         
-         ! Phase 3: Filter beta_t
-         do n=1,nfilter
-            call scratch%setval(0.0_WP)
-            call scratch%copy(srcmf=beta_t,srccomp=1,dstcomp=1,nc=1,ng=0)
-            call this%amr%mfab_validextrap(lvl=lvl,mfab=scratch)
-            call scratch%fill_boundary(this%amr%geom(lvl))
-            call this%amr%mfab_foextrap(lvl=lvl,mfab=scratch)
-            call this%amr%mfiter_build(lvl,mfi)
-            do while(mfi%next())
-               pScratch=>scratch%dataptr(mfi)
-               pBeta_t=>beta_t%dataptr(mfi)
-               bx=mfi%tilebox()
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                  pBeta_t(i,j,k,1)=0.0_WP
-                  do sk=-1,+1; do sj=-1,+1; do si=-1,+1
-                     pBeta_t(i,j,k,1)=pBeta_t(i,j,k,1)+filter(si)*filter(sj)*filter(sk)*pScratch(i+si,j+sj,k+sk,1)
-                  end do; end do; end do
-               end do; end do; end do
-            end do
-            call this%amr%mfiter_destroy(mfi)
-         end do
-         
+
          ! Destroy scratch
          call amrex_multifab_destroy(scratch)
-         
-         ! Fill beta_t ghosts after filtering
-         call this%amr%mfab_validextrap(lvl=lvl,mfab=beta_t)
-         call beta_t%fill_boundary(this%amr%geom(lvl))
-         call this%amr%mfab_foextrap(lvl=lvl,mfab=beta_t)
-         
-         ! Phase 4: Convert to dynamic viscosity via harmonic averaging and add to this%beta
+
+         ! Phase 3: Filter beta_t
+         call this%amr%mfab_filter(lvl=lvl,mfab=beta_t,npass=nfilter)
+
+         ! Phase 4: Convert to dynamic viscosity via harmonic averaging and add to this%beta and this%visc
          call this%amr%mfiter_build(lvl,mfi)
          do while(mfi%next())
             pBeta_t=>beta_t%dataptr(mfi)
             pBeta=>this%beta%mf(lvl)%dataptr(mfi)
+            pVisc=>this%visc%mf(lvl)%dataptr(mfi)
             pRHOL=>this%RHOL%mf(lvl)%dataptr(mfi)
             pRHOG=>this%RHOG%mf(lvl)%dataptr(mfi)
             pVF  =>this%VF%mf(lvl)%dataptr(mfi)
             bx=mfi%growntilebox(this%nover)
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-               pBeta(i,j,k,1)=pBeta(i,j,k,1)+pBeta_t(i,j,k,1)/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),this%rho_floor)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),this%rho_floor))
+               my_beta=pBeta_t(i,j,k,1)/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),this%rho_floor)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),this%rho_floor))
+               pBeta(i,j,k,1)=pBeta(i,j,k,1)+my_beta
+               pVisc(i,j,k,1)=pVisc(i,j,k,1)+my_beta*myCvisc
             end do; end do; end do
          end do
          call this%amr%mfiter_destroy(mfi)
@@ -2058,15 +2040,14 @@ contains
       ! Local variables
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
-      type(amrex_multifab) :: visc_t,scratch
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pVisc_t,pScratch,pU,pV,pW,pVisc,pVF,pRHOL,pRHOG
+      type(amrex_multifab) :: visc_t
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pVisc_t,pU,pV,pW,pVisc,pVF,pRHOL,pRHOG
       real(WP) :: dxi,dyi,dzi,dx,dy,dz,max_visc,Cmodel,Aij,Bij,t0
       real(WP), dimension(1:3,1:3) :: gradU,betaij
-      integer :: lvl,i,j,k,si,sj,sk,n
+      integer :: lvl,i,j,k,si,sj
       ! Parameters
       real(WP), parameter :: max_cfl=0.5_WP
       integer, parameter :: nfilter=2
-      real(WP), dimension(-1:+1), parameter :: filter=[1.0_WP/6.0_WP,2.0_WP/3.0_WP,1.0_WP/6.0_WP]
       
       ! Start timer
       t0=MPI_Wtime()
@@ -2126,35 +2107,9 @@ contains
             end do; end do; end do
          end do
          call this%amr%mfiter_destroy(mfi)
-         
+
          ! Phase 2: Filter visc_t
-         call this%amr%mfab_build(lvl=lvl,mfab=scratch,ncomp=1,nover=1); call scratch%setval(0.0_WP)
-         do n=1,nfilter
-            call scratch%setval(0.0_WP)
-            call scratch%copy(srcmf=visc_t,srccomp=1,dstcomp=1,nc=1,ng=0)
-            call this%amr%mfab_validextrap(lvl=lvl,mfab=scratch)
-            call scratch%fill_boundary(this%amr%geom(lvl))
-            call this%amr%mfab_foextrap(lvl=lvl,mfab=scratch)
-            call this%amr%mfiter_build(lvl,mfi)
-            do while(mfi%next())
-               pScratch=>scratch%dataptr(mfi)
-               pVisc_t=>visc_t%dataptr(mfi)
-               bx=mfi%tilebox()
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                  pVisc_t(i,j,k,1)=0.0_WP
-                  do sk=-1,+1; do sj=-1,+1; do si=-1,+1
-                     pVisc_t(i,j,k,1)=pVisc_t(i,j,k,1)+filter(si)*filter(sj)*filter(sk)*pScratch(i+si,j+sj,k+sk,1)
-                  end do; end do; end do
-               end do; end do; end do
-            end do
-            call this%amr%mfiter_destroy(mfi)
-         end do
-         call amrex_multifab_destroy(scratch)
-         
-         ! Fill visc_t ghosts after filtering
-         call this%amr%mfab_validextrap(lvl=lvl,mfab=visc_t)
-         call visc_t%fill_boundary(this%amr%geom(lvl))
-         call this%amr%mfab_foextrap(lvl=lvl,mfab=visc_t)
+         call this%amr%mfab_filter(lvl=lvl,mfab=visc_t,npass=nfilter)
 
          ! Phase 3: Convert to dynamic viscosity via harmonic averaging and add to this%visc
          call this%amr%mfiter_build(lvl,mfi)
@@ -2175,7 +2130,7 @@ contains
          call amrex_multifab_destroy(visc_t)
          
       end do
-      
+
       ! End timer
       this%wt_visc=this%wt_visc+(MPI_Wtime()-t0)
 

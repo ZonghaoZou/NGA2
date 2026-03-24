@@ -63,10 +63,10 @@ module simulation
    real(WP) :: R_spg=3.0_WP
    real(WP) :: L_spg=1.0_WP
 
-   !> Tagging parameters
-   real(WP) :: Rec_tag=huge(1.0_WP)
-   real(WP) :: Res_tag=huge(1.0_WP)
-   
+   !> Tagging parameter
+   real(WP) :: vorticity_tag=huge(1.0_WP)
+   real(WP) :: rho_ratio_tag=huge(1.0_WP)
+
 contains
 
    !> Smooth Heaviside function
@@ -214,10 +214,11 @@ contains
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       real(WP), dimension(:,:,:,:), contiguous, pointer :: pTG,pVF,pQ,pVisc,pBeta,pDiff,pRHOL,pRHOG
-      real(WP) :: r_cyl,blend,nu_spg,mu_g,mu_l,k_g,k_l
+      real(WP) :: r_cyl,blend,nu_spg,mu_spg,mu_g,mu_l,k_g,k_l
       real(WP), parameter :: Tmax_visc=10.0_WP
       real(WP), parameter :: myeps=1.0e-15_WP
       real(WP), parameter :: max_cfl=0.5_WP
+      real(WP), parameter :: Cdiff=0.1_WP
       ! Get maximum allowable kinematic viscosity in the sponge at finest level
       nu_spg=max_cfl*amr%min_meshsize(amr%clvl())**2/(4.0_WP*time%dt)
       ! Loop over levels
@@ -260,8 +261,9 @@ contains
                if (amr%nz.eq.1) r_cyl=sqrt((amr%ylo+(real(j,WP)+0.5_WP)*amr%dy(lvl))**2) ! Enable quasi-2D runs
                if (r_cyl.gt.R_spg) then
                   blend=min((r_cyl-R_spg)/L_spg,1.0_WP)**2
-                  pVisc(i,j,k,1)=max(pVisc(i,j,k,1),blend*nu_spg/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),myeps)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),myeps)))
-                  !pDiff(i,j,k,1)=max(pDiff(i,j,k,1),blend*nu_spg/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),myeps)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),myeps)))
+                  mu_spg=nu_spg/(pVF(i,j,k,1)/max(pRHOL(i,j,k,1),myeps)+(1.0_WP-pVF(i,j,k,1))/max(pRHOG(i,j,k,1),myeps))
+                  pVisc(i,j,k,1)=max(pVisc(i,j,k,1),blend*mu_spg)
+                  pDiff(i,j,k,1)=max(pDiff(i,j,k,1),Cdiff*blend*mu_spg)
                end if
             end do; end do; end do
          end do
@@ -358,7 +360,7 @@ contains
       end select
    end subroutine shock_dirichlet
 
-   !> Tagger based on normalized velocity gradient
+   !> Tagger based on vorticity and rho ratio
    subroutine my_tagger(solver,lvl,time,tags_ptr)
       use iso_c_binding,    only: c_ptr,c_char
       use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_tagboxarray
@@ -371,52 +373,56 @@ contains
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
       character(kind=c_char), dimension(:,:,:,:), contiguous, pointer :: tagarr
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ,pVisc
-      real(WP) :: dx,dy,dz,dxi,dyi,dzi,dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz
-      real(WP) :: vort_mag,div_neg,rho,mu,Rec,Res
-      integer :: i,j,k
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pQ
+      real(WP) :: dx,dy,dz,dxi,dyi,dzi
+      real(WP) :: irho_cc,irho_xp,irho_xm,irho_yp,irho_ym,irho_zp,irho_zm
+      real(WP) :: vort_x,vort_y,vort_z,vort_mag
+      real(WP) :: rho_max,rho_min,rho_nb,rho_ratio,r_cyl
+      integer :: i,j,k,ii,jj,kk
+      ! Get mesh size
       dx=solver%amr%dx(lvl); dxi=1.0_WP/dx
       dy=solver%amr%dy(lvl); dyi=1.0_WP/dy
       dz=solver%amr%dz(lvl); dzi=1.0_WP/dz
+      ! Recast tags
       tags=tags_ptr
+      ! Compute tags
       call solver%amr%mfiter_build(lvl,mfi)
       do while (mfi%next())
          ! Get pointers to data
          tagarr=>tags%dataPtr(mfi)
          pQ=>solver%Q%mf(lvl)%dataptr(mfi)
-         pVisc=>solver%visc%mf(lvl)%dataptr(mfi)
          ! Loop over tile
          bx=mfi%tilebox()
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-            ! Get rho and mu
-            rho=sum(pQ(i,j,k,1:2))
-            mu=pVisc(i,j,k,1)
-            if (mu.le.0.0_WP) mu=1.0_WP/Reynolds
-            ! Get velocity gradient (Q(5:7) are momentum components)
-            dudx=0.5_WP*dxi*((pQ(i+1,j,k,5)/max(sum(pQ(i+1,j,k,1:2)),solver%rho_floor))-(pQ(i-1,j,k,5)/max(sum(pQ(i-1,j,k,1:2)),solver%rho_floor)))
-            dvdx=0.5_WP*dxi*((pQ(i+1,j,k,6)/max(sum(pQ(i+1,j,k,1:2)),solver%rho_floor))-(pQ(i-1,j,k,6)/max(sum(pQ(i-1,j,k,1:2)),solver%rho_floor)))
-            dwdx=0.5_WP*dxi*((pQ(i+1,j,k,7)/max(sum(pQ(i+1,j,k,1:2)),solver%rho_floor))-(pQ(i-1,j,k,7)/max(sum(pQ(i-1,j,k,1:2)),solver%rho_floor)))
-            dudy=0.5_WP*dyi*((pQ(i,j+1,k,5)/max(sum(pQ(i,j+1,k,1:2)),solver%rho_floor))-(pQ(i,j-1,k,5)/max(sum(pQ(i,j-1,k,1:2)),solver%rho_floor)))
-            dvdy=0.5_WP*dyi*((pQ(i,j+1,k,6)/max(sum(pQ(i,j+1,k,1:2)),solver%rho_floor))-(pQ(i,j-1,k,6)/max(sum(pQ(i,j-1,k,1:2)),solver%rho_floor)))
-            dwdy=0.5_WP*dyi*((pQ(i,j+1,k,7)/max(sum(pQ(i,j+1,k,1:2)),solver%rho_floor))-(pQ(i,j-1,k,7)/max(sum(pQ(i,j-1,k,1:2)),solver%rho_floor)))
-            dudz=0.5_WP*dzi*((pQ(i,j,k+1,5)/max(sum(pQ(i,j,k+1,1:2)),solver%rho_floor))-(pQ(i,j,k-1,5)/max(sum(pQ(i,j,k-1,1:2)),solver%rho_floor)))
-            dvdz=0.5_WP*dzi*((pQ(i,j,k+1,6)/max(sum(pQ(i,j,k+1,1:2)),solver%rho_floor))-(pQ(i,j,k-1,6)/max(sum(pQ(i,j,k-1,1:2)),solver%rho_floor)))
-            dwdz=0.5_WP*dzi*((pQ(i,j,k+1,7)/max(sum(pQ(i,j,k+1,1:2)),solver%rho_floor))-(pQ(i,j,k-1,7)/max(sum(pQ(i,j,k-1,1:2)),solver%rho_floor)))
-            ! Get vorticity magnitude
-            vort_mag=sqrt((dwdy-dvdz)**2+(dudz-dwdx)**2+(dvdx-dudy)**2)
-            ! Get dilatation
-            div_neg=min(dudx+dvdy+dwdz,0.0_WP)
-            ! Tag based on cell Reynolds numbers
-            Rec=rho*vort_mag*solver%amr%min_meshsize(lvl)**2/mu
-            if (Rec.gt.Rec_tag) tagarr(i,j,k,1)=SETtag
-            ! Also tag based on cell shock Reynolds number
-            Res=rho*abs(div_neg)*solver%amr%min_meshsize(lvl)**2/mu
-            if (Res.gt.Res_tag) tagarr(i,j,k,1)=SETtag
+            ! Get local inverse densities
+            irho_cc=1.0_WP/max(sum(pQ(i  ,j,  k,  1:2)),solver%rho_floor)
+            irho_xp=1.0_WP/max(sum(pQ(i+1,j,  k,  1:2)),solver%rho_floor)
+            irho_xm=1.0_WP/max(sum(pQ(i-1,j,  k,  1:2)),solver%rho_floor)
+            irho_yp=1.0_WP/max(sum(pQ(i,  j+1,k,  1:2)),solver%rho_floor)
+            irho_ym=1.0_WP/max(sum(pQ(i,  j-1,k,  1:2)),solver%rho_floor)
+            irho_zp=1.0_WP/max(sum(pQ(i,  j,  k+1,1:2)),solver%rho_floor)
+            irho_zm=1.0_WP/max(sum(pQ(i,  j,  k-1,1:2)),solver%rho_floor)
+            ! Compute vorticity and tag based on it
+            vort_x=(pQ(i,j+1,k,7)*irho_yp-pQ(i,j-1,k,7)*irho_ym)*0.5_WP*dyi-(pQ(i,j,k+1,6)*irho_zp-pQ(i,j,k-1,6)*irho_zm)*0.5_WP*dzi
+            vort_y=(pQ(i,j,k+1,5)*irho_zp-pQ(i,j,k-1,5)*irho_zm)*0.5_WP*dzi-(pQ(i+1,j,k,7)*irho_xp-pQ(i-1,j,k,7)*irho_xm)*0.5_WP*dxi
+            vort_z=(pQ(i+1,j,k,6)*irho_xp-pQ(i-1,j,k,6)*irho_xm)*0.5_WP*dxi-(pQ(i,j+1,k,5)*irho_yp-pQ(i,j-1,k,5)*irho_ym)*0.5_WP*dyi
+            vort_mag=sqrt(vort_x**2+vort_y**2+vort_z**2)
+            if (vort_mag.gt.vorticity_tag) tagarr(i,j,k,1)=SETtag
+            ! Compute density ratio in 3x3x3 stencil and tag based on it
+            rho_max=solver%rho_floor; rho_min=huge(1.0_WP)
+            do kk=-1,1; do jj=-1,1; do ii=-1,1
+               rho_nb=sum(pQ(i+ii,j+jj,k+kk,1:2))
+               rho_max=max(rho_max,rho_nb)
+               rho_min=min(rho_min,max(rho_nb,solver%rho_floor))
+            end do; end do; end do
+            rho_ratio=rho_max/rho_min
+            r_cyl=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
+            if (rho_ratio.gt.rho_ratio_tag.and.(r_cyl.lt.R_spg+L_spg.or.lvl.lt.solver%amr%maxlvl-1)) tagarr(i,j,k,1)=SETtag
          end do; end do; end do
       end do
       call solver%amr%mfiter_destroy(mfi)
    end subroutine my_tagger
-   
+
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
@@ -564,8 +570,8 @@ contains
          call param_read('Regrid nsteps',regrid_evt%nper)
          ! Set case-specific tagging
          fs%user_mpcomp_tagging=>my_tagger
-         call param_read('Tagging Rec',Rec_tag)
-         call param_read('Tagging Res',Res_tag)
+         call param_read('Tagging vorticity',vorticity_tag)
+         call param_read('Tagging rho ratio',rho_ratio_tag)
          ! Build the grid
          if (restarted) then
             ! Restore grid hierarchy from checkpoint
@@ -581,7 +587,7 @@ contains
          ! Compute viscosities
          call get_viscosities()
          ! Add SGS models
-         call fs%add_viscartif(dt=time%dt)
+         call fs%add_viscartif(dt=time%dt,Cvisc=1.0e-2_WP)
          call fs%add_vreman(dt=time%dt)
          ! Compute Umag and Mach number
          call Umag%get_magnitude(fs%U,fs%V,fs%W)
@@ -613,8 +619,6 @@ contains
          call viz%add_scalar(fs%W,1,'W')
          call viz%add_scalar(Umag,1,'Umag')
          call viz%add_scalar(Mach,1,'Mach')
-         call viz%add_scalar(fs%visc,1,'visc')
-         call viz%add_scalar(fs%beta,1,'beta')
          call viz%add_surfmesh(fs%smesh,'plic')
          ! Create visualization output event
          viz_evt=event(time=time,name='Visualization output')
@@ -768,7 +772,7 @@ contains
          call get_viscosities()
 
          ! Add SGS models
-         call fs%add_viscartif(dt=time%dt)
+         call fs%add_viscartif(dt=time%dt,Cvisc=1.0e-2_WP)
          call fs%add_vreman(dt=time%dt)
 
          ! Compute Umag and Mach number
