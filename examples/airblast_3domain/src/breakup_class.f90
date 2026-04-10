@@ -340,6 +340,8 @@ contains
          allocate(fcnt (1:this%ccl_film%nstruct)); fcnt=0.0_WP
          allocate(fcurv(1:this%ccl_film%nstruct)); fcurv=0.0_WP
          allocate(fcsa (1:this%ccl_film%nstruct)); fcsa=0.0_WP
+         allocate(plist  (0:this%vf%cfg%nproc-1))
+         allocate(dispels(0:this%vf%cfg%nproc-1))
          ! Get local thickness of the film to determine if film should be convereted
          call this%vf%get_thickness()
          ! First pass to accumulate volume and get minimum thickness
@@ -524,7 +526,7 @@ contains
                         end if
                         lp%p(lp%np_)%d   =(6.0_WP*Vd/pi)**(1.0_WP/3.0_WP)            
                         lp%p(lp%np_)%pos =this%vf%Lbary(:,i,j,k)+random_uniform(-0.5_WP*this%vf%cfg%meshsize(i,j,k),0.5_WP*this%vf%cfg%meshsize(i,j,k))*tref+random_uniform(-0.5_WP*this%vf%cfg%meshsize(i,j,k),0.5_WP*this%vf%cfg%meshsize(i,j,k))*sref
-                        lp%p(lp%np_)%vel =lp%cfg%get_velocity(pos=lp%p(lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)    !< Interpolate local cell velocity as drop velocity
+                        lp%p(lp%np_)%vel =this%fs%cfg%get_velocity(pos=lp%p(lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W)    !< Interpolate local cell velocity as drop velocity
                         lp%p(lp%np_)%ind =lp%cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])    !< Place the drop in the proper cell for the lp%cfg
                         lp%p(lp%np_)%flag=0                                          
                         lp%p(lp%np_)%dt  =0.0_WP                                     
@@ -568,7 +570,7 @@ contains
                   end if                                   
                   lp%p(lp%np_)%d   =(6.0_WP*Vl/pi)**(1.0_WP/3.0_WP)            
                   lp%p(lp%np_)%pos =this%vf%Lbary(:,i,j,k)                     
-                  lp%p(lp%np_)%vel =lp%cfg%get_velocity(pos=lp%p(lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W) !< Interpolate local cell velocity as drop velocity
+                  lp%p(lp%np_)%vel =this%fs%cfg%get_velocity(pos=lp%p(lp%np_)%pos,i0=i,j0=j,k0=k,U=this%fs%U,V=this%fs%V,W=this%fs%W) !< Interpolate local cell velocity as drop velocity
                   lp%p(lp%np_)%ind =lp%cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin]) !< Place the drop in the proper cell for the lp%cfg
                   lp%p(lp%np_)%flag=0                                          
                   lp%p(lp%np_)%dt  =0.0_WP                                     
@@ -603,7 +605,7 @@ contains
             call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_tf_film,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
             call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_film    ,1,MPI_INTEGER,MPI_SUM,this%vf%cfg%comm,ierr)
          end if
-         deallocate(fvol,fthc,frem,fcnt,fcurv,fcsa,plist)
+         deallocate(fvol,fthc,frem,fcnt,fcurv,fcsa,plist,dispels)
       end if 
 
       contains
@@ -698,16 +700,6 @@ contains
       real(WP), dimension(3) :: d
       real(WP), dimension(3,3) :: A
       logical :: lrem_active
-
-      type :: spline_info
-         integer :: n_knots_x, n_knots_y, n_knots_z, flag
-         real(WP) :: length
-         real(WP), dimension(:), allocatable :: t_knots_x, c_coeffs_x
-         real(WP), dimension(:), allocatable :: t_knots_y, c_coeffs_y
-         real(WP), dimension(:), allocatable :: t_knots_z, c_coeffs_z
-      end type spline_info
-   
-      type(spline_info) :: s_info
 
       ! Get thickness and local struct_type for global information calculation
       allocate(thickness  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));thickness=0.0_WP
@@ -845,17 +837,8 @@ contains
          ! Perform transfer
          do n=1,this%ccl_lig%nstruct
             ! Assume a cylinder ligament
-            call fit_spline(n,s_info)
-            if (s_info%flag.lt.1.0_WP .and. s_info%length .gt. 3.0_WP*llen(n)) then
-               s_info%flag = 1
-            end if
-            if (s_info%flag.lt.1.0_WP) then
-               Lrim = s_info%length
-            else
-               Lrim=llen(n)
-            end if
+            Lrim=llen(n)
             Vrim=lvol(n)
-            if (Lrim .le. VFlo .or. Vrim .le. VFlo) cycle
             minor_radius=sqrt(Vrim/pi/Lrim)
             ! Drop size method from Kim & Moin (2020)
             nmain=floor(this%dw*Lrim/(twoPi*minor_radius))
@@ -884,8 +867,6 @@ contains
             ! Only the main processor is in charge of creating droplets
             if (this%cfg%amRoot) then
                Lrp = twoPi*minor_radius/this%dw
-               allocate(points(3,nsat+nmain))
-               if (s_info%flag.lt.1.0_WP) call distribute_on_spline(nsat+nmain,s_info,points)
                do l=1,nsat+nmain
                   ! Increment particle counter
                   lp%np_=lp%np_+1
@@ -902,23 +883,18 @@ contains
                   else
                      lp%p(lp%np_)%d=diam                                                                                    
                   end if
-                  if (s_info%flag.ge.1.0_WP) then
-                     if (llen(n).eq.0.0_WP) then
-                        lp%p(lp%np_)%pos = lpos(n,:)
-                     else
-                        lp%p(lp%np_)%pos =lpos(n,:)+0.5_WP*Lrp*(l-(nmain+1))*lmoi(n,:,1)
-                     end if
+                  if (llen(n).eq.0.0_WP) then
+                     lp%p(lp%np_)%pos = lpos(n,:)
                   else
-                     lp%p(lp%np_)%pos = points(:,l)
+                     lp%p(lp%np_)%pos =lpos(n,:)+0.5_WP*Lrp*(l-(nmain+1))*lmoi(n,:,1)
                   end if
                   lp%p(lp%np_)%vel =lvel(n,:)
-                  lp%p(lp%np_)%ind =this%cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])     
+                  lp%p(lp%np_)%ind =lp%cfg%get_ijk_global(lp%p(lp%np_)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])     
                   lp%p(lp%np_)%flag=0                                                                                        
                   lp%p(lp%np_)%dt  =0.0_WP                                                                                  
                   lp%p(lp%np_)%Acol=0.0_WP                                                                                  
                   lp%p(lp%np_)%Tcol=0.0_WP
                end do
-               if (allocated(points)) deallocate(points)
                ! Increment monitoring variables
                lp%np_new=lp%np_new+nmain+nsat
                lp%vp_new=lp%vp_new+lvol(n)
@@ -1029,422 +1005,6 @@ contains
                same_label=.true.
          end function same_label
 
-         subroutine fit_spline(n,s_info)
-            use fitpack_core, only: curfit, splev
-            integer, intent(in) :: n
-            type(spline_info), intent(out) :: s_info
-            integer :: m, local_point_count, num_procs, total_points, i, j, k, ier, nest_max, lwrk, unique_count
-            real(WP), dimension(3) :: end_p
-            real(WP), dimension(:,:), allocatable :: local_points
-            real(WP), dimension(:,:), allocatable :: points, unique_points, sorted_points
-            integer, dimension(:), allocatable :: recv_counts
-            integer, dimension(:), allocatable :: displacements
-            real(WP), dimension(:), allocatable :: t_param
-            real(WP) :: s, fp_x, fp_y, fp_z
-            real(WP), dimension(:), allocatable :: weights
-            logical, dimension(:), allocatable :: is_used
-            real(WP) :: min_dist_sq, dist_sq
-            real(WP), dimension(3) :: last_sorted_point
-            integer :: start_point_idx, best_idx
-      
-            real(WP), dimension(:), allocatable :: wrk
-            integer, dimension(:), allocatable :: iwrk
-            real(WP) :: tolerance
-      
-            integer :: num_eval
-            real(WP), dimension(:), allocatable :: t_eval, x_eval, y_eval, z_eval
-            real(WP) :: step, t_current
-            integer :: e_flag
-            integer, allocatable :: cluster_id(:)
-            integer, allocatable :: cluster_counts(:)
-            character(len=20) :: my_string
-
-            s_info%length = 0.0_WP
-            s_info%flag = 0
-      
-            allocate(local_points(3, this%ccl_lig%struct(n)%n_)); local_points = 0.0_WP
-            write (my_string, '(i0)') n
-            do m=1,this%ccl_lig%struct(n)%n_
-               i=this%ccl_lig%struct(n)%map(1,m)
-               j=this%ccl_lig%struct(n)%map(2,m)
-               k=this%ccl_lig%struct(n)%map(3,m)
-      
-               local_points(:,m) = this%vf%Lbary(:,i,j,k)
-               local_points(1,m) = local_points(1,m)-this%ccl_lig%struct(n)%per(1)*this%cfg%xL
-               local_points(2,m) = local_points(2,m)-this%ccl_lig%struct(n)%per(2)*this%cfg%yL
-               local_points(3,m) = local_points(3,m)-this%ccl_lig%struct(n)%per(3)*this%cfg%zL
-            end do
-      
-            num_procs = this%cfg%nproc
-      
-            allocate(recv_counts(num_procs))
-            recv_counts = 0
-      
-            call MPI_GATHER(this%ccl_lig%struct(n)%n_, 1, MPI_INTEGER, recv_counts, 1, MPI_INTEGER, 0, this%cfg%comm, ierr)
-      
-            if (this%cfg%amRoot) then
-               total_points = sum(recv_counts)
-               allocate(points(3, total_points))
-               allocate(is_used(total_points))
-               allocate(displacements(num_procs))
-               if (total_points.gt.0) then
-                  displacements(1) = 0
-                  do i=2,num_procs
-                     displacements(i) = displacements(i-1) + recv_counts(i-1)
-                  end do
-                  is_used = .false.
-               end if
-               call MPI_GATHERV(local_points, this%ccl_lig%struct(n)%n_*3, MPI_REAL_WP, points, recv_counts*3, displacements*3, MPI_REAL_WP, 0, this%cfg%comm, ierr)
-            else
-               call MPI_GATHERV(local_points, this%ccl_lig%struct(n)%n_*3, MPI_REAL_WP, local_points, recv_counts, recv_counts, MPI_REAL_WP, 0, this%cfg%comm, ierr)
-            end if
-      
-            if (this%cfg%amRoot) then 
-               tolerance = (4*this%cfg%min_meshsize)**2
-               if (total_points .gt. 4) then
-                  s_info%flag = 0
-                  end_p = points(:,1)
-                  start_point_idx = 1
-      
-                  allocate(cluster_id(total_points))
-                  cluster_id = 0
-                  unique_count = 0
-      
-                  do m = 1, total_points
-                     if (cluster_id(m) .eq. 0) then
-                        unique_count = unique_count + 1
-                        cluster_id(m) = unique_count
-                        do i = m + 1, total_points
-                           if (cluster_id(i) .eq. 0) then
-                              if (sum((points(:, m) - points(:, i))**2) .le. tolerance) then
-                                 cluster_id(i) = unique_count
-                              end if
-                           end if
-                        end do
-                     end if
-                  end do
-                  if (unique_count .gt. 0) then
-                     allocate(unique_points(3, unique_count), cluster_counts(unique_count))
-                     unique_points = 0.0_WP
-                     cluster_counts = 0
-                     do m = 1, total_points
-                        unique_points(:, cluster_id(m)) = unique_points(:, cluster_id(m)) + points(:, m)
-                        cluster_counts(cluster_id(m)) = cluster_counts(cluster_id(m)) + 1
-                     end do
-                     do m = 1, unique_count
-                        if (cluster_counts(m) .gt. 0) then
-                           unique_points(:, m) = unique_points(:, m) / real(cluster_counts(m))
-                        end if
-                     end do
-                  end if
-                  deallocate(points)
-                  allocate(points(3, unique_count))
-                  allocate(sorted_points(3, total_points))
-                  points = unique_points
-                  total_points = unique_count
-                  deallocate(cluster_id, unique_points, cluster_counts)
-      
-                  if (total_points .gt. 4) then
-                     call order_points(total_points, points, unique_count, sorted_points)
-                     total_points = unique_count
-                     deallocate(points)
-                     allocate(points(3, total_points))
-                     points = sorted_points
-                     deallocate(sorted_points)
-                     allocate(t_param(total_points))
-                     allocate(weights(total_points))
-                     t_param(1) = 0.0_WP
-                     do m = 2, total_points
-                        t_param(m) = t_param(m-1)+sqrt(sqrt((points(1,m)-points(1,m-1))**2+(points(2,m)-points(2,m-1))**2+(points(3,m)-points(3,m-1))**2))
-                     end do
-                     if (t_param(total_points) .gt. VFlo) then
-                        t_param = t_param/t_param(total_points)
-                     else
-                        s_info%flag = 1
-                     end if
-                     s = real(total_points, WP) * (this%cfg%min_meshsize)**2
-                     weights = 1.0_WP
-                     k = 3
-                     nest_max = max(total_points+k+1, 2*k+3)
-                     lwrk = total_points * (k + 1) + nest_max * (7 + 3 * k)
-         
-                     if (allocated(s_info%t_knots_x)) deallocate(s_info%t_knots_x)
-                     if (allocated(s_info%c_coeffs_x)) deallocate(s_info%c_coeffs_x)
-                     if (allocated(s_info%t_knots_y)) deallocate(s_info%t_knots_y)
-                     if (allocated(s_info%c_coeffs_y)) deallocate(s_info%c_coeffs_y)
-                     if (allocated(s_info%t_knots_z)) deallocate(s_info%t_knots_z)
-                     if (allocated(s_info%c_coeffs_z)) deallocate(s_info%c_coeffs_z)
-         
-                     allocate(wrk(lwrk))
-                     allocate(iwrk(nest_max))
-                     allocate(s_info%t_knots_x(nest_max))
-                     allocate(s_info%t_knots_y(nest_max))
-                     allocate(s_info%t_knots_z(nest_max))
-                     allocate(s_info%c_coeffs_x(nest_max))
-                     allocate(s_info%c_coeffs_y(nest_max))
-                     allocate(s_info%c_coeffs_z(nest_max))
-         
-                     call curfit(iopt=0, m=total_points, x=t_param, y=points(1,:), w=weights, &
-                     xb=t_param(1), xe=t_param(total_points), k=k, s=s, nest=nest_max, &
-                     n=s_info%n_knots_x, t=s_info%t_knots_x, c=s_info%c_coeffs_x, fp=fp_x, &
-                     wrk=wrk, lwrk=lwrk, iwrk=iwrk, ier=ier)
-                     if (ier .gt. 0) s_info%flag = 1!print *, "Error in CURFIT for X: ", ier
-         
-                     call curfit(iopt=0, m=total_points, x=t_param, y=points(2,:), w=weights, &
-                           xb=t_param(1), xe=t_param(total_points), k=k, s=s, nest=nest_max, &
-                           n=s_info%n_knots_y, t=s_info%t_knots_y, c=s_info%c_coeffs_y, fp=fp_y, &
-                           wrk=wrk, lwrk=lwrk, iwrk=iwrk, ier=ier)
-                     if (ier .gt. 0) s_info%flag = 1!print *, "Error in CURFIT for Y: ", ier
-         
-                     call curfit(iopt=0, m=total_points, x=t_param, y=points(3,:), w=weights, &
-                           xb=t_param(1), xe=t_param(total_points), k=k, s=s, nest=nest_max, &
-                           n=s_info%n_knots_z, t=s_info%t_knots_z, c=s_info%c_coeffs_z, fp=fp_z, &
-                           wrk=wrk, lwrk=lwrk, iwrk=iwrk, ier=ier)
-                     if (ier .gt. 0) s_info%flag = 1!print *, "Error in CURFIT for Z: ", ier
-         
-                     if (s_info%flag.eq.0) then
-                        num_eval = total_points*10
-                        e_flag = 0
-                        allocate(t_eval(num_eval))
-                        allocate(x_eval(num_eval))
-                        allocate(y_eval(num_eval))
-                        allocate(z_eval(num_eval))
-                        
-                        step = t_param(total_points) / real(num_eval - 1, WP)
-                        do m = 1, num_eval
-                           t_eval(m) = real(m-1, WP) * step
-                        end do
-                        
-                        call splev(s_info%t_knots_x, s_info%n_knots_x, s_info%c_coeffs_x, k, t_eval, x_eval, num_eval, e_flag, ier)
-                        if (ier .ne. 0) print *, "Error in SPLEV for X: ", ier
-                        
-                        call splev(s_info%t_knots_y, s_info%n_knots_y, s_info%c_coeffs_y, k, t_eval, y_eval, num_eval, e_flag, ier)
-                        if (ier .ne. 0) print *, "Error in SPLEV for Y: ", ier
-                        
-                        call splev(s_info%t_knots_z, s_info%n_knots_z, s_info%c_coeffs_z, k, t_eval, z_eval, num_eval, e_flag, ier)
-                        if (ier .ne. 0) print *, "Error in SPLEV for Z: ", ier
-         
-                        s_info%length = 0.0_WP
-                        do i = 2, num_eval
-                           s_info%length = s_info%length + sqrt((x_eval(i)-x_eval(i-1))**2+(y_eval(i)-y_eval(i-1))**2+(z_eval(i)-z_eval(i-1))**2)
-                        end do
-                     end if
-                  else
-                     s_info%flag = 1
-                  end if
-               else
-                  s_info%flag = 1
-               end if
-            end if
-            call MPI_BCAST(s_info%flag, 1, MPI_INTEGER, 0, this%cfg%comm, ierr)
-            call MPI_BCAST(s_info%length, 1, MPI_REAL_WP, 0, this%cfg%comm, ierr)
-            if (allocated(local_points)) deallocate(local_points)
-            if (allocated(recv_counts)) deallocate(recv_counts)
-            if (allocated(points)) deallocate(points)
-            if (allocated(is_used)) deallocate(is_used)
-            if (allocated(displacements)) deallocate(displacements)
-            if (allocated(t_param)) deallocate(t_param)
-            if (allocated(weights)) deallocate(weights)
-            if (allocated(wrk)) deallocate(wrk)
-            if (allocated(iwrk)) deallocate(iwrk)
-            if (allocated(t_eval)) deallocate(t_eval)
-            if (allocated(x_eval)) deallocate(x_eval)
-            if (allocated(y_eval)) deallocate(y_eval)
-            if (allocated(z_eval)) deallocate(z_eval)
-         end subroutine fit_spline
-      
-         subroutine distribute_on_spline(n_part,s_info,points)
-            use fitpack_core, only: splev
-            integer, intent(in) :: n_part
-            type(spline_info), intent(in) :: s_info
-            real(WP), dimension(:,:), intent(out) :: points
-            integer :: k, ier, n_map, idx, i, m
-            real(WP), dimension(:), allocatable :: t_map, x_map, y_map, z_map, dist_map
-            real(WP) :: step, total_len, target_dist, step_map, frac
-            integer :: e_flag
-
-            if (this%cfg%amRoot) then 
-               e_flag = 0
-               k = 3
-               n_map = 2000
-
-               allocate(t_map(n_map), x_map(n_map), y_map(n_map), z_map(n_map), dist_map(n_map))
-
-               step_map = 1.0_WP / real(n_map - 1, WP)
-               do i = 1, n_map
-                  t_map(i) = real(i-1, WP) * step_map
-               end do
-
-               call splev(s_info%t_knots_x, s_info%n_knots_x, s_info%c_coeffs_x, k, t_map, x_map, n_map, e_flag, ier)
-               if (ier .ne. 0) print *, "Error in SPLEV for X: ", ier
-               call splev(s_info%t_knots_y, s_info%n_knots_y, s_info%c_coeffs_y, k, t_map, y_map, n_map, e_flag, ier)
-               if (ier .ne. 0) print *, "Error in SPLEV for Y: ", ier
-               call splev(s_info%t_knots_z, s_info%n_knots_z, s_info%c_coeffs_z, k, t_map, z_map, n_map, e_flag, ier)
-               if (ier .ne. 0) print *, "Error in SPLEV for Z: ", ier
-
-               dist_map(1) = 0.0_WP
-               do i = 2, n_map
-                  dist_map(i) = dist_map(i-1) + sqrt((x_map(i)-x_map(i-1))**2 + (y_map(i)-y_map(i-1))**2 + (z_map(i)-z_map(i-1))**2)
-               end do
-               total_len = dist_map(n_map)
-               step = total_len / real(n_part + 1, WP)
-               
-               do m = 1, n_part
-                  target_dist = real(m, WP) * step
-                  idx = 1
-                  do i = 1, n_map-1
-                     if (dist_map(i+1) .ge. target_dist) then
-                        idx = i
-                        exit
-                     end if
-                  end do
-                  
-                  if (abs(dist_map(idx+1) - dist_map(idx)) .gt. 1.0e-12_WP) then
-                     frac = (target_dist - dist_map(idx)) / (dist_map(idx+1) - dist_map(idx))
-                  else
-                     frac = 0.0_WP
-                  end if
-                  
-                  points(1,m) = x_map(idx) + frac * (x_map(idx+1) - x_map(idx))
-                  points(2,m) = y_map(idx) + frac * (y_map(idx+1) - y_map(idx))
-                  points(3,m) = z_map(idx) + frac * (z_map(idx+1) - z_map(idx))
-      
-                  if (this%cfg%xper.and.points(1,m).lt.this%cfg%x(this%cfg%imin)) points(1,m)=points(1,m)+this%cfg%xL
-                  if (this%cfg%yper.and.points(2,m).lt.this%cfg%y(this%cfg%jmin)) points(2,m)=points(2,m)+this%cfg%yL
-                  if (this%cfg%zper.and.points(3,m).lt.this%cfg%z(this%cfg%kmin)) points(3,m)=points(3,m)+this%cfg%zL
-               end do
-
-               if (allocated(t_map)) deallocate(t_map, x_map, y_map, z_map, dist_map)
-            end if
-         end subroutine distribute_on_spline
-
-         subroutine order_points(total_points, points, total_ordered_points, ordered_points)
-            integer, intent(inout) :: total_points
-            real(WP), intent(in) :: points(3, total_points)
-            integer, intent(out) :: total_ordered_points
-            real(WP), allocatable, intent(out) :: ordered_points(:,:)
-            
-            logical, allocatable :: in_tree(:)
-            real(WP), allocatable :: min_tree_dist(:)
-            integer, allocatable :: parent(:)
-            integer :: i, j, new_node
-            real(WP) :: dist, current_dist
-            
-            integer, allocatable :: degree(:), node_offset(:), adjacency_list(:), local_offset(:)
-            
-            integer, allocatable :: queue(:), path(:)
-            logical, allocatable :: visited(:)
-            integer :: q_head, q_tail, node_a, node_b
-
-            if (total_points .le. 1) then
-               total_ordered_points = total_points
-               allocate(ordered_points(3, max(1, total_points)))
-               if (total_points .eq. 1) ordered_points(:,1) = points(:,1)
-               return
-            end if
-
-            allocate(parent(total_points), in_tree(total_points), min_tree_dist(total_points))
-            in_tree = .false.; parent = 0; min_tree_dist = huge(1.0_WP)
-            min_tree_dist(1) = 0.0_WP
-            
-            do i = 1, total_points
-               current_dist = huge(1.0_WP); new_node = -1
-               do j = 1, total_points
-                  if (.not. in_tree(j) .and. min_tree_dist(j) .lt. current_dist) then
-                     current_dist = min_tree_dist(j); new_node = j
-                  end if
-               end do
-               
-               if (new_node .eq. -1) exit
-               in_tree(new_node) = .true.
-               
-               do j = 1, total_points
-                  if (.not. in_tree(j)) then
-                     dist = sum((points(:, new_node) - points(:, j))**2)
-                     if (dist .lt. min_tree_dist(j)) then
-                        min_tree_dist(j) = dist; parent(j) = new_node
-                     end if
-                  end if
-               end do
-            end do
-            deallocate(in_tree, min_tree_dist)
-
-            allocate(degree(total_points), node_offset(total_points+1), local_offset(total_points), adjacency_list(2*total_points - 2))
-            degree = 0
-            
-            do i = 2, total_points
-               j = parent(i)
-               if (j .gt. 0) then
-                  degree(i) = degree(i) + 1
-                  degree(j) = degree(j) + 1
-               end if
-            end do
-            
-            node_offset(1) = 1
-            do i = 1, total_points
-               node_offset(i+1) = node_offset(i) + degree(i)
-               local_offset(i) = node_offset(i)
-            end do
-            
-            do i = 2, total_points
-               j = parent(i)
-               if (j .gt. 0) then
-                  adjacency_list(local_offset(i)) = j; local_offset(i) = local_offset(i) + 1
-                  adjacency_list(local_offset(j)) = i; local_offset(j) = local_offset(j) + 1
-               end if
-            end do
-            deallocate(degree, local_offset, parent)
-
-            allocate(queue(total_points), visited(total_points), path(total_points))
-            visited = .false.
-            
-            q_head = 1; q_tail = 1; queue(q_head) = 1; visited(1) = .true.
-            node_a = 1
-            
-            do while (q_head .le. q_tail)
-               new_node = queue(q_head); q_head = q_head + 1
-               node_a = new_node 
-               do i = node_offset(new_node), node_offset(new_node+1) - 1
-                  j = adjacency_list(i)
-                  if (.not. visited(j)) then
-                     visited(j) = .true.
-                     q_tail = q_tail + 1; queue(q_tail) = j
-                  end if
-               end do
-            end do
-
-            visited = .false.; path = 0
-            q_head = 1; q_tail = 1; queue(q_head) = node_a; visited(node_a) = .true.
-            node_b = node_a
-            
-            do while (q_head .le. q_tail)
-               new_node = queue(q_head); q_head = q_head + 1
-               node_b = new_node 
-               do i = node_offset(new_node), node_offset(new_node+1) - 1
-                  j = adjacency_list(i)
-                  if (.not. visited(j)) then
-                     visited(j) = .true.; path(j) = new_node
-                     q_tail = q_tail + 1; queue(q_tail) = j
-                  end if
-               end do
-            end do
-
-            total_ordered_points = 0; new_node = node_b
-            do while (new_node .ne. 0)
-               total_ordered_points = total_ordered_points + 1
-               new_node = path(new_node)
-            end do
-
-            allocate(ordered_points(3, total_ordered_points))
-            new_node = node_b; i = 1
-            do while (new_node .ne. 0)
-               ordered_points(:, i) = points(:, new_node)
-               i = i + 1
-               new_node = path(new_node)
-            end do
-
-            deallocate(node_offset, adjacency_list, queue, visited, path)
-         end subroutine order_points
    end subroutine transfer_ligs
 
    subroutine eigensolve_moi(A,d)

@@ -1,0 +1,37 @@
+# Parallelization
+Partition : 4 3 1
+
+# Mesh definition
+Lx : 0.003 
+Ly : 0.003 
+Lz : 0.003 
+nx : 320   
+ny : 320   
+nz : 1     
+
+# Are we using a moving domain?
+Moving domain : .true.
+
+# Fluid properties
+Gravity :                     0 -9.81 0
+Liquid dynamic viscosity :    1.002e-3        
+Gas dynamic viscosity :       1.813e-5
+Liquid density :              998.2   
+Gas density :                 1.199
+Surface tension coefficient : 0.0728 
+
+# Definition of single bubble (Weber)
+# Bubble volume : 9.3e-6
+Droplet diameter : 0.0002
+
+# Time integration
+Max timestep size : 5e-7
+Max cfl number :    0.9
+Max time :          0.6
+
+# Pressure solver
+Pressure tolerance : 1e-5
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 1e-4

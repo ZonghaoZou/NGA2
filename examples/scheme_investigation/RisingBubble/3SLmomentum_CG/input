@@ -1,0 +1,37 @@
+# Parallelization
+Partition :	1 2 1
+
+# Mesh definition — Rising Bubble (Hysing 2009, Test Case 1)
+# Domain: [0,1] x [0,2], nz=1 (pseudo-2D, auto)
+Lx :	1.0
+Ly :	2.0
+nx :	80
+ny :	160
+
+# Bubble parameters
+Bubble radius :             0.25
+Bubble center x :           0.5
+Bubble center y :           0.5
+
+# Fluid properties (Hysing Test Case 1)
+# Fluid 1 (liquid, surrounding, VF=1): rho=1000, mu=10
+# Fluid 2 (gas, bubble,         VF=0): rho=100,  mu=1
+# Re=35, Eo=10
+Gravity :                     0 -0.98 0
+Liquid dynamic viscosity :    10.0
+Gas dynamic viscosity :       1.0 !0.1
+Liquid density :              1000.0
+Gas density :                 100.0 !1.0
+Surface tension coefficient : 24.5!1.96
+
+# Time integration
+Max timestep size : 2.2e-3
+Max cfl number :    0.9
+Max time :          3.0
+
+# Pressure solver
+Pressure tolerance : 1e-6
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 1e-1

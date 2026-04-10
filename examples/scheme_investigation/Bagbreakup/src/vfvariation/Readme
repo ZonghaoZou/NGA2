@@ -3,4 +3,5 @@ vfs_class_noirl_tets               also works and it is purely based on 8 tets b
 vfs_class_noirl_polyfirst_thentest adapts the amrvof geometry version
 vfs_class_amrvof                   fully adpots amrvof geometry, everythign is self-contained in the tranpsort_flux subroutine
 vfs_class_amrvof_dissipationfree   adds the dissipation free fall back suggestd in the amrcomp solv
-vfs_class_amrvof_minmod            adds the minmom gradient and offset based on cell center to the tet barycenter
+vfs_class_amrvof_minmod            adds the minmom gradient and offset based on cell center to the tet barycenter (should not use)
+vfs_class_amrvof_minmod_phasicbary adds the minmom gradient and offset based on cell center to the phasic barycenter

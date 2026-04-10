@@ -1,12 +1,12 @@
 clear; close all 
 LW=2.0;
 timescale=32/pi;
-nummethods=6;
+nummethods=8;
 alldata=cell(1,nummethods);
 for i=1:nummethods
     alldata{1,i}=importdata(i);
 end
-linestylelist={"-o","-+","-*","-^","-x","-s"};
+linestylelist={"-o","-+","-*","-^","-x","-s","-*","-^"};
 c_blue   = [71, 135, 224] / 255;
 c_red    = [218, 62, 32] / 255;
 c_green  = [82,147,47]/255;

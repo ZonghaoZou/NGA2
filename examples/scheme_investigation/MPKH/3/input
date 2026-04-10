@@ -1,0 +1,37 @@
+# Parallelization
+Partition : 2 2 1
+
+# Fluid properties
+Gravity :                     0 0 0
+Viscosity ratio       :       0.99
+Density ratio         :       0.1
+Surface tension coefficient : 0.0
+
+Gas dynamic viscosity :       1.25e-5
+Gas density           :       1
+Delta g               :       2.5e-3
+Delta l               :       2.5e-3
+Ug                    :       10
+Lg                    :       6
+Ll                    :       6
+
+# Wavenumber
+Wavenumber            :       2.7
+
+# OS perturbation initialization
+Run theoretical KH    :       .false.
+Perturbation factor   :       1e-3
+Fitting threshold     :       0.1
+Skip Ratio            :       0.35
+
+# Time integration
+Max timestep size : 1.000000e-05
+Max cfl number :    0.8
+Max time :          2.700000e-02
+
+# Pressure solver
+Pressure tolerance : 1e-5 
+Pressure iteration : 100
+
+# Ensight output
+Ensight output period : 9.000000e-04

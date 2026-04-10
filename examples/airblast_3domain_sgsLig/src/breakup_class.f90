@@ -37,7 +37,7 @@ module breakup_class
       !> Drop transfer parameters
       logical  :: use_drop_transfer
       real(WP) :: dmax,dmin,ddel,emax
-      real(WP) :: vof_tf_drop,vof_deleted,lper_d
+      real(WP) :: vof_tf_drop,vof_deleted,emax_d
       integer  :: np_drop
 
       !> Film transfer parameters
@@ -110,8 +110,8 @@ contains
          this%ddel=0.2_WP*this%cfg%min_meshsize
          this%dmin=1.5_WP*this%cfg%min_meshsize
          this%dmax=1.0e-3_WP
-         this%emax=0.8_WP
-         this%lper_d=0.7_WP
+         this%emax=0.75_WP
+         this%emax_d=0.95_WP
          this%vof_tf_drop=0.0_WP
          this%vof_deleted=0.0_WP
          this%np_drop=0
@@ -177,8 +177,8 @@ contains
       integer :: n,m,ierr,i,j,k,iunit,l
       real(WP) :: x,y,z,x0,y0,z0,diam,ecc,lmax,lmid,lmin
       logical :: transfer
-      real(WP), dimension(3) :: d
-      real(WP), dimension(3,3) :: A
+      ! real(WP), dimension(3) :: d
+      ! real(WP), dimension(3,3) :: A
       logical :: drem_active
       real(IRL_double), dimension(1:3) :: a_aligned_Cylinder
       type(spline_info) :: s_info
@@ -188,6 +188,19 @@ contains
       real(WP), dimension(:,:), allocatable :: points
 
 
+      ! Moment of inertia calculation using lapack
+      real(WP), dimension(:), allocatable, save :: work !< Saved!
+      integer, save :: lwork                            !< Saved!
+      real(WP), dimension(1) :: lwork_query
+      real(WP), dimension(3) :: d
+      real(WP), dimension(3,3) :: A
+      integer :: info
+
+      ! Query optimal work array size
+      if (.not.allocated(work)) then
+         call dsyev('V','U',3,A,3,d,lwork_query,-1,info)
+         lwork=int(lwork_query(1)); allocate(work(lwork))
+      end if
       ! Build CCL
       call this%ccl%build(make_label,same_label)
       ! Allocate stats arrays
@@ -261,6 +274,14 @@ contains
       ! Transfer drops
       do n=1,this%ccl%nstruct
          diam=(6.0_WP*dvol(n)/pi)**(1.0_WP/3.0_WP)
+         ecc = 0.0_WP; lmax = 0.0_WP; lmid = 0.0_WP; lmin = 0.0_WP; d = 0.0_WP
+         A=dmoi(n,:,:)
+         call eigensolve_moi(A,d)
+         d=max(0.0_WP,d)
+         lmax=sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/dvol(n))
+         lmid=sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/dvol(n))
+         lmin=sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/dvol(n))
+         ecc=sqrt(1.0_WP-lmin**2/(lmax**2+epsilon(1.0_WP)))
 
          if (diam.gt.this%dmax) then
             transfer=.false.
@@ -273,20 +294,25 @@ contains
          else if (diam.le.this%dmin) then
             transfer=.true.
          else
-            A=dmoi(n,:,:)
-            call eigensolve_moi(A,d)
-            d=max(0.0_WP,d)
-            lmax=sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/dvol(n))
-            lmid=sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/dvol(n))
-            lmin=sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/dvol(n))
-            ! if (lmin.eq.0.0_WP) lmin=lmid
-            ecc=sqrt(1.0_WP-lmin**2/(lmax**2+epsilon(1.0_WP)))
-            ! transfer=(ecc.le.this%emax)
-            if (d(3).lt.1.8*d(1)) then
-               transfer=.true.
-            else
-               transfer=.false.
-            end if
+            ! if (this%cfg%amRoot) print *,dmoi(n,:,:) , "position", x0,y0,z0
+            
+
+            ! ! call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
+            ! d=max(0.0_WP,d) 
+            ! ! call eigensolve_moi(A,d)
+            ! ! d=max(0.0_WP,d)
+            ! lmax=sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/dvol(n))
+            ! lmid=sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/dvol(n))
+            ! lmin=sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/dvol(n))
+            ! ! if (lmin.eq.0.0_WP) lmin=lmid
+            ! ecc=sqrt(1.0_WP-lmin**2/(lmax**2+epsilon(1.0_WP)))
+            transfer=(ecc.le.this%emax)
+            ! if (this%cfg%amRoot) print *,'lmax', lmax, 'lmin', lmin, 'lmid', 'lmin', 'ecc', ecc, 'd', d
+            ! if (d(3).lt.1.8*d(1)) then
+            !    transfer=.true.
+            ! else
+            !    transfer=.false.
+            ! end if
          end if
 
          drem_active=.false.
@@ -296,52 +322,57 @@ contains
 
          ! Check if it might be a ligment if so transfer like a ligament, otherwise convert it based on a sphereical drop below
          if (drem_active) then
-            checklig : block
+            ! checklig : block
                
-               nneigh_moi=2; lper=0.0_WP; lnum=1.0_WP*this%ccl%struct(n)%n_
-               ! Do ligament percentage check
-               do m=1,this%ccl%struct(n)%n_
-                  tmpvol=0.0_WP; tmpxvol=0.0_WP; A=0.0_WP
-                  ! Get cell indices
-                  i=this%ccl%struct(n)%map(1,m); j=this%ccl%struct(n)%map(2,m); k=this%ccl%struct(n)%map(3,m)
-                  do kk = k-nneigh_moi,k+nneigh_moi
-                     do jj = j-nneigh_moi,j+nneigh_moi
-                        do ii = i-nneigh_moi,i+nneigh_moi
-                           tmpvol = tmpvol + this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
-                           tmpxvol = tmpxvol + this%vf%Lbary(:,ii,jj,kk)*this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
-                        end do
-                     end do
-                  end do
-                  ! Second pass to accumulate moment of inertia
-                  if (tmpvol.gt.1.0e-14_WP) tmpxvol = tmpxvol/tmpvol
-                  do kk = k-nneigh_moi,k+nneigh_moi
-                     do jj = j-nneigh_moi,j+nneigh_moi
-                        do ii = i-nneigh_moi,i+nneigh_moi
-                           ! Location of film node
-                           tmpL = this%vf%Lbary(:,ii,jj,kk) - tmpxvol
-                           A(1,1)=A(1,1)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(2)**2+tmpL(3)**2)
-                           A(2,2)=A(2,2)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(3)**2)
-                           A(3,3)=A(3,3)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(2)**2)
-                           A(1,2)=A(1,2)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(2)
-                           A(1,3)=A(1,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(3)
-                           A(2,3)=A(2,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(2)*tmpL(3)   
-                        end do
-                     end do
-                  end do
-                  call eigensolve_moi(A,d)
-                  d=max(0.0_WP,d)
-                  if ((d(3).lt.1.5_WP*d(2)).and.(d(2).gt.1.5_WP*d(1)) ) lper=lper+1.0_WP
-               end do
+            !    nneigh_moi=2; lper=0.0_WP; lnum=1.0_WP*this%ccl%struct(n)%n_
+            !    ! Do ligament percentage check
+            !    do m=1,this%ccl%struct(n)%n_
+            !       tmpvol=0.0_WP; tmpxvol=0.0_WP; A=0.0_WP
+            !       ! Get cell indices
+            !       i=this%ccl%struct(n)%map(1,m); j=this%ccl%struct(n)%map(2,m); k=this%ccl%struct(n)%map(3,m)
+            !       do kk = k-nneigh_moi,k+nneigh_moi
+            !          do jj = j-nneigh_moi,j+nneigh_moi
+            !             do ii = i-nneigh_moi,i+nneigh_moi
+            !                tmpvol = tmpvol + this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
+            !                tmpxvol = tmpxvol + this%vf%Lbary(:,ii,jj,kk)*this%vf%VF(ii,jj,kk)*this%cfg%vol(i,j,k)
+            !             end do
+            !          end do
+            !       end do
+            !       ! Second pass to accumulate moment of inertia
+            !       if (tmpvol.gt.1.0e-14_WP) tmpxvol = tmpxvol/tmpvol
+            !       do kk = k-nneigh_moi,k+nneigh_moi
+            !          do jj = j-nneigh_moi,j+nneigh_moi
+            !             do ii = i-nneigh_moi,i+nneigh_moi
+            !                ! Location of film node
+            !                tmpL = this%vf%Lbary(:,ii,jj,kk) - tmpxvol
+            !                A(1,1)=A(1,1)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(2)**2+tmpL(3)**2)
+            !                A(2,2)=A(2,2)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(3)**2)
+            !                A(3,3)=A(3,3)+this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*(tmpL(1)**2+tmpL(2)**2)
+            !                A(1,2)=A(1,2)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(2)
+            !                A(1,3)=A(1,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(1)*tmpL(3)
+            !                A(2,3)=A(2,3)-this%vf%cfg%vol(ii,jj,kk)*this%vf%VF(ii,jj,kk)*tmpL(2)*tmpL(3)   
+            !             end do
+            !          end do
+            !       end do
+            !       ! if (this%cfg%amRoot) print *,A , "position", tmpxvol
+            !       ! call dsyev('V','U',3,A,3,d,work,lwork,info)
+            !       call eigensolve_moi(A,d)
+            !       d=max(0.0_WP,d)
+            !       ! if (this%cfg%amRoot) print *, d
+            !       if ((d(3).lt.1.5_WP*d(2)).and.(d(2).gt.1.5_WP*d(1)) ) lper=lper+1.0_WP
+            !    end do
 
-               call MPI_ALLREDUCE(MPI_IN_PLACE,lnum,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-               call MPI_ALLREDUCE(MPI_IN_PLACE,lper,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
-               if (lnum .gt. 0.0_WP) then
-                  lper=lper/lnum
-               else
-                  lper=0.0_WP
-               end if
+            !    call MPI_ALLREDUCE(MPI_IN_PLACE,lnum,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+            !    call MPI_ALLREDUCE(MPI_IN_PLACE,lper,1,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+            !    if (lnum .gt. 0.0_WP) then
+            !       lper=lper/lnum
+            !    else
+            !       lper=0.0_WP
+            !    end if
 
-               if ((lper.gt.this%lper_d).or. ecc.gt.this%emax) then
+            !    if (this%cfg%amRoot) print *, "Lper", lper, "Ecc", ecc!, "D", d(1),d(2),d(3)
+               ! if ((lper.gt.this%lper_d).or. ecc.gt.this%emax_d) then
+            if (ecc.gt.this%emax_d) then
                   transfer=.false.
                   call this%fit_spline(n,s_info,this%ccl)
                   if (s_info%flag.lt.1.0_WP) then
@@ -433,7 +464,7 @@ contains
                   transfer=.true.
                end if
 
-            end block checklig 
+            ! end block checklig 
          end if
 
          if (transfer) then

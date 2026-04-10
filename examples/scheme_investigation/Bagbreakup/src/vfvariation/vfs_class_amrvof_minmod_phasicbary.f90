@@ -1202,7 +1202,7 @@ contains
       integer,  dimension(3,4) :: myijk
       integer,  dimension(3,9) :: fijk
       integer,  dimension(3)   :: bblo,bbhi,cijk
-      logical :: bb_pure_liq, bb_pure_gas
+      logical :: bb_pure_liq, bb_pure_gas, crossed_plic
       real(WP), dimension(3)   :: fbary
       real(WP), dimension(3)   :: offset
       real(WP) :: total_mf
@@ -1266,58 +1266,45 @@ contains
                       fijk(3,nn)=floor((face(3,nn)-this%cfg%z(this%cfg%kmin_))/(this%cfg%z(this%cfg%kmin_+1)-this%cfg%z(this%cfg%kmin_)))+this%cfg%kmin_
                    end do
                    do nn=1,4; fijk(1,nn)=merge(i-1,i,U(i,j,k).gt.0.0_WP); end do
-                   ! Polyhedron bounding-box pure-phase check
-                   bblo=[minval(fijk(1,1:9)),minval(fijk(2,1:9)),minval(fijk(3,1:9))]
-                   bbhi=[maxval(fijk(1,1:9)),maxval(fijk(2,1:9)),maxval(fijk(3,1:9))]
-                   bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
-                   bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
-                   SLflux=0.0_WP
-                   if (bb_pure_liq.or.bb_pure_gas) then
-                      ! Lightweight: whole polyhedron is pure phase - dissipation-free momentum
-                      call flux_poly_moments(face,fvol,fbary)
-                      if (bb_pure_liq) then
-                         SLflux(1)=fvol; SLflux(3:5)=fbary  
-                      else
-                         SLflux(2)=fvol; SLflux(6:8)=fbary
-                      end if
-                      total_mf=(rho_l*SLflux(1)+rho_g*SLflux(2))/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
-                      this%MFX(1,i,j,k)=total_mf*0.5_WP*(Uc(i-1,j,k)+Uc(i,j,k))
-                      this%MFX(2,i,j,k)=total_mf*0.5_WP*(Vc(i-1,j,k)+Vc(i,j,k))
-                      this%MFX(3,i,j,k)=total_mf*0.5_WP*(Wc(i-1,j,k)+Wc(i,j,k))
-                   else
-                      ! Per-tet decomposition with per-tet purity check - SL upwinded momentum
-                      do n=1,8
-                         do nn=1,4; mytet(:,nn)=face(:,tet_map(nn,n)); myijk(:,nn)=fijk(:,tet_map(nn,n)); end do
-                         bblo=[minval(myijk(1,:)),minval(myijk(2,:)),minval(myijk(3,:))]
-                         bbhi=[maxval(myijk(1,:)),maxval(myijk(2,:)),maxval(myijk(3,:))]
-                         bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
-                         bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
-                         if (bb_pure_liq.or.bb_pure_gas) then
-                            fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
-                            if (bb_pure_liq) then
-                               SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
-                               cijk=get_Pindices(fbary,myijk(:,1))
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
-                            else
-                               SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
-                               cijk=get_Pindices(fbary,myijk(:,1))
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
-                            end if
+                   crossed_plic=.false.; SLflux=0.0_WP
+                   ! Per-tet decomposition with per-tet purity check - SL upwinded momentum
+                   do n=1,8
+                      do nn=1,4; mytet(:,nn)=face(:,tet_map(nn,n)); myijk(:,nn)=fijk(:,tet_map(nn,n)); end do
+                      bblo=[minval(myijk(1,:)),minval(myijk(2,:)),minval(myijk(3,:))]
+                      bbhi=[maxval(myijk(1,:)),maxval(myijk(2,:)),maxval(myijk(3,:))]
+                      bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
+                      bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
+                      if (bb_pure_liq.or.bb_pure_gas) then
+                         fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
+                         if (bb_pure_liq) then
+                            SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
+                            cijk=get_Pindices(fbary,myijk(:,1))
+                            offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
+                            SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
                          else
-                            SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
+                            SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
+                            cijk=get_Pindices(fbary,myijk(:,1))
+                            offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
+                            SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
                          end if
-                      end do
-                      this%MFX(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
-                   end if
+                      else
+                         SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
+                      end if
+                   end do
                    FX(:,i,j,k)=SLflux(1:8)
                    this%UFl(1,i,j,k)=SLflux(1)/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
                    this%UFg(1,i,j,k)=SLflux(2)/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+                   this%MFX(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+                   if (.not.crossed_plic) then
+                      total_mf=(rho_l*SLflux(1)+rho_g*SLflux(2))/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+                      this%MFX(1,i,j,k)=total_mf*0.5_WP*sum(Uc(i-1:i,j,k))
+                      this%MFX(2,i,j,k)=total_mf*0.5_WP*sum(Vc(i-1:i,j,k))
+                      this%MFX(3,i,j,k)=total_mf*0.5_WP*sum(Wc(i-1:i,j,k))
+                   end if
                else 
                   ! Simple superficial velocity
                   if (maxval(this%band(i-1:i,j,k)).lt.0) then
@@ -1346,58 +1333,45 @@ contains
                       fijk(3,nn)=floor((face(3,nn)-this%cfg%z(this%cfg%kmin_))/(this%cfg%z(this%cfg%kmin_+1)-this%cfg%z(this%cfg%kmin_)))+this%cfg%kmin_
                    end do
                    do nn=1,4; fijk(2,nn)=merge(j-1,j,V(i,j,k).gt.0.0_WP); end do
-                   ! Polyhedron bounding-box pure-phase check
-                   bblo=[minval(fijk(1,1:9)),minval(fijk(2,1:9)),minval(fijk(3,1:9))]
-                   bbhi=[maxval(fijk(1,1:9)),maxval(fijk(2,1:9)),maxval(fijk(3,1:9))]
-                   bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
-                   bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
-                   SLflux=0.0_WP
-                   if (bb_pure_liq.or.bb_pure_gas) then
-                      ! Lightweight: whole polyhedron is pure phase
-                      call flux_poly_moments(face,fvol,fbary)
-                      if (bb_pure_liq) then
-                         SLflux(1)=fvol; SLflux(3:5)=fbary
-                      else
-                         SLflux(2)=fvol; SLflux(6:8)=fbary
-                      end if
-                      total_mf=(rho_l*SLflux(1)+rho_g*SLflux(2))/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
-                      this%MFY(1,i,j,k)=total_mf*0.5_WP*(Uc(i,j-1,k)+Uc(i,j,k))
-                      this%MFY(2,i,j,k)=total_mf*0.5_WP*(Vc(i,j-1,k)+Vc(i,j,k))
-                      this%MFY(3,i,j,k)=total_mf*0.5_WP*(Wc(i,j-1,k)+Wc(i,j,k))
-                   else
-                      ! Per-tet decomposition with per-tet purity check - SL upwinded momentum
-                      do n=1,8
-                         do nn=1,4; mytet(:,nn)=face(:,tet_map(nn,n)); myijk(:,nn)=fijk(:,tet_map(nn,n)); end do
-                         bblo=[minval(myijk(1,:)),minval(myijk(2,:)),minval(myijk(3,:))]
-                         bbhi=[maxval(myijk(1,:)),maxval(myijk(2,:)),maxval(myijk(3,:))]
-                                     bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
-                         bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
-                         if (bb_pure_liq.or.bb_pure_gas) then
-                            fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
-                            if (bb_pure_liq) then
-                               SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
-                               cijk=get_Pindices(fbary,myijk(:,1))
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
-                            else
-                               SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
-                               cijk=get_Pindices(fbary,myijk(:,1))
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
-                            end if
+                   crossed_plic=.false.; SLflux=0.0_WP
+                   ! Per-tet decomposition with per-tet purity check - SL upwinded momentum
+                   do n=1,8
+                      do nn=1,4; mytet(:,nn)=face(:,tet_map(nn,n)); myijk(:,nn)=fijk(:,tet_map(nn,n)); end do
+                      bblo=[minval(myijk(1,:)),minval(myijk(2,:)),minval(myijk(3,:))]
+                      bbhi=[maxval(myijk(1,:)),maxval(myijk(2,:)),maxval(myijk(3,:))]
+                                  bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
+                      bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
+                      if (bb_pure_liq.or.bb_pure_gas) then
+                         fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
+                         if (bb_pure_liq) then
+                            SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
+                            cijk=get_Pindices(fbary,myijk(:,1))
+                            offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
+                            SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
                          else
-                            SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
+                            SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
+                            cijk=get_Pindices(fbary,myijk(:,1))
+                            offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
+                            SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
                          end if
-                      end do
-                      this%MFY(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
-                   end if
+                      else
+                         SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
+                      end if
+                   end do
                    FY(:,i,j,k)=SLflux(1:8)
                    this%UFl(2,i,j,k)=SLflux(1)/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
                    this%UFg(2,i,j,k)=SLflux(2)/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
+                   this%MFY(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dz(k)*this%cfg%dx(i)*dt)
+                   if (.not.crossed_plic) then
+                     total_mf=(rho_l*SLflux(1)+rho_g*SLflux(2))/(this%cfg%dy(j)*this%cfg%dz(k)*dt)
+                     this%MFY(1,i,j,k)=total_mf*0.5_WP*sum(Uc(i,j-1:j,k))
+                     this%MFY(2,i,j,k)=total_mf*0.5_WP*sum(Vc(i,j-1:j,k))
+                     this%MFY(3,i,j,k)=total_mf*0.5_WP*sum(Wc(i,j-1:j,k))
+                  end if
                else
                   ! Simple superficial velocity
                   if (maxval(this%band(i,j-1:j,k)).lt.0) then
@@ -1426,58 +1400,45 @@ contains
                       fijk(3,nn)=floor((face(3,nn)-this%cfg%z(this%cfg%kmin_))/(this%cfg%z(this%cfg%kmin_+1)-this%cfg%z(this%cfg%kmin_)))+this%cfg%kmin_
                    end do
                    do nn=1,4; fijk(3,nn)=merge(k-1,k,W(i,j,k).gt.0.0_WP); end do
-                   ! Polyhedron bounding-box pure-phase check
-                   bblo=[minval(fijk(1,1:9)),minval(fijk(2,1:9)),minval(fijk(3,1:9))]
-                   bbhi=[maxval(fijk(1,1:9)),maxval(fijk(2,1:9)),maxval(fijk(3,1:9))]
-                   bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
-                   bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
-                   SLflux=0.0_WP
-                   if (bb_pure_liq.or.bb_pure_gas) then
-                      ! Lightweight: whole polyhedron is pure phase
-                      call flux_poly_moments(face,fvol,fbary)
-                      if (bb_pure_liq) then
-                         SLflux(1)=fvol; SLflux(3:5)=fbary
+                   crossed_plic=.false.; SLflux=0.0_WP
+                   ! Per-tet decomposition with per-tet purity check - SL upwinded momentum
+                   do n=1,8
+                      do nn=1,4; mytet(:,nn)=face(:,tet_map(nn,n)); myijk(:,nn)=fijk(:,tet_map(nn,n)); end do
+                      bblo=[minval(myijk(1,:)),minval(myijk(2,:)),minval(myijk(3,:))]
+                      bbhi=[maxval(myijk(1,:)),maxval(myijk(2,:)),maxval(myijk(3,:))]
+                                  bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
+                      bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
+                      if (bb_pure_liq.or.bb_pure_gas) then
+                         fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
+                         if (bb_pure_liq) then
+                            SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
+                            cijk=get_Pindices(fbary,myijk(:,1))
+                            offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
+                            SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                         else
+                            SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
+                            cijk=get_Pindices(fbary,myijk(:,1))
+                            offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
+                            SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
+                            SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
+                         end if
                       else
-                         SLflux(2)=fvol; SLflux(6:8)=fbary
+                         SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
                       end if
+                   end do
+                   FZ(:,i,j,k)=SLflux(1:8)
+                   this%UFl(3,i,j,k)=SLflux(1)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
+                   this%UFg(3,i,j,k)=SLflux(2)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
+                   this%MFZ(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
+                   if (.not.crossed_plic) then
                       total_mf=(rho_l*SLflux(1)+rho_g*SLflux(2))/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
                       this%MFZ(1,i,j,k)=total_mf*0.5_WP*(Uc(i,j,k-1)+Uc(i,j,k))
                       this%MFZ(2,i,j,k)=total_mf*0.5_WP*(Vc(i,j,k-1)+Vc(i,j,k))
                       this%MFZ(3,i,j,k)=total_mf*0.5_WP*(Wc(i,j,k-1)+Wc(i,j,k))
-                   else
-                      ! Per-tet decomposition with per-tet purity check - SL upwinded momentum
-                      do n=1,8
-                         do nn=1,4; mytet(:,nn)=face(:,tet_map(nn,n)); myijk(:,nn)=fijk(:,tet_map(nn,n)); end do
-                         bblo=[minval(myijk(1,:)),minval(myijk(2,:)),minval(myijk(3,:))]
-                         bbhi=[maxval(myijk(1,:)),maxval(myijk(2,:)),maxval(myijk(3,:))]
-                                     bb_pure_liq=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).gt.VFhi)
-                         bb_pure_gas=all(this%VF(bblo(1):bbhi(1),bblo(2):bbhi(2),bblo(3):bbhi(3)).lt.VFlo)
-                         if (bb_pure_liq.or.bb_pure_gas) then
-                            fvol=tet_vol(mytet); fbary=0.25_WP*(mytet(:,1)+mytet(:,2)+mytet(:,3)+mytet(:,4))
-                            if (bb_pure_liq) then
-                               SLflux(1)=SLflux(1)+fvol; SLflux(3:5)=SLflux(3:5)+fvol*fbary
-                               cijk=get_Pindices(fbary,myijk(:,1))
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(9 )=SLflux(9 )+rho_l*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(10)=SLflux(10)+rho_l*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(11)=SLflux(11)+rho_l*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
-                            else
-                               SLflux(2)=SLflux(2)+fvol; SLflux(6:8)=SLflux(6:8)+fvol*fbary
-                               cijk=get_Pindices(fbary,myijk(:,1))
-                               offset=fbary-[this%cfg%xm(cijk(1)),this%cfg%ym(cijk(2)),this%cfg%zm(cijk(3))]
-                               SLflux(12)=SLflux(12)+rho_g*fvol*(Uc(cijk(1),cijk(2),cijk(3))+sum(gradUc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(13)=SLflux(13)+rho_g*fvol*(Vc(cijk(1),cijk(2),cijk(3))+sum(gradVc(:,cijk(1),cijk(2),cijk(3))*offset))
-                               SLflux(14)=SLflux(14)+rho_g*fvol*(Wc(cijk(1),cijk(2),cijk(3))+sum(gradWc(:,cijk(1),cijk(2),cijk(3))*offset))
-                            end if
-                         else
-                            SLflux(1:14)=SLflux(1:14)+tet_sign(mytet)*cut_tet_P(mytet,myijk)
-                         end if
-                      end do
-                      this%MFZ(:,i,j,k)=(SLflux(9:11)+SLflux(12:14))/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
                    end if
-                   FZ(:,i,j,k)=SLflux(1:8)
-                   this%UFl(3,i,j,k)=SLflux(1)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
-                   this%UFg(3,i,j,k)=SLflux(2)/(this%cfg%dx(i)*this%cfg%dy(j)*dt)
                else
                   ! Simple superficial velocity
                   if (maxval(this%band(i,j,k-1:k)).lt.0) then
@@ -1707,6 +1668,8 @@ contains
                myflux(1)=my_vol; myflux(3:5)=my_vol*bary                                    
                return
             end if
+            crossed_plic=.true.
+            
             myplane=getPlane(this%liquid_gas_interface(i0,j0,k0),0)
             ! Cut by old PLIC
             d=myplane(1)*tetin(1,:)+myplane(2)*tetin(2,:)+myplane(3)*tetin(3,:)-myplane(4)
