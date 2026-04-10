@@ -1,0 +1,37 @@
+# Mesh parameters
+Lx : 0.003 
+Ly : 0.003 
+Lz : 0.0006!0.003 
+Base nx:   20
+Base ny:   20
+Base nz:   4
+Max level: 4
+# Regridding parameters
+Regrid nsteps:    10
+Tagging Reynolds: 10
+
+# Fluid properties (dimensional, SI units)
+Liquid density:              998.2
+Gas density:                 1.199
+Liquid dynamic viscosity:    1.002e-3
+Gas dynamic viscosity:       1.813e-5
+Surface tension coefficient: 0.0728
+
+# Gravity
+Gravity: 0.0 -9.81 0.0
+
+# Cylinder definition
+Droplet diameter: 0.0002
+
+# Moving domain (PID controller)
+Moving domain: .true.
+
+# Time integration
+Max time: 0.6
+Max dt:   5e-7
+Max CFL:  0.9
+
+# Output
+Output period:     5e-5
+Checkpoint period: 0.1
+Restart from:      !restart
