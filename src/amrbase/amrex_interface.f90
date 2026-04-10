@@ -25,6 +25,7 @@ module amrex_interface
    public :: amrcore_set_on_postregrid_dispatch
    public :: amrcore_set_on_cost_dispatch
    public :: amrcore_set_cost_strategy
+   public :: amrdm_make_knapsack,amrdm_make_sfc
 
    !=====================================================================
    ! AmrCore Grid Operations
@@ -45,6 +46,7 @@ module amrex_interface
    !=====================================================================
    ! FillPatch Operations
    !=====================================================================
+   public :: amrmfab_parallel_add
    public :: amrmfab_fillpatch_single
    public :: amrmfab_fillpatch_two
    public :: amrmfab_fillcoarsepatch
@@ -86,6 +88,8 @@ module amrex_interface
    public :: amrmfab_average_down_face  ! Face-centered (nodal in 1 dir)
    public :: amrmfab_average_down_edge  ! Edge-centered (nodal in 2 dirs)
    public :: amrmfab_average_down_node  ! Node-centered (nodal in 3 dirs)
+   public :: amrmfab_sum_downto         ! Restrict-SUM fine deposits into coarse level (lvl+1 → lvl)
+   public :: amrmfab_interp_from_coarse ! PCInterp coarse→fine for deposit processing
    public :: amrmfab_compute_divergence ! Compute div(u) from face velocities
    public :: amrmfab_sum_unique         ! Sum for face/nodal data (no double-counting)
    public :: amrmask_make_fine          ! Create mask for cells covered by finer level
@@ -180,6 +184,29 @@ module amrex_interface
          type(c_ptr), value :: core
          integer(c_int), value :: strat
       end subroutine amrcore_set_cost_strategy
+
+      !> Build a KnapSack-optimized DistributionMapping from per-box costs
+      subroutine amrdm_make_knapsack_c(dm,costs,nboxes) bind(c,name='amrdm_make_knapsack')
+         import :: c_ptr,c_int,c_double
+         type(c_ptr) :: dm
+         real(c_double) :: costs(*)
+         integer(c_int), value :: nboxes
+      end subroutine amrdm_make_knapsack_c
+
+      !> Build an SFC-optimized DistributionMapping from per-box costs + BoxArray
+      subroutine amrdm_make_sfc_c(dm,costs,nboxes,ba) bind(c,name='amrdm_make_sfc')
+         import :: c_ptr,c_int,c_double
+         type(c_ptr) :: dm
+         real(c_double) :: costs(*)
+         integer(c_int), value :: nboxes
+         type(c_ptr), value :: ba
+      end subroutine amrdm_make_sfc_c
+
+      !> Destroy a heap-allocated DistributionMapping
+      subroutine amrdm_destroy_c(dm) bind(c,name='amrdm_destroy')
+         import :: c_ptr
+         type(c_ptr), value :: dm
+      end subroutine amrdm_destroy_c
 
       !------------------------------------------------------------------
       ! AmrCore Grid Operations
@@ -552,6 +579,31 @@ module amrex_interface
          integer(c_int), value :: ngcrse
       end subroutine amrmfab_average_down_node_c
 
+      !> ParallelCopy with ADD semantics
+      subroutine amrmfab_parallel_add_c(dst,src,srccomp,dstcomp,ncomp,srcng,dstng,geom) &
+      &  bind(c,name='amrmfab_parallel_add')
+         import :: c_ptr,c_int
+         type(c_ptr), value :: dst,src,geom
+         integer(c_int), value :: srccomp,dstcomp,ncomp,srcng,dstng
+      end subroutine amrmfab_parallel_add_c
+
+      !> Restrict-SUM all fine deposits into the coarse level (lvl+1 → lvl)
+      subroutine amrmfab_sum_downto_c(fine_mf, crse_mf, crse_geom, fine_geom, ref_ratio) &
+         bind(c, name='amrmfab_sum_downto')
+         import :: c_ptr, c_int
+         type(c_ptr), value :: fine_mf, crse_mf, crse_geom, fine_geom
+         integer(c_int), intent(in) :: ref_ratio(3)
+      end subroutine amrmfab_sum_downto_c
+
+      !> PCInterp coarse→fine for deposit processing (no-op BCs, 0-indexed scomp)
+      subroutine amrmfab_interp_from_coarse_c(fine_mf, crse_mf, crse_geom, fine_geom, scomp, ncomp, ref_ratio) &
+         bind(c, name='amrmfab_interp_from_coarse')
+         import :: c_ptr, c_int
+         type(c_ptr), value :: fine_mf, crse_mf, crse_geom, fine_geom
+         integer(c_int), value :: scomp, ncomp
+         integer(c_int), intent(in) :: ref_ratio(3)
+      end subroutine amrmfab_interp_from_coarse_c
+
       !> Compute divergence of face-centered velocity into cell-centered MultiFab
       subroutine amrmfab_compute_divergence_c(divu, umac_x, umac_y, umac_z, geom) &
          bind(c, name='amrmfab_compute_divergence')
@@ -659,6 +711,42 @@ contains
          call amrmfab_average_down_node_c(fmf%p, cmf%p, c_null_ptr, rr, ng)
       end if
    end subroutine amrmfab_average_down_node
+
+   !> ParallelCopy with ADD semantics — accumulates src into dst instead of overwriting
+   subroutine amrmfab_parallel_add(dst,src,srccomp,dstcomp,ncomp,srcng,dstng,geom)
+      use amrex_amr_module, only: amrex_multifab,amrex_geometry
+      type(amrex_multifab), intent(inout) :: dst
+      type(amrex_multifab), intent(in) :: src
+      type(amrex_geometry), intent(in) :: geom
+      integer, intent(in) :: srccomp,dstcomp,ncomp,srcng,dstng
+      call amrmfab_parallel_add_c(dst%p,src%p,srccomp-1,dstcomp-1,ncomp,srcng,dstng,geom%p)
+   end subroutine amrmfab_parallel_add
+
+   !> Restrict-SUM fine deposits (valid+ghost) into the coarse level.
+   !> Delegates to AMReX's sum_fine_to_coarse; requires nGrow % ratio == 0.
+   !> Call after SumBoundary; average_down afterward fixes double-counted cells.
+   subroutine amrmfab_sum_downto(fmf,cmf,rr,cgeom,fgeom)
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
+      type(amrex_multifab), intent(in)    :: fmf
+      type(amrex_multifab), intent(inout) :: cmf
+      integer,              intent(in)    :: rr(3)
+      type(amrex_geometry), intent(in)    :: cgeom
+      type(amrex_geometry), intent(in)    :: fgeom
+      call amrmfab_sum_downto_c(fmf%p, cmf%p, cgeom%p, fgeom%p, rr)
+   end subroutine amrmfab_sum_downto
+
+   !> PCInterp coarse→fine interpolation for deposit processing.
+   !> Propagates coarse-level deposits into fine-covered cells (no-op BCs).
+   subroutine amrmfab_interp_from_coarse(fmf,cmf,rr,cgeom,fgeom,scomp,ncomp)
+      use amrex_amr_module, only: amrex_multifab, amrex_geometry
+      type(amrex_multifab), intent(inout) :: fmf
+      type(amrex_multifab), intent(in)    :: cmf
+      integer,              intent(in)    :: rr(3)
+      type(amrex_geometry), intent(in)    :: cgeom
+      type(amrex_geometry), intent(in)    :: fgeom
+      integer,              intent(in)    :: scomp,ncomp
+      call amrmfab_interp_from_coarse_c(fmf%p, cmf%p, cgeom%p, fgeom%p, scomp-1, ncomp, rr)
+   end subroutine amrmfab_interp_from_coarse
 
    !> Compute divergence of face-centered velocity into cell-centered MultiFab
    subroutine amrmfab_compute_divergence(divu, umac_x, umac_y, umac_z, geom)
@@ -852,6 +940,31 @@ contains
       linop%owner = .true.
       call amrabeclap_build_c(linop%p, nlevels, gp, bp, dp, sc, hd)
    end subroutine amrabeclap_build
+
+   !====================================================================
+   ! Cost-weighted DistributionMapping Factories
+   !====================================================================
+
+   !> Build a KnapSack-optimized DM from per-box costs
+   subroutine amrdm_make_knapsack(dm,costs,nboxes)
+      use amrex_amr_module, only: amrex_distromap
+      type(amrex_distromap), intent(out) :: dm
+      integer, intent(in) :: nboxes
+      real(WP), intent(in) :: costs(nboxes)
+      call amrdm_make_knapsack_c(dm%p,costs,nboxes)
+      dm%owner=.true.
+   end subroutine amrdm_make_knapsack
+
+   !> Build an SFC-optimized DM from per-box costs + BoxArray
+   subroutine amrdm_make_sfc(dm,costs,nboxes,ba)
+      use amrex_amr_module, only: amrex_distromap,amrex_boxarray
+      type(amrex_distromap), intent(out) :: dm
+      integer, intent(in) :: nboxes
+      real(WP), intent(in) :: costs(nboxes)
+      type(amrex_boxarray), intent(in) :: ba
+      call amrdm_make_sfc_c(dm%p,costs,nboxes,ba%p)
+      dm%owner=.true.
+   end subroutine amrdm_make_sfc
 
 end module amrex_interface
 

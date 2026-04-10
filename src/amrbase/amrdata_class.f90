@@ -59,8 +59,12 @@ module amrdata_class
       procedure :: fill_mfab        !< Fill into a target MultiFab (single level)
       procedure :: sync_lvl         !< Lightweight same-level ghost sync (single level)
       procedure :: sync             !< Lightweight ghost sync on all levels
+      procedure :: syncsum_lvl      !< Same-level ghost-to-valid accumulation (single level)
+      procedure :: syncsum          !< Ghost-to-valid accumulation on all levels
       procedure :: average_down     !< Average from finest to coarsest level
       procedure :: average_downto   !< Average level lvl+1 down to level lvl
+      procedure :: sum_down         !< Restrict-SUM from finest to coarsest level
+      procedure :: sum_downto       !< Restrict-SUM level lvl+1 into level lvl
       ! Scalar operations (Y = op(Y, scalar))
       procedure :: setval           !< Y = val
       procedure :: plus             !< Y = Y + val
@@ -86,6 +90,8 @@ module amrdata_class
       procedure :: get_magnitude    !< M = sqrt(srcX(compX)²+srcY(compY)²+srcZ(compZ)²), comps default to 1
       ! Iteration helper
       procedure :: mfiter_build     !< Build MFIter from this data's MultiFab
+      ! Cloning
+      procedure :: clone            !< Clone amrdata with optional alternate DM per level
    end type amrdata
 
    !> Abstract interface for on_init callback
@@ -588,6 +594,26 @@ contains
       end do
    end subroutine sync
 
+   !> Same-level ghost-to-valid accumulation at a single level (SumBoundary, no C/F)
+   subroutine syncsum_lvl(this,lvl)
+      implicit none
+      class(amrdata), intent(inout) :: this
+      integer, intent(in) :: lvl
+      call this%mf(lvl)%sum_boundary(this%amr%geom(lvl))
+   end subroutine syncsum_lvl
+
+   !> Same-level ghost-to-valid accumulation on all levels
+   subroutine syncsum(this,lbase)
+      implicit none
+      class(amrdata), intent(inout) :: this
+      integer, intent(in), optional :: lbase
+      integer :: lvl,lb
+      lb=0; if (present(lbase)) lb=lbase
+      do lvl=lb,this%amr%clvl()
+         call this%syncsum_lvl(lvl)
+      end do
+   end subroutine syncsum
+
    !> Average down from finest level to lbase (ensures level consistency)
    !> Simply calls average_downto in a loop from finest to coarsest
    subroutine average_down(this,lbase)
@@ -628,6 +654,30 @@ contains
          call amrmfab_average_down_node(fmf=this%mf(lvl+1),cmf=this%mf(lvl),rr=[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],cgeom=this%amr%geom(lvl))
       end select
    end subroutine average_downto
+
+   !> Restrict-SUM all fine deposits (valid+ghost) into the coarse level.
+   !> Mirrors AMReX's sumFineToCrseNodal. lvl is the coarse destination; lvl+1 is the source.
+   subroutine sum_downto(this,lvl)
+      use amrex_interface, only: amrmfab_sum_downto
+      use messager, only: die
+      implicit none
+      class(amrdata), intent(inout) :: this
+      integer, intent(in) :: lvl
+      if (lvl.lt.0.or.lvl.ge.this%amr%clvl()) call die('[amrdata sum_downto] invalid level')
+      call amrmfab_sum_downto(this%mf(lvl+1),this%mf(lvl),[this%amr%rrefx(lvl),this%amr%rrefy(lvl),this%amr%rrefz(lvl)],cgeom=this%amr%geom(lvl),fgeom=this%amr%geom(lvl+1))
+   end subroutine sum_downto
+
+   !> Restrict-SUM from finest to coarsest, looping lvl=clvl()-1 down to 0
+   subroutine sum_down(this,lbase)
+      implicit none
+      class(amrdata), intent(inout) :: this
+      integer, intent(in), optional :: lbase
+      integer :: lvl,lb
+      lb=0; if (present(lbase)) lb=lbase
+      do lvl=this%amr%clvl()-1,lb,-1
+         call this%sum_downto(lvl)
+      end do
+   end subroutine sum_down
 
    ! ============================================================================
    ! SCALAR OPERATIONS
@@ -969,6 +1019,52 @@ contains
          call amrex_mfiter_destroy(mfi)
       end do
    end subroutine get_magnitude
+
+   ! ============================================================================
+   ! CLONING
+   ! ============================================================================
+
+   !> Clone this amrdata into dest, optionally using alternate DMs per level
+   !> All class members are fully populated. MultiFabs are built and parallel_copied.
+   subroutine clone(this,dest,dm)
+      use amrex_amr_module, only: amrex_multifab_build
+      use messager, only: die
+      implicit none
+      class(amrdata), intent(in) :: this
+      type(amrdata), intent(inout) :: dest
+      type(amrex_distromap), dimension(0:), intent(in), optional :: dm
+      integer :: lvl
+      ! Copy all metadata
+      dest%amr   =>this%amr
+      dest%parent=>this%parent
+      dest%name  =trim(this%name)//'_clone'
+      dest%ncomp =this%ncomp
+      dest%ng    =this%ng
+      dest%nodal =this%nodal
+      dest%interp=this%interp
+      dest%fill_lvl_cache=this%fill_lvl_cache
+      ! Copy BCs
+      if (allocated(this%lo_bc)) allocate(dest%lo_bc,source=this%lo_bc)
+      if (allocated(this%hi_bc)) allocate(dest%hi_bc,source=this%hi_bc)
+      ! Copy callbacks
+      dest%on_init  =>this%on_init
+      dest%on_coarse=>this%on_coarse
+      dest%on_remake=>this%on_remake
+      dest%on_clear =>this%on_clear
+      dest%fillbc   =>this%fillbc
+      dest%user_init=>this%user_init
+      ! Build MultiFabs on alternate or same DM, parallel_copy data
+      if (present(dm)) then
+         if (size(dm).lt.size(this%mf)) call die('[amrdata clone] dm array too small for number of levels')
+      end if
+      allocate(dest%mf(lbound(this%mf,1):ubound(this%mf,1)))
+      do lvl=lbound(this%mf,1),ubound(this%mf,1)
+         if (present(dm)) then; call amrex_multifab_build(dest%mf(lvl),this%amr%ba(lvl),         dm(lvl),this%ncomp,this%ng,this%nodal)
+         else;                  call amrex_multifab_build(dest%mf(lvl),this%amr%ba(lvl),this%amr%dm(lvl),this%ncomp,this%ng,this%nodal)
+         end if
+         call dest%mf(lvl)%parallel_copy(this%mf(lvl),1,1,this%ncomp,this%ng,this%ng,this%amr%geom(lvl))
+      end do
+   end subroutine clone
 
    ! ============================================================================
    ! HELPER ROUTINES

@@ -1,4 +1,4 @@
-!> AMR Simplex Atomizer
+!> AMR Bubble - Incompressible bubble through orifice
 !> Inflow/outflow in X, periodic in Y/Z
 module simulation
    use precision,         only: WP
@@ -28,7 +28,7 @@ module simulation
    type(amrmpinc), target :: fs
    type(amrdata) :: resUVW,Umag
 
-   ! IB fluid volume fraction (1=fluid, 0=solid)
+   ! IB volume fraction
    type(polygon) :: poly
    type(amrdata), target :: VFib
 
@@ -41,7 +41,7 @@ module simulation
    real(WP) :: Re_tag=huge(1.0_WP)
 
    ! Monitoring
-   type(monitor) :: mfile,cflfile,gridfile,postproc
+   type(monitor) :: mfile,cflfile,gridfile
 
    ! Restart data
    type(amrio) :: io
@@ -52,44 +52,27 @@ module simulation
 
    ! Physical parameters
    real(WP) :: viscL_mol,viscG_mol
-
-   !> Inlet pipes geometry and flow rates
-   real(WP) :: Rinlet=0.0023_WP
-   real(WP) :: Rexit=0.00143_WP
-   real(WP) :: Rpipe=0.000185_WP
-   real(WP), dimension(3) :: p1=[-0.00442_WP,0.0_WP,+0.001245_WP]
-   real(WP), dimension(3) :: p2=[-0.00442_WP,0.0_WP,-0.001245_WP]
-   real(WP), dimension(3) :: n1=[+0.6_WP,-0.8_WP,0.0_WP]
-   real(WP), dimension(3) :: n2=[+0.6_WP,+0.8_WP,0.0_WP]
-   real(WP) :: mfr
-
-   !> Post-processing info
-   real(WP) :: liq_vol
+   real(WP) :: Lorifice,Lupstream,Ldownstream,Dpipe,Dbubble,Xbubble
+   real(WP) :: Uinlet
 
 contains
+
+   !> Levelset function for IB surface
+   function orifice_levelset(xyz,t) result(G)
+      real(WP), dimension(3), intent(in) :: xyz
+      real(WP), intent(in) :: t
+      real(WP) :: G
+      ! Orifice polygon
+      G=poly%get_distance([xyz(1),sqrt(xyz(2)**2+xyz(3)**2)])
+   end function orifice_levelset
 
    !> Levelset function for sphere
    function sphere_levelset(xyz,t) result(G)
       real(WP), dimension(3), intent(in) :: xyz
       real(WP), intent(in) :: t
       real(WP) :: G
-      G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2+xyz(3)**2)
+      G=sqrt((xyz(1)-Xbubble)**2+xyz(2)**2+xyz(3)**2)-0.5_WP*Dbubble
    end function sphere_levelset
-
-   !> Levelset function for IB surface
-   function simplex_levelset(xyz,t) result(G)
-      real(WP), dimension(3), intent(in) :: xyz
-      real(WP), intent(in) :: t
-      real(WP) :: G
-      real(WP), dimension(3) :: v,p
-      ! Simplex polygon
-      G=poly%get_distance([xyz(1),sqrt(xyz(2)**2+xyz(3)**2)])
-      ! Add inlet pipes
-      if (xyz(1).lt.p1(1).and.sqrt(xyz(2)**2+xyz(3)**2).lt.0.00203_WP) then
-         v=xyz-p1; p=v-n1*dot_product(v,n1); G=max(G,Rpipe-sqrt(dot_product(p,p)))
-         v=xyz-p2; p=v-n2*dot_product(v,n2); G=max(G,Rpipe-sqrt(dot_product(p,p)))
-      end if
-   end function simplex_levelset
 
    !> Compute viscosity
    subroutine get_viscosity()
@@ -132,7 +115,7 @@ contains
       type(amrex_box) :: bx
       character(kind=c_char), dimension(:,:,:,:), contiguous, pointer :: tagarr
       real(WP), dimension(:,:,:,:), contiguous, pointer :: pUVW
-      real(WP) :: dx,dy,dz,dxi,dyi,dzi,gradU_mag,Re_cell,dist
+      real(WP) :: dx,dy,dz,dxi,dyi,dzi,gradU_mag,Re_cell,dist,rad
       real(WP), dimension(3,3) :: gradU
       integer :: i,j,k
       tags=tags_ptr
@@ -146,8 +129,8 @@ contains
          pUVW=>solver%UVW%mf(lvl)%dataptr(mfi)
          bx=mfi%tilebox()
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-            ! No refinement in the last 10% of the domain from the outflow
-            if (solver%amr%xlo+(real(i,WP)+0.5_WP)*dx.gt.solver%amr%xhi-0.1_WP*(solver%amr%xhi-solver%amr%xlo)) cycle
+            ! No refinement 5D from the outflow
+            !if (solver%amr%xlo+(real(i,WP)+0.5_WP)*dx.gt.solver%amr%xhi-0.1_WP*(solver%amr%xhi-solver%amr%xlo)) cycle
             ! Velocity gradient tensor
             gradU(1,1)=0.5_WP*dxi*(pUVW(i+1,j,k,1)-pUVW(i-1,j,k,1))
             gradU(2,1)=0.5_WP*dyi*(pUVW(i,j+1,k,1)-pUVW(i,j-1,k,1))
@@ -161,14 +144,15 @@ contains
             ! |∇u| = sqrt(sum of all gradients squared)
             gradU_mag=sqrt(sum(gradU**2))
             ! Normalize into a local gas Reynolds number
-            Re_cell=solver%rhoG*gradU_mag*solver%amr%min_meshsize(lvl)**2/viscG_mol
+            Re_cell=solver%rhoL*gradU_mag*solver%amr%min_meshsize(lvl)**2/viscL_mol
             ! Tagged based on cell Re value
             if (Re_cell.gt.Re_tag) tagarr(i,j,k,1)=SETtag
             ! Also tag near the IB surface
-            dist=simplex_levelset([solver%amr%xlo+(real(i,WP)+0.5_WP)*dx, &
-            &                      solver%amr%ylo+(real(j,WP)+0.5_WP)*dy, &
-            &                      solver%amr%zlo+(real(k,WP)+0.5_WP)*dz],time)
-            if (dist.lt.5.0_WP*dx.and.dist.gt.-dx) tagarr(i,j,k,1)=SETtag
+            dist=orifice_levelset([solver%amr%xlo+(real(i,WP)+0.5_WP)*dx,solver%amr%ylo+(real(j,WP)+0.5_WP)*dy,solver%amr%zlo+(real(k,WP)+0.5_WP)*dz],time)
+            rad=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
+            if (dist.lt.3.0_WP*dx.and.dist.gt.-dx) then
+               if (rad.lt.1.0_WP.or.lvl.lt.solver%amr%maxlvl-1) tagarr(i,j,k,1)=SETtag
+            end if
          end do; end do; end do
       end do
       call solver%amr%mfiter_destroy(mfi)
@@ -177,7 +161,6 @@ contains
    !> Dirichlet BC: uniform inflow at 1 at xlo/xhi for U, 0 for V/W
    subroutine dirichlet_velocity(solver,lvl,time,face,bx,comp,p)
       use amrex_amr_module, only: amrex_box
-      use mathtools,        only: Pi
       class(amrmpinc), intent(in) :: solver
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -186,27 +169,19 @@ contains
       character(len=1), intent(in) :: comp
       real(WP), dimension(:,:,:,:), pointer, intent(inout) :: p
       integer :: i,j,k,ic
-      real(WP), parameter :: Rin=0.00159_WP,Rout=0.00212_WP
-      real(WP) :: Uin,rad
       ! Find component to modify
       if (size(p,4).eq.1) then; ic=1 ! Staggered velocity has one component
       else; ic=merge(1,merge(2,3,comp.eq.'V'),comp.eq.'U')  ! cell-centered: U→1, V→2, W→3
       end if
-      ! Pick the x- face
       select case (face)
-      case (1)  ! x-lo
+       case (1)  ! Inflow in X-
          select case (comp)
-          ! U=Uin
+          ! U=1
           case ('U')
-            ! Get inflow velocity
-            Uin=mfr/(solver%rhoL*Pi*(Rout**2-Rin**2))
-            ! Apply
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-               rad=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*solver%amr%dy(lvl))**2 &
-               &       +(solver%amr%zlo+(real(k,WP)+0.5_WP)*solver%amr%dz(lvl))**2)
-               p(i,j,k,ic)=0.0_WP; if (rad.ge.Rin.and.rad.le.Rout) p(i,j,k,ic)=Uin
+               p(i,j,k,ic)=Uinlet
             end do; end do; end do
-          ! V=W=0
+          ! V=0, W=0
           case ('V','W')
             do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
                p(i,j,k,ic)=0.0_WP
@@ -215,9 +190,11 @@ contains
       end select
    end subroutine dirichlet_velocity
 
-   !> User-provided initialization for VF
-   subroutine init_VF(solver,lvl,time,ba,dm)
+   !> User-provided initialization for bubble
+   subroutine bubble_init(solver,lvl,time,ba,dm)
       use amrex_amr_module, only: amrex_boxarray,amrex_distromap,amrex_mfiter,amrex_box,amrex_mfiter_build,amrex_mfiter_destroy
+      use mms_geom, only: initialize_volume_moments
+      use amrmpinc_class, only: VFlo
       class(amrmpinc), intent(inout) :: solver
       integer, intent(in) :: lvl
       real(WP), intent(in) :: time
@@ -225,9 +202,11 @@ contains
       type(amrex_distromap), intent(in) :: dm
       type(amrex_mfiter) :: mfi
       type(amrex_box) :: bx
-      real(WP), dimension(:,:,:,:), contiguous, pointer :: pVF,pCL,pCG
-      real(WP) :: rad,dx,dy,dz
+      real(WP), dimension(:,:,:,:), contiguous, pointer :: pVF,pCL,pCG,pU,pUVW
+      real(WP), dimension(3) :: BL,BG  ! Dummy barycenters
+      real(WP) :: dx,dy,dz,VF
       integer :: i,j,k
+      integer, parameter :: nref=3
       ! Get mesh size
       dx=solver%amr%dx(lvl); dy=solver%amr%dy(lvl); dz=solver%amr%dz(lvl)
       ! Use passed ba/dm since grid is being constructed
@@ -235,6 +214,8 @@ contains
       do while (mfi%next())
          ! Get pointers to data
          pVF=>solver%VF%mf(lvl)%dataptr(mfi)
+         pUVW=>solver%UVW%mf(lvl)%dataptr(mfi)
+         pU=>solver%U%mf(lvl)%dataptr(mfi)
          if (lvl.eq.solver%amr%maxlvl) then
             pCL=>solver%CL%dataptr(mfi)
             pCG=>solver%CG%dataptr(mfi)
@@ -242,58 +223,23 @@ contains
          ! Loop over grown tilebox
          bx=mfi%growntilebox(solver%nover)
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-            ! Get radial location
-            rad=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
-            ! Ensure the nozzle is filled with liquid up to the throat with wet walls
-            if (solver%amr%xlo+(real(i,WP)+0.5_WP)*dx.lt.-0.0015_WP.and.rad.le.Rinlet) then
-               pVF(i,j,k,1)=1.0_WP
-            else if (solver%amr%xlo+(real(i,WP)+0.5_WP)*dx.ge.-0.0015_WP.and.solver%amr%xlo+(real(i,WP)+0.5_WP)*dx.lt.0.0_WP.and.rad.le.Rexit) then
-               pVF(i,j,k,1)=1.0_WP
-            else
-               pVF(i,j,k,1)=0.0_WP
-            end if
+            ! Compute VF and barycenters from levelset
+            call initialize_volume_moments(lo=[solver%amr%xlo+real(i  ,WP)*dx,solver%amr%ylo+real(j  ,WP)*dy,solver%amr%zlo+real(k  ,WP)*dz], &
+            &                              hi=[solver%amr%xlo+real(i+1,WP)*dx,solver%amr%ylo+real(j+1,WP)*dy,solver%amr%zlo+real(k+1,WP)*dz], &
+            &                              levelset=sphere_levelset,time=time,level=nref,VFlo=VFlo,VF=VF,BL=BL,BG=BG)
+            ! Store volume fraction
+            pVF(i,j,k,1)=VF
+            ! Store barycenters
             if (lvl.eq.solver%amr%maxlvl) then
-               pCL(i,j,k,:)=[solver%amr%xlo+(real(i,WP)+0.5_WP)*dx,solver%amr%ylo+(real(j,WP)+0.5_WP)*dy,solver%amr%zlo+(real(k,WP)+0.5_WP)*dz]
-               pCG(i,j,k,:)=[solver%amr%xlo+(real(i,WP)+0.5_WP)*dx,solver%amr%ylo+(real(j,WP)+0.5_WP)*dy,solver%amr%zlo+(real(k,WP)+0.5_WP)*dz]
+               pCL(i,j,k,:)=BL
+               pCG(i,j,k,:)=BG
             end if
          end do; end do; end do
       end do
       call amrex_mfiter_destroy(mfi)
-   end subroutine init_VF
+   end subroutine bubble_init
 
-   !> User-defined VF BC - sets inlet ghost cells based on pipe geometry
-   subroutine dirichlet_VF(solver,lvl,time,face,bx,pVF,pCL,pCG,pPLIC)
-      use amrvof_class,     only: amrvof
-      use amrex_amr_module, only: amrex_box
-      implicit none
-      class(amrvof),    intent(inout) :: solver
-      integer,          intent(in) :: lvl
-      real(WP),         intent(in) :: time
-      integer,          intent(in) :: face
-      type(amrex_box),  intent(in) :: bx
-      real(WP), dimension(:,:,:,:), contiguous, pointer, intent(inout) :: pVF,pCL,pCG,pPLIC
-      real(WP) :: dx,dy,dz,rad
-      integer  :: i,j,k
-      ! Get mesh size
-      dx=solver%amr%dx(lvl); dy=solver%amr%dy(lvl); dz=solver%amr%dz(lvl)
-      ! Loop over provided box
-      do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-         ! Get radial location
-         rad=sqrt((solver%amr%ylo+(real(j,WP)+0.5_WP)*dy)**2+(solver%amr%zlo+(real(k,WP)+0.5_WP)*dz)**2)
-         ! Set all passed variables
-         if (rad.le.Rinlet) then
-            pVF(i,j,k,1)=1.0_WP
-            if (associated(pPLIC)) pPLIC(i,j,k,:)=[0.0_WP,0.0_WP,0.0_WP,+1.0e10_WP]
-         else
-            pVF(i,j,k,1)=0.0_WP
-            if (associated(pPLIC)) pPLIC(i,j,k,:)=[0.0_WP,0.0_WP,0.0_WP,-1.0e10_WP]
-         end if
-         if (associated(pCL)) pCL(i,j,k,:)=[solver%amr%xlo+(real(i,WP)+0.5_WP)*dx,solver%amr%ylo+(real(j,WP)+0.5_WP)*dy,solver%amr%zlo+(real(k,WP)+0.5_WP)*dz]
-         if (associated(pCG)) pCG(i,j,k,:)=[solver%amr%xlo+(real(i,WP)+0.5_WP)*dx,solver%amr%ylo+(real(j,WP)+0.5_WP)*dy,solver%amr%zlo+(real(k,WP)+0.5_WP)*dz]
-      end do; end do; end do
-   end subroutine dirichlet_VF
-
-   !> Initialize IB fluid volume fraction from simplex levelset
+   !> Initialize IB fluid volume fraction from orifice levelset
    subroutine init_VFib(data,lvl,time,ba,dm)
       use mms_geom, only: initialize_volume_moments
       use amrex_amr_module, only: amrex_boxarray,amrex_distromap,amrex_mfiter,amrex_box,amrex_mfiter_build,amrex_mfiter_destroy
@@ -318,7 +264,7 @@ contains
          do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
             call initialize_volume_moments(lo=[data%amr%xlo+real(i  ,WP)*dx,data%amr%ylo+real(j  ,WP)*dy,data%amr%zlo+real(k  ,WP)*dz], &
             &                              hi=[data%amr%xlo+real(i+1,WP)*dx,data%amr%ylo+real(j+1,WP)*dy,data%amr%zlo+real(k+1,WP)*dz], &
-            &                              levelset=simplex_levelset,time=time,level=nref,VFlo=VFlo,VF=pVF(i,j,k,1),BL=BL,BG=BG)
+            &                              levelset=orifice_levelset,time=time,level=nref,VFlo=VFlo,VF=pVF(i,j,k,1),BL=BL,BG=BG)
          end do; end do; end do
       end do
       call amrex_mfiter_destroy(mfi)
@@ -342,17 +288,26 @@ contains
       
       ! Create amrgrid
       create_amrgrid: block
-         real(WP) :: xshift
-         amr%name='amrsimplex'
-         call param_read('Base nx',amr%nx)
-         call param_read('Base ny',amr%ny)
-         call param_read('Base nz',amr%nz)
-         call param_read('X shift',xshift)
-         call param_read('Lx',amr%xhi); amr%xhi=amr%xhi-xshift; amr%xlo=-xshift
-         call param_read('Ly',amr%yhi); amr%yhi=amr%yhi/2.0_WP; amr%ylo=-amr%yhi
-         call param_read('Lz',amr%zhi); amr%zhi=amr%zhi/2.0_WP; amr%zlo=-amr%zhi
+         integer :: ncell
+         ! Set name
+         amr%name='amrbubble'
+         ! Set domain
+         call param_read('Pipe diameter',Dpipe)
+         call param_read('Upstream length',Lupstream)
+         call param_read('Downstream length',Ldownstream)
+         amr%xlo=-Lupstream;    amr%xhi=+Ldownstream
+         amr%ylo=-0.5_WP*Dpipe; amr%yhi=+0.5_WP*Dpipe
+         amr%zlo=-0.5_WP*Dpipe; amr%zhi=+0.5_WP*Dpipe
+         ! Read base grid size
+         call param_read('Base mesh',ncell)
+         amr%nx=nint((Lupstream+Ldownstream)/Dpipe)*ncell
+         amr%ny=ncell
+         amr%nz=ncell
+         ! Set periodicity
          amr%xper=.false.; amr%yper=.true.; amr%zper=.true.
+         ! Set max level
          call param_read('Max level',amr%maxlvl)
+         ! Initialize
          call amr%initialize()
       end block create_amrgrid
 
@@ -387,45 +342,42 @@ contains
       create_flow_solver: block
          use amrex_amr_module, only: amrex_bc_ext_dir,amrex_bc_foextrap
          use amrdata_class,    only: amrex_interp_face_linear
-         use amrmpinc_class,   only: BC_USER
+         use amrmpinc_class,   only: BC_LIQ
          use amrmg_class,      only: amrmg_outer_pcg_mlmg
+         use mathtools,        only: Pi
          ! Create flow solver
-         call fs%initialize(amr,name='simplex')
+         call fs%initialize(amr,name='bubble')
          ! Set initial conditions
-         fs%user_mpinc_init=>init_VF
+         fs%user_mpinc_init=>bubble_init
          ! Use face-linear interp if 2D (divfree requires ratio=2 in all dirs)
          if (amr%nz.eq.1) fs%interp_vel=amrex_interp_face_linear
          ! Set densities
-         call param_read('Liquid density',fs%rhoL)
-         call param_read('Gas density'   ,fs%rhoG)
+         fs%rhoL=1.0_WP; call param_read('Density ratio',fs%rhoG); fs%rhoG=1.0_WP/fs%rhoG
          ! Set surface tension coefficient
-         call param_read('Surface tension coefficient',fs%sigma)
+         call param_read('Weber number',fs%sigma); fs%sigma=1.0_WP/fs%sigma
          ! Set molecular viscosities
-         call param_read('Gas dynamic viscosity',viscG_mol)
-         call param_read('Liquid dynamic viscosity',viscL_mol)
+         call param_read('Reynolds number',viscL_mol); viscL_mol=1.0_WP/viscL_mol
+         call param_read('Viscosity ratio',viscG_mol); viscG_mol=viscL_mol/viscG_mol
+         ! Set bubble info
+         call param_read('Bubble diameter',Dbubble)
+         call param_read('Bubble position',Xbubble)
+         ! Set inflow velocity
+         Uinlet=0.25_WP*Pi/Dpipe**2
          ! Set pressure convergence
          fs%psolver%outer_solver=amrmg_outer_pcg_mlmg
          fs%psolver%tol_rel=1.0e-5_WP
-         ! Dirichlet conditions for VOF at inlet
-         fs%lo_bc(1)=BC_USER
-         fs%user_vof_bc=>dirichlet_VF
-         ! Dirichlet conditions for velocities at inlet
+         fs%psolver%tol_abs=1.0e-10_WP
+         ! Set boundary conditions
+         fs%lo_bc(1)=BC_LIQ
          fs%UVW%lo_bc(1,:)=amrex_bc_ext_dir
+         fs%UVW%hi_bc(1,:)=amrex_bc_foextrap
          fs%U%lo_bc(1,1)=amrex_bc_ext_dir
          fs%V%lo_bc(1,1)=amrex_bc_ext_dir
          fs%W%lo_bc(1,1)=amrex_bc_ext_dir
-         fs%user_mpinc_bc=>dirichlet_velocity
-         ! Neumann conditions for velocities at outlet
-         fs%UVW%hi_bc(1,:)=amrex_bc_foextrap
          fs%U%hi_bc(1,1)=amrex_bc_foextrap
          fs%V%hi_bc(1,1)=amrex_bc_foextrap
          fs%W%hi_bc(1,1)=amrex_bc_foextrap
-         ! Read in mass flow rate
-         call param_read('Mass flow rate',mfr)
-         ! Read in particle sub-stepping parameters
-         call param_read('Particle dt_max', fs%dtmax, default=huge(1.0_WP))
-         call param_read('Particle CFL max',fs%cflmax,default=huge(1.0_WP))
-         fs%dt=fs%dtmax
+         fs%user_mpinc_bc=>dirichlet_velocity
       end block create_flow_solver
 
       ! Create workspace array
@@ -435,33 +387,25 @@ contains
          call Umag%initialize(amr,name='Umag',ncomp=1,ng=0,interp=amrex_interp_none); call Umag%register()
       end block create_workspace
 
-      ! Create IB fluid VF
+      ! Create IB fluid volume fraction
       create_VFib: block
-         use amrdata_class, only: amrex_interp_pc,amrex_bc_foextrap
+         use amrdata_class, only: amrex_interp_pc
+         use amrex_amr_module, only: amrex_bc_foextrap
          use iso_c_binding, only: c_loc
-         ! Create polygon object
-         call poly%initialize(nvert=15,name='simplex')
-         poly%vert(:, 1)=[-0.10000_WP,0.00000_WP]
-         poly%vert(:, 2)=[-0.00442_WP,0.00000_WP]
-         poly%vert(:, 3)=[-0.00442_WP,0.00160_WP]
-         poly%vert(:, 4)=[-0.00385_WP,0.00160_WP]
-         poly%vert(:, 5)=[-0.00175_WP,0.00039_WP]
-         poly%vert(:, 6)=[-0.00114_WP,0.00039_WP]
-         poly%vert(:, 7)=[ 0.00000_WP,0.00143_WP]
-         poly%vert(:, 8)=[ 0.00000_WP,0.00177_WP]
-         poly%vert(:, 9)=[-0.00122_WP,0.00279_WP]
-         poly%vert(:,10)=[-0.10000_WP,0.00279_WP]
-         poly%vert(:,11)=[-0.10000_WP,0.00212_WP]
-         poly%vert(:,12)=[-0.00543_WP,0.00212_WP]
-         poly%vert(:,13)=[-0.00524_WP,0.00203_WP]
-         poly%vert(:,14)=[-0.00634_WP,0.00159_WP]
-         poly%vert(:,15)=[-0.10000_WP,0.00159_WP]
+         ! Create polygon
+         call param_read('Orifice length',Lorifice)
+         call poly%initialize(nvert=4,name='orifice')
+         poly%vert(:,1)=[-0.5_WP*Lorifice,0.5_WP]
+         poly%vert(:,2)=[+0.5_WP*Lorifice,0.5_WP]
+         poly%vert(:,3)=[+0.5_WP*Lorifice,10.0_WP*Dpipe]
+         poly%vert(:,4)=[-0.5_WP*Lorifice,10.0_WP*Dpipe]
          ! Create VFib field with constant interpolation
-         call VFib%initialize(amr,name='VFib',ncomp=1,ng=fs%nover,interp=amrex_interp_pc); call VFib%register()
-         call amr%add_postregrid(vfib_postregrid,c_loc(VFib))
+         call VFib%initialize(amr,name='VFib',ncomp=1,ng=fs%nover,interp=amrex_interp_pc)
+         call VFib%register()
          VFib%user_init=>init_VFib
          VFib%lo_bc(1,1)=amrex_bc_foextrap
          VFib%hi_bc(1,1)=amrex_bc_foextrap
+         call amr%add_postregrid(vfib_postregrid,c_loc(VFib))
       end block create_VFib
 
       ! Initialize regridding
@@ -510,7 +454,7 @@ contains
       ! Initialize visualization
       create_visualization: block
          ! Create visualization object
-         call viz%initialize(amr,'simplex',use_hdf5=.false.)
+         call viz%initialize(amr,'amrbubble',use_hdf5=.false.)
          call viz%add_scalar(Umag,1,'Umag')
          call viz%add_scalar(fs%UVW,1,'U')
          call viz%add_scalar(fs%UVW,2,'V')
@@ -518,7 +462,7 @@ contains
          call viz%add_scalar(fs%visc,1,'visc')
          call viz%add_scalar(fs%P,1,'pressure')
          call viz%add_scalar(fs%VF,1,'VF')
-         call viz%add_scalar(VFib,1,'IB')
+         call viz%add_scalar(VFib,1,'VFib')
          call viz%add_surfmesh(fs%smesh,'plic')
          ! Create visualization output event
          viz_evt=event(time=time,name='Visualization output')
@@ -532,8 +476,6 @@ contains
          ! Get solver info and cfl
          call fs%get_info()
          call fs%get_cfl(time%dt,time%cfl)
-         ! Call post-processing routine
-         call post_process()
          ! Create simulation monitor
          mfile=monitor(amRoot=amr%amRoot,name='simulation')
          call mfile%add_column(time%n,'Timestep')
@@ -576,12 +518,6 @@ contains
          call gridfile%add_column(amr%minRSS,'Minimum RSS')
          call gridfile%add_column(amr%avgRSS,'Average RSS')
          call gridfile%write()
-         ! Create postproc monitor
-         postproc=monitor(amRoot=amr%amRoot,name='postproc')
-         call postproc%add_column(time%n,'Timestep')
-         call postproc%add_column(time%t,'Time')
-         call postproc%add_column(liq_vol,'Liquid volume')
-         call postproc%write()
       end block create_monitor
 
    end subroutine simulation_init
@@ -673,10 +609,8 @@ contains
 
          ! Monitor output
          call fs%get_info()
-         call post_process()
          call mfile%write()
          call cflfile%write()
-         call postproc%write()
 
          ! Visualization output
          if (viz_evt%occurs()) call viz%write(time=time%t)
@@ -685,7 +619,7 @@ contains
          if (save_evt%occurs()) then
             save_checkpoint: block
                use string, only: rtoa
-               call io%write(dirname='restart/RSA_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
+               call io%write(dirname='restart/bubble_'//trim(adjustl(rtoa(time%t))),time=time%t,step=time%n)
             end block save_checkpoint
          end if
          
@@ -757,50 +691,6 @@ contains
       call mfile%finalize()
       call cflfile%finalize()
       call gridfile%finalize()
-      call postproc%finalize()
    end subroutine simulation_final
-
-   !> Post-processing routine
-   subroutine post_process()
-      implicit none
-
-      ! Get properly masked liquid volume
-      get_liq_vol: block
-         use amrex_amr_module, only: amrex_mfiter,amrex_box,amrex_imultifab,amrex_imultifab_build,amrex_imultifab_destroy
-         use amrex_interface,  only: amrmask_make_fine
-         use parallel,         only: MPI_REAL_WP
-         use mpi_f08,          only: MPI_ALLREDUCE,MPI_IN_PLACE,MPI_SUM
-         integer :: lvl,i,j,k
-         type(amrex_mfiter) :: mfi
-         type(amrex_box) :: bx
-         type(amrex_imultifab) :: mask
-         real(WP), dimension(:,:,:,:), contiguous, pointer :: pVF,pVFib
-         integer,  dimension(:,:,:,:), contiguous, pointer :: pMask
-         liq_vol=0.0_WP
-         do lvl=0,amr%clvl()
-            if (lvl.lt.amr%clvl()) then
-               call amrex_imultifab_build(mask,amr%ba(lvl),amr%dm(lvl),1,0)
-               call amrmask_make_fine(mask,amr%ba(lvl+1),[amr%rrefx(lvl),amr%rrefy(lvl),amr%rrefz(lvl)],0,1)
-            end if
-            call amr%mfiter_build(lvl,mfi)
-            do while (mfi%next())
-               pVF  =>fs%VF%mf(lvl)%dataptr(mfi)
-               pVFib=>VFib%mf(lvl)%dataptr(mfi)
-               if (lvl.lt.amr%clvl()) pMask=>mask%dataptr(mfi)
-               bx=mfi%tilebox()
-               do k=bx%lo(3),bx%hi(3); do j=bx%lo(2),bx%hi(2); do i=bx%lo(1),bx%hi(1)
-                  if (lvl.lt.amr%clvl()) then
-                     if (pMask(i,j,k,1).eq.0) cycle
-                  end if
-                  liq_vol=liq_vol+pVF(i,j,k,1)*pVFib(i,j,k,1)*amr%cell_vol(lvl)
-               end do; end do; end do
-            end do
-            call amr%mfiter_destroy(mfi)
-            if (lvl.lt.amr%clvl()) call amrex_imultifab_destroy(mask)
-         end do
-         call MPI_ALLREDUCE(MPI_IN_PLACE,liq_vol,1,MPI_REAL_WP,MPI_SUM,amr%comm)
-      end block get_liq_vol
-
-   end subroutine post_process
 
 end module simulation
