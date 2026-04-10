@@ -1,15 +1,15 @@
 # Parallelization
-Partition : 22 1 12
-I/O partition : 1 1 1
+Partition : 16 8 12!24 4 20
+I/O partition : 16 1 1
 
 # Mesh definition
 X shift : 0.01
-Lx :  0.18
-Ly :  0.12
-Lz :  0.12
-nx :  225!150
-ny :  150!100
-nz :  150!100
+Lx :  0.2
+Ly :  0.1
+Lz :  0.1
+nx :  480!240!350
+ny :  240!120!200
+nz :  240!120!200
 
 # PLY file
 PLY filename : atomizer_tip.ply
@@ -29,12 +29,12 @@ Pressure tolerance : 1e-4
 Pressure iteration : 100
 
 # Time integration
-Max timestep size : 1.5e-6
+Max timestep size : 1.1e-6
 Max cfl number :    0.8
 
 # Data output
-Ensight output period : 1.5e-4
+Ensight output period : 2.0e-4
 Restart output period : 0.5e-2
 
 # Data restart
-Restart from : !2.00000E-02
+Restart from : 5.85000E-01
