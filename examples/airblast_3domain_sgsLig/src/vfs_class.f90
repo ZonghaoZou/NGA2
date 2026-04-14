@@ -4113,8 +4113,6 @@ contains
       end do
    end subroutine polygonalize_interface
    
-   
-   
    !> Update a surfmesh object from our current polygons
    subroutine update_surfmesh(this,smesh)
       use surfmesh_class, only: surfmesh

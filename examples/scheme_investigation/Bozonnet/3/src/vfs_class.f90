@@ -3443,7 +3443,6 @@ contains
 
 
    !> Machine learning reconstruction of a planar interface in mixed cells
-   !> Machine learning reconstruction of a planar interface in mixed cells
    subroutine build_plicnet(this)
       use mathtools, only: normalize
       use plicnet,   only: get_normal,reflect_moments
